@@ -1,0 +1,180 @@
+"schema": "zmux-registry-v1"
+"protocol":
+  "magic_ascii": "ZMUX"
+  "magic_hex": "5a4d5558"
+  "preface_ver": 1
+  "proto_ver": 1
+  "integer_encoding": "varint62"
+  "integer_byte_order": "big-endian"
+  "integer_min": 0
+  "integer_max": 4611686018427387903
+  "max_preface_settings_bytes": 4096
+"roles":
+  "0": "initiator"
+  "1": "responder"
+  "2": "auto"
+"settings":
+  "1": "initial_max_stream_data_bidi_locally_opened"
+  "2": "initial_max_stream_data_bidi_peer_opened"
+  "3": "initial_max_stream_data_uni"
+  "4": "initial_max_data"
+  "5": "max_incoming_streams_bidi"
+  "6": "max_incoming_streams_uni"
+  "7": "max_frame_payload"
+  "8": "idle_timeout_millis"
+  "9": "keepalive_hint_millis"
+  "10": "max_control_payload_bytes"
+  "11": "max_extension_payload_bytes"
+  "12": "scheduler_hints"
+"defaults":
+  "initial_max_stream_data_bidi_locally_opened": 65536
+  "initial_max_stream_data_bidi_peer_opened": 65536
+  "initial_max_stream_data_uni": 65536
+  "initial_max_data": 262144
+  "max_incoming_streams_bidi": 256
+  "max_incoming_streams_uni": 256
+  "max_frame_payload": 16384
+  "idle_timeout_millis": 0
+  "keepalive_hint_millis": 0
+  "max_control_payload_bytes": 4096
+  "max_extension_payload_bytes": 4096
+  "scheduler_hints": 0
+"scheduler_hints":
+  "0": "unspecified_or_balanced"
+  "1": "latency"
+  "2": "balanced_fair"
+  "3": "bulk_throughput"
+  "4": "group_fair"
+"compatibility_minima":
+  "max_frame_payload": 16384
+  "max_control_payload_bytes": 4096
+  "max_extension_payload_bytes": 4096
+"capabilities":
+  "1": "priority_hints"
+  "2": "stream_groups"
+  "4": "multilink_basic"
+  "8": "priority_update"
+  "16": "open_metadata"
+"frame_types":
+  "1": "DATA"
+  "2": "MAX_DATA"
+  "3": "STOP_SENDING"
+  "4": "PING"
+  "5": "PONG"
+  "6": "BLOCKED"
+  "7": "RESET"
+  "8": "ABORT"
+  "9": "GOAWAY"
+  "10": "CLOSE"
+  "11": "EXT"
+"frame_flags":
+  "32": "OPEN_METADATA"
+  "64": "FIN"
+  "128": "reserved_type_specific"
+"tlv_namespaces":
+  "STREAM_METADATA_TLV":
+    "1": "stream_priority"
+    "2": "stream_group"
+    "3": "open_info"
+  "DIAG_TLV":
+    "1": "debug_text"
+    "2": "retry_after_millis"
+    "3": "offending_stream_id"
+    "4": "offending_frame_type"
+"errors":
+  "0": "NO_ERROR"
+  "1": "PROTOCOL"
+  "2": "FLOW_CONTROL"
+  "3": "STREAM_LIMIT"
+  "4": "REFUSED_STREAM"
+  "5": "STREAM_STATE"
+  "6": "STREAM_CLOSED"
+  "7": "SESSION_CLOSING"
+  "8": "CANCELLED"
+  "9": "IDLE_TIMEOUT"
+  "10": "FRAME_SIZE"
+  "11": "UNSUPPORTED_VERSION"
+  "12": "ROLE_CONFLICT"
+  "13": "INTERNAL"
+"ext_subtypes":
+  "1": "PRIORITY_UPDATE"
+  "2": "ML_READY"
+  "3": "ML_ATTACH"
+  "4": "ML_ATTACH_ACK"
+  "5": "ML_DRAIN_REQ"
+  "6": "ML_DRAIN_ACK"
+"reserved_ranges":
+  "frame_types":
+    -
+      "from": 12
+      "to": 31
+      "kind": "reserved"
+  "setting_ids":
+    -
+      "from": 256
+      "to": 511
+      "kind": "experimental"
+    -
+      "from": 512
+      "to": 1023
+      "kind": "reserved_for_future_standard_assignment"
+    -
+      "from": 1024
+      "to": null
+      "kind": "private_use"
+  "stream_metadata_tlv_types":
+    -
+      "from": 256
+      "to": 511
+      "kind": "experimental"
+    -
+      "from": 512
+      "to": 1023
+      "kind": "reserved_for_future_standard_assignment"
+    -
+      "from": 1024
+      "to": null
+      "kind": "private_use"
+  "diag_tlv_types":
+    -
+      "from": 256
+      "to": 511
+      "kind": "experimental"
+    -
+      "from": 512
+      "to": 1023
+      "kind": "reserved_for_future_standard_assignment"
+    -
+      "from": 1024
+      "to": null
+      "kind": "private_use"
+  "ext_subtype_ids":
+    -
+      "from": 7
+      "to": 255
+      "kind": "standard_extension_space"
+    -
+      "from": 256
+      "to": 511
+      "kind": "experimental"
+    -
+      "from": 512
+      "to": 1023
+      "kind": "reserved_for_future_standard_assignment"
+    -
+      "from": 1024
+      "to": null
+      "kind": "private_use"
+"capability_status":
+  "1": "active"
+  "2": "active"
+  "4": "retired"
+  "8": "active"
+  "16": "active"
+"ext_subtype_status":
+  "1": "active"
+  "2": "retired"
+  "3": "retired"
+  "4": "retired"
+  "5": "retired"
+  "6": "retired"

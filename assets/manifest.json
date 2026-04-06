@@ -1,0 +1,36 @@
+{
+  "schema": "zmux-assets-manifest-v1",
+  "version": 1,
+  "assets": [
+    {
+      "path": "assets/registry.json",
+      "schema": "zmux-registry-v1",
+      "purpose": "machine-readable registry and default values"
+    },
+    {
+      "path": "assets/registry.yaml",
+      "schema": "zmux-registry-v1-yaml",
+      "purpose": "yaml export of the machine-readable registry"
+    },
+    {
+      "path": "assets/wire_corpus.json",
+      "schema": "zmux-wire-corpus-v1",
+      "purpose": "valid and invalid wire-level examples"
+    },
+    {
+      "path": "assets/state_corpus.json",
+      "schema": "zmux-state-corpus-v1",
+      "purpose": "stream and session state-transition scenarios"
+    },
+    {
+      "path": "assets/invalid_corpus.json",
+      "schema": "zmux-invalid-corpus-v1",
+      "purpose": "edge-case invalid inputs and expected outcomes"
+    },
+    {
+      "path": "assets/golden_cases.json",
+      "schema": "zmux-golden-cases-v1",
+      "purpose": "generated unified view of wire, state, and invalid test cases"
+    }
+  ]
+}

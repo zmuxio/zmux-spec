@@ -1,0 +1,94 @@
+{
+  "schema": "zmux-case-sets-v1",
+  "version": 1,
+  "generated_from": "assets/golden_cases.json",
+  "sets": {
+    "codec_valid": [
+      "frame_abort_cancelled",
+      "frame_data_fin_empty",
+      "frame_data_open_bidi_4_hi",
+      "frame_data_open_metadata_info_ssh_hi",
+      "frame_data_open_metadata_priority_2_hi",
+      "frame_ping_minimal",
+      "frame_pong_with_opaque",
+      "frame_priority_update_priority_2",
+      "frame_session_blocked_1024",
+      "frame_session_max_data_1024",
+      "frame_stop_sending_cancelled",
+      "preface_auto_nonce_5",
+      "preface_initiator_minimal",
+      "preface_responder_minimal"
+    ],
+    "codec_invalid": [
+      "invalid_noncanonical_varint_stream_id",
+      "invalid_oversized_frame_for_receiver_limit",
+      "invalid_truncated_varint62"
+    ],
+    "preface": [
+      "preface_auto_equal_nonce_conflict",
+      "preface_auto_nonce_5",
+      "preface_auto_zero_nonce",
+      "preface_control_payload_limit_too_small",
+      "preface_duplicate_setting_id",
+      "preface_extension_payload_limit_too_small",
+      "preface_frame_payload_limit_too_small",
+      "preface_initiator_minimal",
+      "preface_invalid_role_value",
+      "preface_responder_minimal"
+    ],
+    "stream_lifecycle": [
+      "bidi_data_then_fin",
+      "first_blocked_on_unused_stream_is_invalid",
+      "first_max_data_on_unused_stream_is_invalid",
+      "goaway_monotonic",
+      "hidden_control_opened_stop_sending_is_promptly_converged",
+      "late_data_after_close_read_honors_session_aggregate_cap",
+      "late_data_after_peer_abort_is_ignored",
+      "late_data_after_peer_reset_is_ignored",
+      "local_open_cancel_before_first_frame_commit_does_not_consume_id",
+      "peer_first_abort_is_legal",
+      "peer_first_reset_is_invalid",
+      "peer_stream_id_gap_rejected",
+      "provisional_open_limit_prevents_unbounded_head_of_line_stall",
+      "read_stop_discard_restores_session_budget_but_not_stream_budget",
+      "stop_sending_requires_terminal_sender_followup",
+      "terminal_control_ignored",
+      "uni_wrong_direction_blocked_rejected",
+      "uni_wrong_direction_data_rejected",
+      "uni_wrong_side_max_data_rejected",
+      "uni_wrong_side_stop_sending_rejected"
+    ],
+    "flow_control": [
+      "frame_data_exceeds_session_max_data",
+      "frame_data_exceeds_stream_max_data",
+      "goaway_monotonic",
+      "late_data_after_close_read_exceeds_session_aggregate_cap"
+    ],
+    "unidirectional": [
+      "frame_blocked_wrong_side_uni",
+      "frame_max_data_wrong_side_uni",
+      "frame_reset_wrong_side_uni",
+      "frame_stop_sending_wrong_side_uni",
+      "uni_wrong_direction_blocked_rejected",
+      "uni_wrong_direction_data_rejected",
+      "uni_wrong_side_max_data_rejected",
+      "uni_wrong_side_stop_sending_rejected"
+    ],
+    "open_metadata": [
+      "frame_data_open_metadata_duplicate_singleton",
+      "frame_data_open_metadata_info_ssh_hi",
+      "frame_data_open_metadata_on_open_stream",
+      "frame_data_open_metadata_priority_2_hi",
+      "frame_data_open_metadata_without_capability"
+    ],
+    "priority_update": [
+      "frame_priority_update_duplicate_singleton",
+      "frame_priority_update_on_terminal_stream",
+      "frame_priority_update_on_unused_stream",
+      "frame_priority_update_priority_2",
+      "frame_priority_update_tlv_value_overrun",
+      "frame_priority_update_truncated_tlv_header",
+      "frame_priority_update_without_capability"
+    ]
+  }
+}
