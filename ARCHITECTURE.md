@@ -150,10 +150,15 @@ Local-policy examples are:
 - batching thresholds
 - scheduler internals
 - fairness heuristics
-- ping cadence
+- ping cadence and keepalive jitter
 - buffer-pool strategy
 - local observability surfaces
 - collision-retry policy for `role = auto`
+- provisional local-open time limits and hard caps
+- tombstone compaction and retention policy
+- hidden control-opened churn detection thresholds
+- accept-queue notification coalescing strategy
+- lifecycle event surface and handler invocation model
 
 These affect performance and traffic shape, but they are not part of the base
 interoperability contract.

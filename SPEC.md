@@ -13,14 +13,19 @@ The underlying transport is expected to provide:
 - in-order delivery
 - bidirectional byte-stream I/O
 
-The underlying transport is not tied to any one transport family.
+The underlying transport is not tied to any one transport family. Any bearer
+that provides these properties is suitable, including TCP connections, TLS
+streams, Unix domain sockets, or in-process pipes.
 
 `zmux` standardizes one session over one reliable, ordered, full-duplex byte
 stream. It does not define multi-connection session composition inside the
 protocol.
 
 `zmux` does not preserve application write boundaries. Each logical stream is a
-byte stream, not a message stream.
+byte stream, not a message stream. The protocol makes no provision for
+out-of-order delivery, packet-loss recovery, or message framing beyond its own
+frame model. Those properties are delegated entirely to the underlying
+transport.
 
 ### 1.1 Stream abstraction
 
@@ -83,7 +88,11 @@ documents.
 Immediately after the underlying transport is established, both peers MUST send
 their session preface.
 
-The two peers MAY send the preface in parallel.
+The two peers MAY send the preface in parallel. Implementations MUST NOT block
+sending the local preface while waiting to receive the peer preface first.
+Repository-default implementations SHOULD write the local preface concurrently
+with reading the peer preface so that both directions make forward progress
+without deadlocking on a full transport buffer.
 
 ### 2.1 Preface wire format
 
@@ -564,6 +573,9 @@ The following rules apply throughout the protocol:
 - within one stream, once `DATA` bytes have entered that stream's local
   serialization order, later `DATA|FIN`, `RESET`, or `ABORT` for that same
   stream MUST NOT be emitted ahead of those already committed bytes
+- implementations MUST ensure that each frame is written completely to the
+  underlying transport; partial frame writes that leave the transport in an
+  inconsistent state are not recoverable within `zmux v1`
 
 ## 5. Settings and defaults
 
@@ -836,6 +848,9 @@ Additional rules:
   than the smaller of:
   - the peer-advertised `max_control_payload_bytes`; and
   - the sender's own local `max_control_payload_bytes`
+- implementations SHOULD make a defensive copy of the received `PING` payload
+  before constructing the `PONG` reply to avoid aliasing the inbound frame
+  buffer
 
 ### 6.5 PONG
 
@@ -865,6 +880,9 @@ Semantics:
 Additional rules:
 
 - a receiver of `PING` SHOULD reply promptly with `PONG`
+- the `PONG` payload MUST be a byte-for-byte verbatim copy of the triggering
+  `PING` payload, including both the 8-byte token and any trailing opaque echo
+  bytes
 - implementations MAY disable periodic pings entirely
 - local implementations MAY decide whether to originate `PING` at all based on
   underlying transport capabilities and deployment policy
@@ -896,6 +914,9 @@ Additional rules:
 - stream-scoped `BLOCKED` MUST target an already opened stream
 - senders SHOULD avoid emitting unbounded duplicate `BLOCKED` frames without a
   relevant state change such as new queued data or a changed limiting offset
+- when multiple `BLOCKED` updates are pending for the same scope, only the
+  most recent limiting offset needs to be retained; earlier intermediate values
+  MAY be coalesced or superseded
 - receivers that honor it MAY use it as a signal to advance or grow future
   `MAX_DATA` more promptly when local memory policy permits
 
@@ -1091,6 +1112,12 @@ Rules:
   optional `DIAG-TLV` metadata on `STOP_SENDING`, `RESET`, `ABORT`, `GOAWAY`,
   or `CLOSE`, that TLV sequence implicitly occupies the entire remaining frame
   payload after all mandatory preceding fields have been parsed
+
+When `debug_text` is included as a DIAG-TLV, the value MUST be valid UTF-8.
+If local payload-size limits do not permit carrying the full diagnostic text,
+implementations MUST truncate only at valid UTF-8 code-point boundaries. If no
+valid UTF-8 prefix fits within the remaining payload budget, `debug_text`
+SHOULD be omitted entirely rather than sent with invalid encoding.
 
 Examples of separate namespaces:
 
@@ -1386,6 +1413,12 @@ Because `MAX_DATA` carries absolute offsets, it is idempotent:
 Receivers MAY also advance limits beyond bytes just consumed if local policy
 permits. This allows implementations to increase the effective receive budget
 over time to fit local throughput and concurrency targets.
+
+Because `MAX_DATA` values are absolute and idempotent, implementations MAY
+coalesce multiple pending `MAX_DATA` updates for the same scope into a single
+frame carrying only the largest current value. Similarly, implementations MAY
+sort pending stream-scoped `MAX_DATA` updates by stream ID for deterministic
+batch ordering without changing their semantic effect.
 
 Once a higher absolute limit has been advertised, it is not revocable within
 `zmux v1`. Receivers that want to tighten memory usage or fairness MUST do so
@@ -1746,6 +1779,11 @@ Repository-default graceful-shutdown summary:
 | final `GOAWAY` or direct `CLOSE` | narrow the accepted watermark or escalate directly to terminal shutdown |
 | stream drain | let existing streams finish under local policy |
 | final close | send `CLOSE` or terminate the underlying transport when graceful drain is complete |
+
+A receiver that observes a subsequent `GOAWAY` with a higher
+`last_accepted_bidi_stream_id` or `last_accepted_uni_stream_id` than a
+previously received `GOAWAY` MUST treat this as a session `PROTOCOL` error.
+`GOAWAY` watermarks are strictly non-increasing within a session.
 
 ### 10.2 Fatal shutdown
 

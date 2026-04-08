@@ -418,6 +418,95 @@ Bytes:
 Repository-default handling keeps the primary `ABORT(REFUSED_STREAM)`
 semantics and drops the duplicated standardized singleton DIAG block.
 
+### 1.23 Stream-scoped `MAX_DATA` value 8192 on stream 4
+
+Fields:
+
+- `frame_length = 4`
+- `code = MAX_DATA = 0x02`
+- `stream_id = 4`
+- `payload = varint62(8192) = 60 00`
+
+Bytes:
+
+```text
+04 02 04 60 00
+```
+
+### 1.24 Stream-scoped `BLOCKED` at offset 4096 on stream 4
+
+Fields:
+
+- `frame_length = 4`
+- `code = BLOCKED = 0x06`
+- `stream_id = 4`
+- `payload = varint62(4096) = 50 00`
+
+Bytes:
+
+```text
+04 06 04 50 00
+```
+
+### 1.25 `RESET` on stream 4 with `CANCELLED` and `debug_text = "timeout"`
+
+Fields:
+
+- `frame_length = 12`
+- `code = RESET = 0x07`
+- `stream_id = 4`
+- `payload = varint62(8) = 08`
+- `diag_tlvs = DIAG-TLV(type=debug_text=1, len=7, value=74 69 6d 65 6f 75 74)`
+
+Bytes:
+
+```text
+0c 07 04 08 01 07 74 69 6d 65 6f 75 74
+```
+
+### 1.26 Initiator preface with capabilities and one setting
+
+Fields:
+
+- `magic = "ZMUX"`
+- `preface_ver = 1`
+- `role = initiator (0)`
+- `tie_breaker_nonce = 0`
+- `min_proto = 1`
+- `max_proto = 1`
+- `capabilities = 25` (priority_hints | priority_update | open_metadata = 0x19)
+- `settings_len = 4`
+- `settings_tlv = TLV(type=max_frame_payload=7, len=2, value=varint62(32768) = 80 00)`
+
+Bytes:
+
+```text
+5a 4d 55 58 01 00 00 01 01 19 04 07 02 80 00
+```
+
+Note: `capabilities = 25` is encoded as `varint62(25) = 19`. The setting
+`max_frame_payload = 32768` is encoded as a 2-byte varint62 `80 00` inside a
+TLV with type `7` and length `2`.
+
+### 1.27 `EXT` with unknown subtype on stream 4 (forward-compatibility)
+
+Fields:
+
+- `frame_length = 6`
+- `code = EXT = 0x0b`
+- `stream_id = 4`
+- `ext_type = 99` (unknown)
+- `ext_payload = aa bb`
+
+Bytes:
+
+```text
+06 0b 04 40 63 aa bb
+```
+
+A conforming receiver MUST ignore this unknown `EXT` subtype without failing
+the session.
+
 ## 2. Core invalid examples
 
 ### 2.1 Invalid non-canonical varint example
@@ -617,3 +706,37 @@ Sequence:
 
 This opens the stream, conveys open-time metadata, and leaves later payload
 delivery to subsequent `DATA` frames.
+
+### 3.8 Session `BLOCKED` followed by `MAX_DATA` advancement
+
+Sequence:
+
+```text
+04 06 00 44 00    ; session BLOCKED(blocked_at=1024)
+04 02 00 48 00    ; session MAX_DATA(max_offset=2048)
+```
+
+This illustrates the normal receiver-side response after the sender reports
+being blocked at the current session limit: the receiver advances the session
+receive window. The sender may then resume `DATA` transmission.
+
+### 3.9 `DATA|OPEN_METADATA` with `stream_priority` and `stream_group`
+
+Sequence:
+
+```text
+0b 21 04 06 01 01 02 02 01 05 68 69
+```
+
+Fields:
+
+- `frame_length = 11`
+- `code = OPEN_METADATA | DATA = 0x21`
+- `stream_id = 4`
+- `metadata_len = 6`
+- `metadata_tlvs = STREAM-METADATA-TLV(type=stream_priority=1, len=1, value=02)` +
+  `STREAM-METADATA-TLV(type=stream_group=2, len=1, value=05)`
+- `application_payload = 68 69`
+
+This opens stream 4 with both `stream_priority = 2` and `stream_group = 5`,
+followed by application data `"hi"`.
