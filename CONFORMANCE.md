@@ -271,6 +271,23 @@ At minimum, test these stream-level cases:
 - `BLOCKED` on a previously unused valid stream ID causing a session
   `PROTOCOL` error
 - stream ID exhaustion handling without wraparound or ID reuse
+- hidden control-opened-only churn detection: rapid `ABORT`-first on
+  previously unseen peer-owned stream IDs triggering session termination
+  when local abuse thresholds are exceeded
+- provisional local open expiry: a locally opened stream that has not reached
+  `opening-frame-committed` within the repository-default max age being failed
+  locally without consuming a stream ID
+- provisional local open hard cap: exceeding the repository-default maximum
+  number of concurrent provisional opens per stream class causing a retryable
+  local error
+- tombstone late-data classification: late `DATA` arriving after a gracefully
+  closed stream (post-`FIN`) producing `ABORT(STREAM_CLOSED)`, while late
+  `DATA` arriving after an abortively closed stream (post-`RESET` or
+  post-`ABORT`) being silently ignored with budget release
+- local `CloseRead()` followed by bounded late peer `DATA` being discarded
+  and restoring session budget without restoring stream-scoped budget
+- `OPEN_METADATA` bytes not consuming stream or session flow-control windows
+  even on a zero-credit opening frame
 
 ## 5. Core flow-control scenarios
 
@@ -299,6 +316,14 @@ At minimum, test:
 - repository-default late-data policy enforcing both per-direction and
   aggregate session caps for stopped directions
 - overflow protection on malicious or corrupted `MAX_DATA` values
+- `BLOCKED` deduplication: only the most recent limiting offset for each scope
+  is retained when multiple `BLOCKED` updates are pending
+- `MAX_DATA` coalescing: only the largest pending value for each scope is
+  emitted when multiple `MAX_DATA` updates are pending
+- stream-scoped `MAX_DATA` replenishment suppressed after local read-side stop
+  on that direction while session-level replenishment continues
+- session `MAX_DATA` replenishment triggered immediately when remaining
+  advertised session space falls below two negotiated frame payloads
 
 ## 6. Core session-lifecycle scenarios
 
@@ -320,6 +345,16 @@ At minimum, test:
   `ABORT(REFUSED_STREAM)`
 - `CLOSE` terminating all active streams
 - underlying transport closing without a prior `CLOSE`
+- keepalive deadline reset on any outbound transport write, not only on
+  inbound frame receipt: an active sender should not fire idle keepalive
+  probes
+- keepalive jitter preventing synchronized probe bursts across sessions
+- `PING` payload length bounded by `min(local, peer)` control-payload limits,
+  not solely by the peer's advertised limit
+- `GOAWAY` watermark monotonicity: a subsequent peer `GOAWAY` with a higher
+  watermark than a previous one being treated as a protocol error
+- session close propagating terminal errors to all remaining open streams
+  and waking all blocked operations promptly
 
 ## 7. Quality behaviors to observe
 
@@ -366,6 +401,19 @@ part of interoperability quality validation:
 - repository-default implementations detecting and bounding rapid open-then-
   abort or open-then-reset churn rather than relying only on concurrent stream
   limits
+- repository-default tombstone compaction converting fully terminal streams
+  with no remaining buffered data into compact tombstone records rather than
+  retaining full live state indefinitely
+- repository-default accept-queue notification using coalescing rather than
+  per-stream signalling to bound notification overhead during stream bursts
+- repository-default event surfaces being opt-in and not affecting ordinary
+  session and stream operation when no handler is registered
+- repository-default `debug_text` in error frames being valid UTF-8 and
+  truncated at code-point boundaries when payload limits are tight
+- repository-default `PONG` payloads being verbatim byte-for-byte copies of
+  the triggering `PING` payload
+- repository-default frame writes being atomic: each frame is written
+  completely to the underlying transport without partial writes
 
 ## 8. Shared wire examples
 

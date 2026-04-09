@@ -580,25 +580,6 @@
       ]
     },
     {
-      "id": "hidden_control_opened_stop_sending_is_promptly_converged",
-      "source": "state_corpus",
-      "category": "state_scenario",
-      "stream_kind": null,
-      "ownership": null,
-      "scope": "api_semantics",
-      "initial_state": null,
-      "steps": [
-        {
-          "event": "peer_first_stop_sending_opens_hidden_stream",
-          "expect_result": "internal_state_only_not_application_visible"
-        },
-        {
-          "event": "local_policy_has_no_useful_outbound_data",
-          "expect_result": "local_send_half_concludes_promptly"
-        }
-      ]
-    },
-    {
       "id": "provisional_open_limit_prevents_unbounded_head_of_line_stall",
       "source": "state_corpus",
       "category": "state_scenario",

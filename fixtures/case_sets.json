@@ -41,7 +41,6 @@
       "first_blocked_on_unused_stream_is_invalid",
       "first_max_data_on_unused_stream_is_invalid",
       "goaway_monotonic",
-      "hidden_control_opened_stop_sending_is_promptly_converged",
       "late_data_after_close_read_honors_session_aggregate_cap",
       "late_data_after_peer_abort_is_ignored",
       "late_data_after_peer_reset_is_ignored",

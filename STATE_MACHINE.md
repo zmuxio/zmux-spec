@@ -103,6 +103,14 @@ the stream to exist.
 - `recv_reset`: peer outbound direction has ended abortively with `RESET`
 - `recv_aborted`: the whole stream has been aborted
 
+Repository-default local `Read` error resolution checks local API state before
+protocol half-state. If the local application has issued a read-side stop
+(such as `CloseRead`), subsequent `Read` calls SHOULD fail with a local
+read-stopped error even if the protocol receive half has since transitioned to
+`recv_fin` or `recv_reset` through peer action. This preserves the local
+cancellation precedence: once the application has expressed disinterest in
+further reads, the specific peer-side terminal outcome is secondary.
+
 ## 4. Local action transitions
 
 ### 4.1 Local send half
@@ -158,6 +166,14 @@ unseen stream.
 | `recv_open` | peer `ABORT` | `recv_aborted` |
 | `recv_stop_sent` | peer late in-flight `DATA` | `recv_stop_sent` |
 | `recv_stop_sent` | peer `DATA|FIN` after in-flight drain | `recv_fin` |
+
+The `recv_stop_sent` to `recv_fin` transition via peer `DATA|FIN` represents
+the case where the peer gracefully concludes its send half in response to (or
+concurrent with) the local `STOP_SENDING`. This transition is valid because
+`recv_stop_sent` is not yet a terminal state — it indicates the local endpoint
+has requested the peer to stop, not that the peer has necessarily complied.
+The peer may still choose graceful completion over abortive reset.
+
 | `recv_stop_sent` | peer `RESET` | `recv_reset` |
 | `recv_stop_sent` | peer `ABORT` | `recv_aborted` |
 | `recv_fin` | peer `DATA` / `DATA|FIN` | invalid |
@@ -209,6 +225,26 @@ Local reader-side stop is separate:
 
 Abortive full close is `ABORT`.
 
+### 6.1 Close and error priority
+
+When multiple overlapping close conditions exist, implementations MUST surface
+errors or closure conditions to local API callers in a consistent priority
+order. Repository-default close/error priority is, from strongest to weakest:
+
+1. `send_aborted` or `recv_aborted` — whole-stream abort error
+2. `send_reset` or `recv_reset` — direction-specific reset error
+3. `send_stop_seen` — peer stop has closed ordinary new writes before final
+   terminal resolution
+4. `recv_stop_sent` — local read stop has closed ordinary further reads before
+   final terminal resolution
+5. `send_fin` — graceful write-side completion
+6. `recv_fin` — graceful read-side EOF
+
+When both an abort and a reset are present, the abort error takes precedence.
+When both send-side and receive-side conditions exist at the same severity
+level, the send-side abort or reset takes precedence over the receive-side
+equivalent for combined error queries.
+
 ## 7. Unidirectional constraints
 
 For a unidirectional stream:
@@ -252,6 +288,30 @@ Terminal late-frame handling summary:
 | after peer `RESET` on one direction | late in-flight `DATA` / `DATA|FIN` for that direction | ignore and apply discard-and-budget-release |
 | after peer `ABORT` or local/peer full terminal stream state | late in-flight `DATA` / `DATA|FIN` | ignore and apply discard-and-budget-release |
 | fully terminal stream | late non-opening control | ignore |
+
+### 8.1 Compact terminal state
+
+Once a stream is fully terminal and no local queued work or buffered data
+remains, implementations MAY compact the stream into a minimal tombstone
+record. A tombstone retains only:
+
+- the stream ID used marker (to prevent reuse)
+- the terminal kind (graceful, reset, or aborted)
+- the late-data handling policy for the receive direction
+
+Repository-default late-data policies for tombstones are:
+
+| Stream condition at compaction | Late `DATA` action |
+| --- | --- |
+| stream had no local receive half (send-only unidirectional) | ignore silently |
+| receive half was `recv_fin` (graceful close) | reject with `ABORT(STREAM_CLOSED)` |
+| receive half was `recv_reset` or `recv_aborted` | ignore and apply discard-and-budget-release |
+
+Tombstones MUST NOT be reaped in a way that permits stream ID reuse or loss of
+the used-ID marker semantics for that session. Implementations MAY use
+range-compressed markers, bitmaps, or the `next_expected_stream_id` cursor
+instead of per-stream tombstone objects when the resulting late-frame handling
+and no-reuse semantics remain correct.
 
 ## 9. Invalid events
 

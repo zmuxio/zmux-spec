@@ -284,6 +284,18 @@ syscall efficiency, not create a second message transport.
 Large application writes should also be fragmented into multiple `DATA` frames
 rather than emitted as one very large monolithic send path operation.
 
+Repository-default batch parameters:
+
+- maximum frames per batch: `32`
+- batch cost metric: `sum(len(payload) + 1)` per frame, where the `+1`
+  accounts for the minimum frame-header overhead beyond the payload
+- when collecting an ordinary-lane batch, advisory-lane work is interleaved:
+  advisory reads are attempted both before and after each ordinary read to
+  give advisory updates slightly higher same-batch priority without starving
+  ordinary data
+- if the advisory lane is empty or unavailable, advisory read attempts
+  silently fall back to the ordinary data lane
+
 Recommended behavior:
 
 - cap each emitted `DATA` frame at or below the negotiated `max_frame_payload`
@@ -333,10 +345,23 @@ Recommended priority order:
 9. `PING`
 10. `DATA`
 
-Repository-default sender scheduling uses a two-lane writer queue:
+Repository-default sender scheduling uses a multi-lane writer queue:
 
-- urgent control lane
-- normal data lane
+- urgent control lane: `CLOSE`, `GOAWAY`, `ABORT`, `RESET`, `STOP_SENDING`,
+  `MAX_DATA`, `BLOCKED`, `PONG`, `PING`
+- ordinary data lane: `DATA`, stream-scoped `EXT`, non-urgent session-scoped
+  `EXT`
+- advisory lane: latest-only per-stream `PRIORITY_UPDATE` frames
+
+The advisory lane is logically part of the ordinary data lane for scheduling
+purposes but uses a separate input path so that advisory updates can be
+coalesced and merged into data-lane batches without competing for urgent
+control priority.
+
+Urgent control frames within a single batch SHOULD be ordered by the priority
+ranking listed above (most urgent first). When multiple frames target different
+streams, stream-scoped urgent frames within the same priority rank SHOULD be
+emitted in ascending stream-ID order for deterministic batch composition.
 
 Bulk `DATA` should not indefinitely starve control work.
 
@@ -515,6 +540,19 @@ also bound group cardinality and churn:
 - coalesce or rate-limit repeated `stream_group` changes so a peer cannot force
   pathological rebucketing churn
 
+Repository-default group cardinality bounds:
+
+- maximum simultaneously active explicit non-zero groups per batch:
+  implementation-defined, but SHOULD be bounded to a small constant (for
+  example, `8` or `16`)
+- overflow groups beyond the cap are mapped into one fallback local bucket
+  rather than creating unbounded scheduler state
+- the fallback bucket participates in the same DRR scheduling as explicit
+  groups
+- group reassignment through `PRIORITY_UPDATE` takes effect on the next
+  scheduling decision; it does not reset stream deficit or alter bytes already
+  committed to local serialization order
+
 Session-level `scheduler_hints` define the baseline policy for the whole
 session; per-stream `stream_priority` then refines treatment within that
 baseline.
@@ -660,6 +698,25 @@ Repository-default replenishment triggers are:
 - do not keep separately replenishing long-idle streams only to preserve large
   standing windows they are not using
 
+Repository-default replenishment threshold calculation:
+
+- quarter threshold: for a target value `v`, the threshold is `v / 4` when
+  `v > 4`, otherwise `1`
+- session-level emergency threshold: `2 * negotiated max_frame_payload`; when
+  remaining advertised session space falls below this value, replenishment is
+  immediate regardless of the quarter-threshold check
+
+Replenishment is suppressed for a stream when:
+
+- the stream has entered local read-stopped state (`STOP_SENDING` sent or
+  `CloseRead` called)
+- the stream's receive half is terminal (`recv_fin` or `recv_reset`)
+- the stream is still provisional (no wire-visible ID yet)
+
+Session-level replenishment is never suppressed while the session remains
+open, even when individual stream replenishment is suppressed for terminal or
+stopped streams.
+
 Repository-default standing targets are:
 
 - `session_window_target = max(initial_max_data, 4 * session_data_hwm)`
@@ -701,6 +758,26 @@ In active single-link `zmux v1`, hidden control-opened-only live state should
 normally remain absent. Repository-default implementations should expect hidden
 terminal bookkeeping to arise mainly from `ABORT`-first observations on unseen
 peer-owned streams, not from `RESET` or ordinary `STOP_SENDING`.
+
+Repository-default tombstone compaction policy:
+
+- once a stream is fully terminal and has no remaining local queued work or
+  buffered receive data, convert it to a compact tombstone
+- tombstones retain only the stream ID used marker, terminal kind, and a
+  late-data handling action policy
+- late-data action policies depend on the stream's terminal state:
+  - send-only unidirectional streams (no local receive half): ignore late data
+    silently
+  - streams closed gracefully on the receive side (`recv_fin`): late `DATA`
+    triggers `ABORT(STREAM_CLOSED)`
+  - streams terminated abortively (`recv_reset`, `recv_aborted`): late `DATA`
+    is ignored with discard-and-budget-release
+- payload bytes from late `DATA` dropped via tombstone handling MUST still be
+  restored to the session receive budget
+- tombstones MUST NOT be reaped in a way that permits stream ID reuse
+- implementations MAY use the `next_expected_stream_id` cursor plus the active
+  stream map to infer dead-stream status for peer-opened streams without
+  requiring one heap object per tombstone
 
 ### 3.4 Terminal retention and tombstones
 
@@ -755,6 +832,33 @@ Repository-default guidance:
 - keepalive is optional
 - if keepalive is enabled, use idle-only `PING`
 - add jitter to avoid rigid traffic signatures
+
+Repository-default keepalive jitter formula:
+
+- jitter window = `keepalive_interval / 8`
+- each keepalive deadline adds a random value uniformly distributed in
+  `[0, jitter_window]`
+- this prevents thundering-herd synchronization between sessions sharing the
+  same interval configuration
+
+Repository-default keepalive deadline reset triggers:
+
+- any successfully parsed inbound frame resets the keepalive deadline
+- any successful outbound transport write resets the keepalive deadline
+- an active sender therefore never fires idle keepalive probes while it is
+  still producing outbound traffic
+
+Repository-default keepalive timeout behavior:
+
+- a `keepalive_timeout` of `0` means no timeout enforcement; an outstanding
+  `PING` may remain unacknowledged indefinitely without triggering session
+  failure
+- when `keepalive_timeout > 0` and an outstanding `PING` has been waiting
+  longer than the timeout, the session SHOULD be closed with a keepalive
+  timeout error
+- if no timeout is configured but a ping is outstanding, the implementation
+  waits one full `keepalive_interval` before re-evaluating
+
 - piggyback small control work when the added delay is tiny
 - keep at most one locally originated outstanding protocol `PING` per session
 - on very slow links, protocol keepalive should normally stay disabled unless
@@ -839,6 +943,22 @@ Repository-default implementations should avoid:
     flow-control state
   - rapid open-then-abort or open-then-reset churn intended to bypass
     concurrent stream limits or exhaust allocators
+
+Repository-default hidden churn detection:
+
+- implementations SHOULD maintain a rolling window counter for
+  control-opened-only streams that reach terminal state before becoming
+  application-visible
+- repository-default threshold: if more than `128` hidden terminal stream
+  events (such as `ABORT`-first on previously unseen peer-owned stream IDs)
+  occur within any `1-second` rolling window, the session SHOULD be terminated
+  with `CLOSE(PROTOCOL)`
+- the rolling window resets when uninitialized or when the current window has
+  expired
+- this defense is intentionally narrow: it targets only hidden streams that
+  the application never sees, not legitimate rapid creation and teardown of
+  application-visible streams
+
 - if such abusive traffic is detected, disconnecting the peer with
   `CLOSE(PROTOCOL)` or `CLOSE(INTERNAL)` should be part of local defensive
   policy

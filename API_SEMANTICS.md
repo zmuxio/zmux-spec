@@ -61,6 +61,10 @@ Repository-default terminology:
   still be sent without itself creating, reviving, or re-opening the stream and
   without depending on a previously unseen peer-owned stream ID becoming
   signallable
+- `provisional-expired`: a provisional local stream handle has exceeded a
+  local policy time limit without reaching `opening-frame-committed`;
+  repository-default behavior is to fail that stream with a retryable local
+  error and release any provisional reservation without consuming a stream ID
 
 ## 2. Application-visible incoming streams
 
@@ -140,6 +144,34 @@ or a separate lifecycle-event surface indicating whether a stream experienced
 hidden control-path state before it became application-visible. Repository-
 default ordinary `AcceptStream()` remains intentionally simpler and does not
 require that extra event surface.
+
+### 2.1 Lifecycle event surface
+
+Repository-default implementations MAY expose an optional lifecycle event
+surface for observability. When provided, the recommended event types are:
+
+- `stream_opened`: a local stream has reached `opening-frame-committed` and
+  its wire-visible stream ID is now assigned; this event fires before the
+  stream becomes peer-visible through transport submission
+- `stream_accepted`: a peer-opened stream has been dequeued from the accept
+  queue and returned to the application
+- `session_closed`: the session has left the open or draining state
+
+Event payload fields SHOULD include:
+
+- stream ID (when applicable)
+- whether the stream is locally or peer-opened
+- whether the stream is bidirectional or unidirectional
+- timestamp
+- whether the stream is application-visible at the time of the event
+
+Event handlers SHOULD be invoked synchronously without holding internal session
+locks so that handler logic cannot deadlock the session. Handler failures
+(including panics in languages that support them) SHOULD be silently recovered
+rather than propagated as session errors.
+
+Repository-default event surfaces are opt-in. Ordinary session and stream
+operations MUST NOT depend on an event handler being registered.
 
 When a stream becomes application-visible through a first `DATA` /
 `DATA|FIN` carrying `OPEN_METADATA`, bindings MAY additionally expose the
@@ -247,6 +279,17 @@ Recommended default shape:
   - pending unaccepted peer-opened streams
   - total bytes buffered before application handoff
   - control-opened-only stream tombstones or equivalent bookkeeping
+
+Repository-default accept-queue notification model:
+
+- accept queues use coalescing notification rather than per-stream signalling;
+  a single notification wakes a blocked `AcceptStream` caller, which then
+  drains all currently queued streams before blocking again
+- this coalescing pattern bounds notification overhead when many streams arrive
+  in a short burst
+- the notification channel or equivalent primitive SHOULD be bounded (for
+  example, a buffered channel of size 1) so that rapid peer stream arrivals
+  collapse into a single wakeup event
 
 Repository-default capacities:
 
@@ -358,6 +401,15 @@ stream-close helper:
   not exist; it therefore behaves like `CloseWrite()` on a local send-only
   stream and like `CloseRead()` on a local receive-only stream
 
+Repository-default implementations MAY additionally expose a separate blocking
+helper such as `Wait(ctx)` / `WaitClosed(ctx)` to observe final stream
+termination after `Close()` has committed its local shutdown steps.
+
+If a binding chooses to make plain `Close()` blocking, it SHOULD still first
+apply the repository-default `CloseWrite()` + `CloseRead()` mapping above and
+only then wait for terminal completion. Plain `Close()` SHOULD NOT be
+implemented by translating it into abortive `ABORT` semantics.
+
 ### 6.4 Compatibility aliases
 
 If a binding exposes an explicit caller-supplied-code read-stop variant,
@@ -436,6 +488,25 @@ with a session-termination error rather than hang indefinitely.
 
 Core `zmux` error codes occupy `0-255`. Values above that range should be
 surfaced unchanged rather than collapsed into generic transport errors.
+
+### 7.1 Session error visibility
+
+When surfacing session-level errors to application callers, implementations
+SHOULD translate internal close errors into application-appropriate error
+values. Internal implementation details such as specific goroutine shutdown
+sequences, transport buffer states, or internal lock contention SHOULD NOT
+leak through the public error surface.
+
+Repository-default session error translation:
+
+- `NO_ERROR` or nil close cause: return nil or a language-appropriate success
+  indication
+- `ApplicationError` with a core or non-core code: surface the structured
+  error with code and optional reason text preserved
+- transport-level EOF or connection reset: surface as a session-closed or
+  transport-failure error
+- internal implementation errors: surface as `INTERNAL` errors without
+  exposing implementation detail
 
 ## 8. Open semantics
 
