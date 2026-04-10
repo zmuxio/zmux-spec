@@ -8,7 +8,7 @@ protocol well and avoid the common failure modes seen in real multiplexers:
 - latency spikes
 - control-frame starvation
 - memory blowups
-- rigid traffic signatures
+- unnecessary timing rigidity
 - confused lifecycle handling
 
 This guidance is intentionally scoped to **one `zmux` session over one
@@ -104,6 +104,20 @@ for shared session and stream state:
 - waiter wakeups should happen only after the state transition and any related
   budget or reservation changes are visible to other local operations
 
+Repository-default scalability guidance:
+
+- complexity-sensitive sender and scheduler operations SHOULD scale with the
+  number of active streams or active groups, not the total number of streams
+  known to the session
+- quiescent streams SHOULD remain passive state objects; repository-default
+  implementations SHOULD avoid per-stream goroutines, channels, or fine-grained
+  timers as the ordinary representation
+- transitions between quiescent and active scheduling state SHOULD happen on
+  queue-empty to queue-non-empty edges, not on every small buffer mutation
+- timer-driven local policy such as keepalive, provisional-open expiry, or
+  tombstone aging SHOULD use shared coarse timers or timer-wheel style
+  facilities when the host platform provides them
+
 That model is intentionally stricter than the minimum wire contract because it
 reduces cross-language behavioral drift in cancellation, reclaim, and
 concurrent open paths.
@@ -135,6 +149,9 @@ Repository-default guidance:
   reserve both session-global and stream-local send credit
 - the writer loop should serialize only already-reserved work; it should not
   independently decide whether the session still has send credit
+- implementations SHOULD prefer state-local optimizations such as active lists,
+  dirty bits, and shared timers over extra wire-visible work used only for
+  local bookkeeping
 
 ### 2.1.1 Reserved send-credit release rules
 
@@ -415,6 +432,9 @@ Repository-default guidance:
     lazy-materialization schemes when very many streams are active
 - repeated terminal signals that do not add new information MAY be dropped once
   equivalent local convergence work is already queued
+- queue membership for coalescible control work SHOULD be edge-triggered: a
+  scope should become runnable when it first becomes dirty, not be re-enqueued
+  once per intermediate superseded value
 
 ### 2.4 Stream scheduling
 
@@ -479,7 +499,8 @@ Repository-default class hysteresis:
   on every byte
 
 Within each class, use weighted deficit round robin (DRR) across active
-streams.
+streams. Quiescent streams SHOULD remain outside the active competition set
+until they again have queueable work.
 
 Default values:
 
@@ -549,6 +570,8 @@ Repository-default group cardinality bounds:
   rather than creating unbounded scheduler state
 - the fallback bucket participates in the same DRR scheduling as explicit
   groups
+- inactive or empty groups MAY remain outside the scheduler entirely until
+  they again have eligible work
 - group reassignment through `PRIORITY_UPDATE` takes effect on the next
   scheduling decision; it does not reset stream deficit or alter bytes already
   committed to local serialization order
@@ -557,7 +580,7 @@ Session-level `scheduler_hints` define the baseline policy for the whole
 session; per-stream `stream_priority` then refines treatment within that
 baseline.
 
-Repository-default APIs MAY feed open-time hints into this same classification
+Repository-default APIs MAY feed open-time hints into this same scheduling
 path before the first batch is committed:
 
 - `initial_priority` may choose the initial latency-vs-throughput bucket for a
@@ -596,6 +619,24 @@ Repository-default scheduler decision order is:
 `priority_update` changes future local classification and scheduling decisions.
 It does not reset stream deficit or alter bytes already committed to local
 serialization order.
+
+A suggested implementation of this repository-default profile is a bounded
+active-set two-level virtual-time selector, for example a `WF2Q+`-style
+implementation:
+
+- level 1: active groups compete within the current baseline policy
+- level 2: active streams compete within the selected group
+- same-stream FIFO is preserved
+- retained scheduler state is kept only for active or recently active groups
+  and streams
+- when all active streams effectively compete as their own default groups, an
+  equivalent flat per-stream fast path is acceptable
+
+This is an implementation technique, not a wire-visible requirement.
+Implementations using it MUST still preserve the admission, ordering,
+coalescing, and control-latency guarantees described above, and SHOULD NOT
+depend on periodic scheduler-driven wire activity merely to make the selector
+advance.
 
 Priority and control-latency policy only apply while bytes are still under the
 mux sender's control. Once large amounts of `DATA` have already been submitted
@@ -726,6 +767,11 @@ These targets are local defaults, not wire-visible promises. Local memory
 pressure or unread backlog suppresses growth and may leave the implementation
 at pure released-credit replenishment.
 
+Repository-default high-water marks and standing targets are accounting
+budgets, not implied eager allocations. Implementations SHOULD charge actual
+buffered bytes against these limits and SHOULD NOT preallocate per-stream
+memory merely because a stream could legally grow to its configured target.
+
 Deployments on very slow links should generally choose materially smaller
 initial windows, smaller queue watermarks, and smaller standing targets than
 the ordinary repository-default values, while still keeping replenishment
@@ -831,7 +877,10 @@ Repository-default guidance:
 
 - keepalive is optional
 - if keepalive is enabled, use idle-only `PING`
-- add jitter to avoid rigid traffic signatures
+- add jitter so independently configured sessions do not repeatedly align on
+  the same keepalive deadlines
+- avoid fixed per-stream keepalive timers or synchronized periodic sweeps when
+  shared timer facilities can provide the same semantics
 
 Repository-default keepalive jitter formula:
 
