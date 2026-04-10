@@ -110,7 +110,7 @@ Repository-default scalability guidance:
   number of active streams or active groups, not the total number of streams
   known to the session
 - quiescent streams SHOULD remain passive state objects; repository-default
-  implementations SHOULD avoid per-stream goroutines, channels, or fine-grained
+  implementations SHOULD avoid per-stream tasks, mailboxes, or fine-grained
   timers as the ordinary representation
 - transitions between quiescent and active scheduling state SHOULD happen on
   queue-empty to queue-non-empty edges, not on every small buffer mutation
@@ -854,7 +854,7 @@ Repository-default handling is:
   over time
 - apply the same discard-and-budget-release rule to late in-flight `DATA`
   ignored after remote `RESET` or `ABORT`; those terminal-control late tails
-  are still bounded discard paths, not free unmetered garbage channels
+  are still bounded discard paths, not free unmetered garbage paths
 - reap tombstones under session shutdown, tombstone budget pressure, or local
   tombstone-age limits
 - never reap tombstones in a way that would permit stream ID reuse or loss of

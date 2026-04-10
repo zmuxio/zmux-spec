@@ -287,9 +287,8 @@ Repository-default accept-queue notification model:
   drains all currently queued streams before blocking again
 - this coalescing pattern bounds notification overhead when many streams arrive
   in a short burst
-- the notification channel or equivalent primitive SHOULD be bounded (for
-  example, a buffered channel of size 1) so that rapid peer stream arrivals
-  collapse into a single wakeup event
+- the notification primitive SHOULD be bounded (for example, with capacity 1)
+  so that rapid peer stream arrivals collapse into a single wakeup event
 
 Repository-default capacities:
 
@@ -493,7 +492,7 @@ surfaced unchanged rather than collapsed into generic transport errors.
 
 When surfacing session-level errors to application callers, implementations
 SHOULD translate internal close errors into application-appropriate error
-values. Internal implementation details such as specific goroutine shutdown
+values. Internal implementation details such as specific worker shutdown
 sequences, transport buffer states, or internal lock contention SHOULD NOT
 leak through the public error surface.
 
