@@ -129,10 +129,12 @@ API surface:
   to explicit roles, while generic session constructors over an already
   established duplex byte stream should default to `role = auto` unless the
   caller explicitly overrides it
-- repository-default API surfaces SHOULD use mainstream stream-style names such
-  as `Close()`, `CloseRead()`, `CloseWrite()`, and `Reset()`; explicit
+- repository-default stream-style profiles SHOULD use mainstream names such as
+  `Close()`, `CloseRead()`, `CloseWrite()`, and `Reset()`; explicit
   whole-stream close-with-error helpers SHOULD carry a numeric code together
   with optional reason text when the binding exposes them
+- bindings MAY also expose a fuller control surface for caller-selected codes
+  and diagnostics on `STOP_SENDING`, `RESET`, `ABORT`, `GOAWAY`, or `CLOSE`
 - repository-default API surfaces SHOULD keep one primary method name per
   operation; when a numeric stream identifier is exposed, `StreamID()` is the
   repository-default name

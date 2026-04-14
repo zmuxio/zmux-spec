@@ -339,10 +339,14 @@ Repository-default provisional-open overflow policy is:
 Default close mapping:
 
 - `CloseWrite()` -> emit `DATA|FIN`
-- `CloseRead()` -> emit `STOP_SENDING(CANCELLED)`, discard unread inbound data
-  under the repository-default policy, and thereafter fail local `Read` calls
-  on that direction
-- `Reset(code)` -> emit `RESET(code)`
+- repository-default stream-style `CloseRead()` ->
+  emit `STOP_SENDING(CANCELLED)`, discard unread inbound data under the
+  repository-default policy, and thereafter fail local `Read` calls on that
+  direction
+- fuller read-stop control, if exposed -> emit `STOP_SENDING(code)` with
+  optional diagnostics
+- `Reset(code)` -> emit `RESET(code)`; fuller reset control MAY additionally
+  carry optional diagnostics when that surface is exposed
 - `CloseWithError(err)` or `CloseWithErrorCode(code, reason)` -> emit
   `ABORT(code)` and carry optional diagnostic text when the local error
   surface provides one
@@ -350,10 +354,30 @@ Default close mapping:
   local use of the stream and commits graceful local shutdown through
   `CloseWrite()` plus `CloseRead()` under local policy
 
-### 6.2 Repository-default primary names
+### 6.2 Operation families and stream-style profile
 
-Repository-default naming intentionally follows mainstream stream and
-connection-style surfaces:
+Repository-default API design distinguishes semantic operation families from
+any one concrete method naming scheme.
+
+Core stream operation families are:
+
+- full local close helper
+- graceful send-half completion
+- read-side stop
+- send-side reset
+- whole-stream abort
+- stream ID, open-time metadata, and advisory metadata observation when
+  exposed
+
+A binding MAY present those families through:
+
+- a stream-style convenience surface using conventional byte-stream names
+- a fuller control surface exposing caller-selected codes and optional
+  diagnostics
+- both, as long as the semantic mapping stays consistent
+
+The repository-default stream-style profile intentionally follows mainstream
+stream and connection-style surfaces:
 
 - use `Close()` for ordinary full stream close
 - use `CloseWrite()` for graceful send-side completion
@@ -362,8 +386,7 @@ connection-style surfaces:
 - avoid inventing new primary verbs when established stream-style names are
   already sufficient
 
-Repository-default cross-language surfaces should prefer these primary method
-names:
+Recommended stream-style method names are:
 
 - `Close()` for full local stream close
 - `CloseWrite()` for graceful send-half completion
@@ -375,20 +398,18 @@ names:
 - `Metadata()` for the current advisory metadata snapshot when exposed
 - `UpdateMetadata(update)` for post-open advisory metadata changes when exposed
 
-For new bindings, exposing `Close()`, `CloseWrite()`, `CloseRead()`, and
-`Reset(code)` is RECOMMENDED when those operations fit the host-language
-surface. Bindings SHOULD also expose one explicit whole-stream close-with-error
-surface that carries both a numeric application error code and optional
-diagnostic reason text, either through a structured error value consumed by
+For new bindings, exposing at least this stream-style convenience surface is
+RECOMMENDED when those operations fit the host-language surface. Bindings
+SHOULD also expose one explicit whole-stream close-with-error surface that
+carries both a numeric application error code and optional diagnostic reason
+text, either through a structured error value consumed by
 `CloseWithError(err)` or through `CloseWithErrorCode(code, reason)`.
 
-Repository-default profile intentionally treats `CloseRead()` as the one
-canonical read-side stop operation. Choosing a different `STOP_SENDING` code
-does not create a second lifecycle action in the way that `Reset(code)` does
-for the local send half; it only changes the code value attached to the same
-read-stop action. Bindings that need direct caller control over the emitted
-`STOP_SENDING` code MAY expose that as a lower-level extension outside the
-repository-default profile.
+Repository-default stream-style profile intentionally treats `CloseRead()` as
+the one convenience read-side stop operation. Choosing a different
+`STOP_SENDING` code does not create a second lifecycle action in the way that
+`Reset(code)` does for the local send half; it only changes the code value
+attached to the same read-stop action.
 
 ### 6.3 Repository-default `Close()` helper
 
@@ -418,22 +439,43 @@ apply the repository-default `CloseWrite()` + `CloseRead()` mapping above and
 only then wait for terminal completion. Plain `Close()` SHOULD NOT be
 implemented by translating it into abortive `ABORT` semantics.
 
-### 6.4 Canonical naming discipline
+### 6.4 Semantic conformance and full-control surfaces
 
-Bindings SHOULD expose one canonical repository-default name per operation and
-SHOULD avoid requiring applications to choose among multiple ordinary names for
-the same action.
+Bindings satisfy repository-default API semantics by documenting and
+implementing the operation families above. Exact method names are not
+mandated by the claim.
 
-Repository-default naming preference for new bindings is:
+If a binding exposes fuller protocol control, it SHOULD allow caller-selected
+code and optional diagnostics on whichever low-level operations correspond to:
 
-- prefer `OpenStream()` / `OpenUniStream()` and `AcceptStream()` /
-  `AcceptUniStream()` as the ordinary open/accept surface
-- prefer `CloseRead()` for reader-side stop
-- prefer `Reset(code)` for send-side abortive cancellation
-- prefer `CloseWithError(...)` for explicit whole-stream close-with-error
-- prefer `StreamID()` over ad-hoc numeric-ID getter names
+- read-side stop -> `STOP_SENDING(code)`
+- send-side reset -> `RESET(code)`
+- whole-stream abort -> `ABORT(code)`
 
-Repository-default claims are made against this canonical naming surface.
+Exact spellings for that fuller control surface are intentionally not
+standardized by this document. Representative shapes include:
+
+- `StopRead(stop_options)` or another explicit read-stop operation carrying
+  `code` and optional diagnostics
+- `ResetWrite(reset_options)` or another explicit send-reset operation carrying
+  `code` and optional diagnostics
+- `AbortStream(abort_options)` or another whole-stream abort operation carrying
+  `code` and optional diagnostics
+
+A stream-style convenience surface and a fuller control surface MAY coexist.
+When both are exposed:
+
+- `CloseRead()` is the repository-default convenience shorthand for read-side
+  stop with code `CANCELLED`
+- `CloseWrite()` remains graceful completion
+- `Reset(code)` is the repository-default convenience shorthand for a
+  send-side reset using that code when no extra diagnostics are supplied
+- `CloseWithError(...)` or `CloseWithErrorCode(...)` is a convenience whole-
+  stream abort surface
+
+Bindings SHOULD still keep one primary ordinary spelling per operation family
+inside each API layer, rather than presenting multiple co-equal names for the
+same action in the same surface.
 
 ## 7. Error mapping
 
@@ -464,9 +506,13 @@ value with `Code` and optional `Reason` is the repository-default model. A
 binding MAY instead expose separate `(code, reason)` parameters if that is
 more idiomatic for the host language.
 
-Repository-default reason-text mapping is:
+Repository-default diagnostic-text mapping is:
 
-- `CloseWithErrorCode(code, reason)` sends `ABORT(code)`
+- on the stream-style convenience surface,
+  `CloseWithErrorCode(code, reason)` sends `ABORT(code)`
+- fuller control surfaces MAY likewise carry optional DIAG-TLV `debug_text`
+  on `STOP_SENDING`, `RESET`, `ABORT`, `GOAWAY`, or `CLOSE` when those
+  controls are exposed directly
 - if `reason` is non-empty, it is encoded as DIAG-TLV `debug_text`
 - `reason` MUST be valid UTF-8
 - if local control-payload limits do not permit carrying the full reason text,
@@ -477,7 +523,7 @@ Repository-default reason-text mapping is:
     remaining available payload space
   - if no valid UTF-8 prefix fits, omit `debug_text`
 - surfaced remote `reason_text`, when exposed, comes from the peer's
-  DIAG-TLV `debug_text`
+  DIAG-TLV `debug_text` on the relevant terminating control frame
 
 When the session receives `CLOSE` or the underlying transport fails, blocked
 `Read`, `Write`, and accept operations should be unblocked promptly and fail
@@ -614,8 +660,20 @@ default. Carrying open-time metadata is an opt-in sender choice.
 
 ### 8.1 Repository-default session surface
 
-When a binding exposes the repository-default session surface, the primary
-method names SHOULD be:
+When a binding exposes a repository-default session surface, it SHOULD cover
+these capability families:
+
+- accepting bidirectional and unidirectional peer-opened streams
+- opening bidirectional and unidirectional local streams
+- open-time options when open metadata or initial advisory hints are supported
+- ordinary graceful session shutdown
+- terminal session abort
+- waiting for final session termination
+- non-blocking local session inspection when exposed
+- optional one-shot open-and-send conveniences when they fit the host-language
+  surface
+
+If a binding chooses a stream-style session profile, recommended names are:
 
 - `AcceptStream(ctx)` / `AcceptUniStream(ctx)`
 - `OpenStream(ctx)` / `OpenUniStream(ctx)`
@@ -629,9 +687,9 @@ method names SHOULD be:
 - `Closed()`, `State()`, and `Stats()` for non-blocking local session
   inspection when exposed
 
-Repository-default session surfaces SHOULD keep one primary spelling per
-operation rather than standardizing multiple verb families for the same open,
-close, or wait action.
+Exact session method names are not part of the API-semantics claim. Bindings
+SHOULD still keep one primary spelling per capability family inside each API
+layer rather than standardizing multiple verb families for the same action.
 
 Repository-default session-lifecycle behavior is:
 
@@ -698,7 +756,8 @@ Repository-default cancellation matrix:
 This section defines the repository-default stream-adapter profile.
 
 It is a narrower stream-oriented surface layered on the cross-language
-contract above.
+contract above. Adapters MAY additionally expose a fuller control layer when
+they want direct caller access to lower-level `zmux` controls.
 
 ### 10.1 Supported adapter subset
 
@@ -714,6 +773,7 @@ The following concepts map well between a stream-oriented adapter surface and
 - write-half close
 - read-side cancellation
 - write-side cancellation / reset
+- whole-stream abort
 - numeric stream identifiers
 - numeric application-defined stream errors
 
@@ -743,9 +803,10 @@ Recommended adapter mapping:
 - peer bidirectional accept -> peer-owned bidirectional `stream_id`
 - peer unidirectional accept -> peer-owned unidirectional `stream_id`
 
-### 10.4 Method mapping
+### 10.4 Stream-style mapping
 
-Default method-level correspondence:
+The following names are one recommended stream-style mapping, not the only
+conformant API surface:
 
 - `OpenStream` -> local bidirectional stream open
 - `OpenUniStream` -> local unidirectional stream open
@@ -776,6 +837,12 @@ Default method-level correspondence:
 - explicit native whole-stream close-with-error helper, if exposed ->
   `CloseWithError(err)` or `CloseWithErrorCode(code, reason)` ->
   `ABORT(code)` with optional DIAG-TLV `debug_text`
+- lower-level read-stop control, if exposed -> `STOP_SENDING(code)` with
+  optional diagnostics
+- lower-level send-reset control, if exposed -> `RESET(code)` with optional
+  diagnostics
+- lower-level whole-stream abort control, if exposed -> `ABORT(code)` with
+  optional diagnostics
 
 Default adapter behavior:
 
@@ -792,7 +859,9 @@ Default adapter behavior:
   cancellation
 - adapter surfaces SHOULD expose one explicit whole-stream close-with-error
   helper that can carry code and optional reason text
-- adapter surfaces SHOULD keep one primary spelling per operation
+- adapter surfaces MAY additionally expose a fuller control layer for caller-
+  selected codes and diagnostics on `STOP_SENDING`, `RESET`, and `ABORT`
+- adapter surfaces SHOULD keep one primary spelling per operation family
 - application-visible incoming streams should follow the same rules described
   in sections 2 and 8 of this document
 - stream adapters should hide control-opened-only streams from the ordinary
@@ -859,9 +928,11 @@ equivalence beyond the stream surface they actually implement.
 
 ## 11. Usage guidance
 
-Repository-default API guidance should steer applications toward directional
-operations instead of whole-stream aborts by default, while using mainstream
-stream method names for those directional semantics.
+Repository-default usage guidance should steer applications toward directional
+operations instead of whole-stream aborts by default. The examples below use
+the stream-style convenience surface, but bindings with a fuller control layer
+may additionally let callers choose explicit codes and diagnostics when that is
+useful.
 
 Recommended operation choices:
 

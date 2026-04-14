@@ -1159,20 +1159,21 @@ Phase 5. API contract
 
 Expose a stable host-language surface for:
 
-- `OpenStream` / `OpenUniStream`
-- `AcceptStream` / `AcceptUniStream`
-- `Read`
-- `Write`
-- `Close`
-- `CloseRead`
-- `CloseWrite`
-- `Reset`
-- `StreamID`
+- bidirectional and unidirectional open operations
+- bidirectional and unidirectional accept operations
+- ordered `Read` / `Write`
+- one full local close helper
+- one graceful send-half completion operation
+- one read-side stop operation
+- one send-side reset operation
+- stream ID exposure when the binding chooses to expose numeric IDs
 - conn-style deadlines when the host language naturally supports them
 - stream-open and accept operations
 - error-code surfacing
 - explicit whole-stream close-with-error helper with numeric code and optional
   reason text when the binding deliberately chooses to expose it
+- fuller protocol-control operations with caller-selected codes and optional
+  diagnostics when the binding chooses to expose them
 
 Exit criteria:
 
