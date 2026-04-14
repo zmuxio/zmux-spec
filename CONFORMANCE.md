@@ -379,8 +379,7 @@ part of interoperability quality validation:
 - repository-default sender profiles not emitting early application `DATA`
   or creating new streams before peer preface parsing completes
 - repository-default bindings not exposing numeric `StreamID()` values before
-  `opening-frame-committed`, except on explicitly documented compatibility
-  surfaces
+  `opening-frame-committed`
 - repository-default handling of provisional-open cancellation consuming an
   earlier cancelled stream ID on the wire when a later same-class ID has
   already reached `opening-frame-committed`, rather than creating a skipped-ID

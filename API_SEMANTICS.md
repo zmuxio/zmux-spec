@@ -218,7 +218,7 @@ Repository-default visibility point:
   with additional pre-terminal bytes beyond the buffer snapshot it had already
   been allowed to consume
 
-For a local read-side stop (`CloseRead`, `CancelRead`, or equivalent):
+For a local read-side stop (`CloseRead()` or `CloseReadWithCode(code)`):
 
 - `CloseRead` is the repository-default reader-side stop primitive in `zmux`
 - unread inbound bytes may be discarded immediately
@@ -342,8 +342,7 @@ Default close mapping:
 - `CloseRead()` -> emit `STOP_SENDING(CANCELLED)`, discard unread inbound data
   under the repository-default policy, and thereafter fail local `Read` calls
   on that direction
-- an explicit caller-supplied-code read-stop variant, if exposed ->
-  emit `STOP_SENDING(code)`
+- `CloseReadWithCode(code)` -> emit `STOP_SENDING(code)`
 - `Reset(code)` -> emit `RESET(code)`
 - `CloseWithError(err)` or `CloseWithErrorCode(code, reason)` -> emit
   `ABORT(code)` and carry optional diagnostic text when the local error
@@ -360,7 +359,9 @@ connection-style surfaces:
 - use `Close()` for ordinary full stream close
 - use `CloseWrite()` for graceful send-side completion
 - use `CloseRead()` for reader-side stop
-- use `Reset()` for send-side abortive termination
+- use `CloseReadWithCode(code)` for caller-selected read-side stop codes when
+  that explicit variant is exposed
+- use `Reset(code)` for send-side abortive termination
 - avoid inventing new primary verbs when established stream-style names are
   already sufficient
 
@@ -370,15 +371,21 @@ names:
 - `Close()` for full local stream close
 - `CloseWrite()` for graceful send-half completion
 - `CloseRead()` for reader-side stop
-- `Reset()` aborts only the local send half
+- `CloseReadWithCode(code)` for caller-selected `STOP_SENDING` codes when
+  exposed
+- `Reset(code)` aborts only the local send half
 - `Read()` / `Write()` for byte-stream I/O
-- `StreamID()` / `ID()` for the numeric wire ID when exposed
+- `StreamID()` for the numeric wire ID when exposed
+- `OpenInfo()` for opener-supplied opaque open-time bytes when exposed
+- `Metadata()` for the current advisory metadata snapshot when exposed
+- `UpdateMetadata(update)` for post-open advisory metadata changes when exposed
 
-For new bindings, exposing `Close()`, `CloseWrite()`, `CloseRead()`, and
-`Reset()` is RECOMMENDED. Bindings SHOULD also expose an explicit abortive
-whole-stream close helper that can carry both a numeric application error code
-and optional diagnostic reason text, for example through `CloseWithError(err)`
-with a structured application error value or through
+For new bindings, exposing `Close()`, `CloseWrite()`, `CloseRead()`,
+`CloseReadWithCode(code)`, and `Reset(code)` is RECOMMENDED when those
+operations fit the host-language surface. Bindings SHOULD also expose one
+explicit whole-stream close-with-error surface that carries both a numeric
+application error code and optional diagnostic reason text, either through a
+structured error value consumed by `CloseWithError(err)` or through
 `CloseWithErrorCode(code, reason)`.
 
 ### 6.3 Repository-default `Close()` helper
@@ -409,33 +416,24 @@ apply the repository-default `CloseWrite()` + `CloseRead()` mapping above and
 only then wait for terminal completion. Plain `Close()` SHOULD NOT be
 implemented by translating it into abortive `ABORT` semantics.
 
-### 6.4 Compatibility aliases
+### 6.4 Canonical naming discipline
 
-If a binding exposes an explicit caller-supplied-code read-stop variant,
-`CancelRead(code)` SHOULD alias that variant, preferably spelled
-`CloseReadWithCode(code)`.
-
-Otherwise, `CancelRead()` SHOULD alias repository-default `CloseRead()`.
-
-If a surface also exposes `CancelWrite()` or `ResetWrite()`, repository-
-default behavior is to treat them as documented compatibility aliases for
-`Reset()`.
-
-If a surface also exposes `Abort()` or `AbortWithError()`, repository-default
-behavior is to treat them as documented compatibility aliases for
-`CloseWithError(...)`.
+Bindings SHOULD expose one canonical repository-default name per operation and
+SHOULD avoid requiring applications to choose among multiple ordinary names for
+the same action.
 
 Repository-default naming preference for new bindings is:
 
-- prefer `CloseRead()` over `CancelRead()`
-- prefer `Reset()` over `CancelWrite()` or `ResetWrite()`
-- prefer `CloseWithError(...)` over `Abort()` or `AbortWithError(...)`
-- prefer `StreamID()` or `ID()` over ad-hoc numeric-ID getter names
-- treat `CancelRead()`, `CancelWrite()`, `ResetWrite()`, and
-  `Abort()` / `AbortWithError()` as compatibility aliases only when a binding
-  deliberately keeps them
-- prefer one explicit whole-stream close-with-error helper that carries code
-  and optional reason text rather than multiple competing abort spellings
+- prefer `OpenStream()` / `OpenUniStream()` and `AcceptStream()` /
+  `AcceptUniStream()` as the ordinary open/accept surface
+- prefer `CloseRead()` for reader-side stop
+- if a caller-supplied-code reader-stop variant is exposed, prefer
+  `CloseReadWithCode(code)` for that operation
+- prefer `Reset(code)` for send-side abortive cancellation
+- prefer `CloseWithError(...)` for explicit whole-stream close-with-error
+- prefer `StreamID()` over ad-hoc numeric-ID getter names
+
+Repository-default claims are made against this canonical naming surface.
 
 ## 7. Error mapping
 
@@ -531,15 +529,10 @@ Repository-default sender APIs should treat local open as a two-stage action:
   wire-visible stream ID or creating a peer-observable gap
 - repository-default bindings SHOULD NOT expose numeric wire `stream_id` values
   before `opening-frame-committed`
-- if a compatibility surface nevertheless exposes a numeric `StreamID()` /
-  `ID()`-style result before that point, it MUST treat that ID as reserved and
-  later surface it on the wire rather than silently reusing it
-- such early exposure SHOULD be documented as an advanced or compatibility
-  surface because it can reduce concurrent open throughput: later locally
-  opened streams of the same class must remain behind the reserved earlier ID
-  in wire serialization order to avoid protocol-fatal gaps
 - repository-default bindings SHOULD therefore prefer opaque provisional
-  handles over exposing numeric wire IDs before the stream is active
+  handles over exposing numeric wire IDs before the stream is active, because
+  early numeric exposure constrains same-class open serialization and
+  complicates cancellation behavior
 
 Repository-default sender APIs MAY additionally expose open-time metadata
 fields, such as:
@@ -584,15 +577,47 @@ Those open-time metadata inputs behave as follows:
 This matches `zmux`'s no-per-stream-ack opening model and should be documented
 clearly in user-facing APIs.
 
+When a binding exposes open-time or advisory metadata methods, repository-
+default names are:
+
+- `OpenInfo()` for the opener's opaque open-time bytes when known locally
+- `Metadata()` for the currently known advisory metadata snapshot
+- `UpdateMetadata(update)` for post-open advisory metadata updates; in
+  `zmux v1`, only standardized advisory fields such as priority and group have
+  update semantics on the wire
+
 Bindings MAY also expose convenience surfaces that collapse common first-batch
 patterns into one call, for example:
 
 - `WriteFinal(...)` / `WritevFinal(...)` for one-shot `DATA|FIN`
-- `OpenAndSend(...)` / `OpenUniAndSend(...)` with open-time options and
-  immediate first payload submission
+- `OpenAndSend(...)` / `OpenAndSendWithOptions(...)` for bidirectional open
+  plus immediate first payload submission
+- `OpenUniAndSend(...)` / `OpenUniAndSendWithOptions(...)` for unidirectional
+  open plus immediate first payload submission
 
 Ordinary `OpenStream()` / `OpenUniStream()` usage remains metadata-free by
 default. Carrying open-time metadata is an opt-in sender choice.
+
+### 8.1 Repository-default session surface
+
+When a binding exposes the repository-default session surface, the primary
+method names SHOULD be:
+
+- `AcceptStream(ctx)` / `AcceptUniStream(ctx)`
+- `OpenStream(ctx)` / `OpenUniStream(ctx)`
+- `OpenStreamWithOptions(ctx, opts)` / `OpenUniStreamWithOptions(ctx, opts)`
+  when open-time metadata or initial advisory hints are supported
+- `OpenAndSend(ctx, p)` / `OpenAndSendWithOptions(ctx, opts, p)`
+- `OpenUniAndSend(ctx, p)` / `OpenUniAndSendWithOptions(ctx, opts, p)`
+- `Close()` for ordinary session shutdown
+- `Abort(err)` for terminal session abort
+- `Wait(ctx)` to observe final session termination
+- `Closed()`, `State()`, and `Stats()` for non-blocking local session
+  inspection when exposed
+
+Repository-default session surfaces SHOULD keep one primary spelling per
+operation rather than standardizing multiple verb families for the same open,
+close, or wait action.
 
 ## 9. Cancellation and deadlines
 
@@ -693,18 +718,30 @@ Default method-level correspondence:
 
 - `OpenStream` -> local bidirectional stream open
 - `OpenUniStream` -> local unidirectional stream open
+- `OpenStreamWithOptions` -> local bidirectional stream open with open-time
+  metadata or initial advisory options
+- `OpenUniStreamWithOptions` -> local unidirectional stream open with
+  open-time metadata or initial advisory options
 - `AcceptStream` -> accept next application-visible peer-opened bidirectional
   stream
 - `AcceptUniStream` -> accept next application-visible peer-opened
   unidirectional stream
-- `StreamID()` / `ID()` -> locally known numeric stream ID when exposed
+- `OpenAndSend` / `OpenAndSendWithOptions` -> bidirectional open plus
+  immediate first payload submission
+- `OpenUniAndSend` / `OpenUniAndSendWithOptions` -> unidirectional open plus
+  immediate first payload submission
+- `StreamID()` -> locally known numeric stream ID when exposed
+- `OpenInfo()` -> opener-supplied opaque open-time bytes when known locally
+- `Metadata()` -> current advisory metadata snapshot when exposed
+- `UpdateMetadata(update)` -> post-open advisory metadata update request
 - `Read` -> `Read`
 - `Write` -> `Write`
+- `WriteFinal(...)` / `WritevFinal(...)` -> one-shot `DATA|FIN`
 - `Close()` -> repository-default full-stream close helper
 - `CloseWrite()` -> `DATA|FIN`
 - `CloseRead()` -> `STOP_SENDING(CANCELLED)` as the repository-default
-  receiver-side close control for one stream direction; an explicit
-  caller-supplied-code variant may expose a caller-selected code
+  receiver-side close control for one stream direction
+- `CloseReadWithCode(code)` -> `STOP_SENDING(code)`
 - `Reset(code)` -> `RESET(code)`
 - explicit native whole-stream close-with-error helper, if exposed ->
   `CloseWithError(err)` or `CloseWithErrorCode(code, reason)` ->
@@ -721,23 +758,13 @@ Default adapter behavior:
 - adapter surfaces SHOULD expose `CloseWrite()` separately for graceful
   send-half completion
 - adapter surfaces SHOULD expose `CloseRead()` separately for reader-side stop
+- adapter surfaces SHOULD expose `CloseReadWithCode(code)` when caller-chosen
+  `STOP_SENDING` codes are part of the binding's ordinary surface
 - adapter surfaces SHOULD expose `Reset(code)` for send-side abortive
   cancellation
 - adapter surfaces SHOULD expose one explicit whole-stream close-with-error
   helper that can carry code and optional reason text
-- if an adapter also exposes `CancelRead()`, repository-default behavior is to
-  treat it as a documented alias for the adapter's caller-supplied-code
-  read-stop variant or `CloseRead()`, depending on whether the adapter accepts
-  a caller-supplied code
-- if an adapter also exposes `CancelWrite(code)` or `ResetWrite(code)`,
-  repository-default behavior is to treat it as a compatibility alias for
-  `Reset(code)`
-- if an adapter also exposes `Abort()` or `AbortWithError()`, repository-
-  default behavior is to treat them as compatibility aliases for an explicit
-  whole-stream close-with-error helper
-- if an adapter also exposes `OpenBidi`, `OpenUni`, `OpenStreamSync`, or
-  `OpenUniStreamSync`, those should be documented as compatibility or
-  convenience aliases rather than the primary naming surface
+- adapter surfaces SHOULD keep one primary spelling per operation
 - application-visible incoming streams should follow the same rules described
   in sections 2 and 8 of this document
 - stream adapters should hide control-opened-only streams from the ordinary
@@ -774,9 +801,9 @@ For stream adapters:
   cancellation
 - a provisional local open cancelled before first-frame commit should not
   consume a peer-observable `stream_id`
-- bindings that expose numeric stream IDs early should either delay exposure
-  until first-frame commit or treat the exposed ID as reserved and later
-  surfaced on the wire
+- bindings SHOULD delay numeric `StreamID()` exposure until first-frame
+  commit; earlier numeric ID exposure is outside the repository-default
+  profile
 - local cancellation after the stream has reached `opening-frame-committed` or
   after an inbound frame for that stream has been accepted locally should
   attempt
@@ -828,11 +855,9 @@ Bindings SHOULD document that:
 - `CloseWrite()` finishes only the local send half
 - `CloseRead()` stops local interest in further inbound bytes for that
   direction and emits `STOP_SENDING(CANCELLED)` by default
-- a binding MAY additionally expose an explicit caller-supplied-code read-stop
-  variant when it wants caller-chosen `STOP_SENDING` codes
+- `CloseReadWithCode(code)`, when exposed, preserves the same read-side stop
+  semantics while allowing a caller-selected `STOP_SENDING` code
 - `Reset()` aborts only the local send half
-- compatibility aliases such as `CancelRead()`, `CancelWrite()`, or
-  `ResetWrite()` should preserve those same semantics when exposed
 - explicit whole-stream close-with-error helpers are stronger than `Close()`
   and should surface numeric code plus optional reason text when they are
   exposed

@@ -132,6 +132,9 @@ API surface:
   as `Close()`, `CloseRead()`, `CloseWrite()`, and `Reset()`; explicit
   whole-stream close-with-error helpers SHOULD carry a numeric code together
   with optional reason text when the binding exposes them
+- repository-default API surfaces SHOULD keep one primary method name per
+  operation; when a numeric stream identifier is exposed, `StreamID()` is the
+  repository-default name
 - repository-default bindings SHOULD avoid introducing custom primary stream
   verbs when established stream/connection-style names already express the
   same behavior clearly

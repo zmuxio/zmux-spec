@@ -1164,9 +1164,10 @@ Expose a stable host-language surface for:
 - `Write`
 - `Close`
 - `CloseRead`
+- `CloseReadWithCode`
 - `CloseWrite`
 - `Reset`
-- `StreamID` / `ID`
+- `StreamID`
 - conn-style deadlines when the host language naturally supports them
 - stream-open and accept operations
 - error-code surfacing
