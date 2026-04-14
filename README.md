@@ -70,7 +70,7 @@ the normative documents:
   test harnesses.
 - [tools/build_case_sets.py](./tools/build_case_sets.py)  
   Generator for fixture groupings such as codec-only,
-  flow-control, `open_metadata`, or `priority_update`.
+  flow-control, `session_lifecycle`, `open_metadata`, or `priority_update`.
 - [tools/rebuild_assets.py](./tools/rebuild_assets.py)  
   Serial rebuild script for all generated assets and fixture bundles.
 - [fixtures/index.json](./fixtures/index.json)  
@@ -87,7 +87,8 @@ For implementation work, the repository-default order is:
 2. run stream and session behavior tests from `fixtures/state_cases.ndjson`
 3. run policy and edge-case checks from `fixtures/invalid_cases.ndjson`
 4. use `fixtures/case_sets.json` to select subsets such as codec-only,
-   flow-control, unidirectional-stream, `open_metadata`, or `priority_update`
+   flow-control, `session_lifecycle`, unidirectional-stream,
+   `open_metadata`, or `priority_update`
 5. use `tools/rebuild_assets.py` when regenerating derived assets locally
 6. use `tools/validate_assets.py` in CI to catch drift in the repository
 

@@ -16,7 +16,7 @@
     {
       "path": "fixtures/state_cases.ndjson",
       "kind": "state_cases",
-      "count": 19
+      "count": 185
     },
     {
       "path": "fixtures/invalid_cases.ndjson",

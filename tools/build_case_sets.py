@@ -27,6 +27,7 @@ def build():
         "codec_invalid": [],
         "preface": [],
         "stream_lifecycle": [],
+        "session_lifecycle": [],
         "flow_control": [],
         "unidirectional": [],
         "open_metadata": [],
@@ -51,12 +52,20 @@ def build():
                 sets["priority_update"].append(cid)
 
         elif source == "state_corpus":
-            sets["stream_lifecycle"].append(cid)
+            scope = case.get("scope")
+            if scope == "session":
+                sets["session_lifecycle"].append(cid)
+            else:
+                sets["stream_lifecycle"].append(cid)
             stream_kind = case.get("stream_kind")
             if stream_kind and stream_kind.startswith("uni_"):
                 sets["unidirectional"].append(cid)
-            if "goaway" in cid:
+            if scope == "flow_control":
                 sets["flow_control"].append(cid)
+            if scope == "open_metadata" or "open_metadata" in cid:
+                sets["open_metadata"].append(cid)
+            if "priority_update" in cid:
+                sets["priority_update"].append(cid)
 
         elif source == "invalid_corpus":
             layer = category

@@ -586,6 +586,20 @@ default names are:
   `zmux v1`, only standardized advisory fields such as priority and group have
   update semantics on the wire
 
+Repository-default `UpdateMetadata(update)` behavior is:
+
+- before `opening-frame-committed`, supported advisory fields SHOULD merge into
+  the pending opening metadata state when the first opening `DATA` can still
+  carry them
+- after `opening-frame-committed`, supported advisory fields SHOULD use the
+  standardized post-open carriage path still available for that stream, such as
+  `PRIORITY_UPDATE`
+- `open_info` remains open-time metadata only in `zmux v1`; it is not part of
+  post-open update semantics
+- if the binding cannot carry requested peer-visible metadata on any
+  standardized path still available, `UpdateMetadata(update)` SHOULD fail
+  explicitly rather than silently mutating only local shadow state
+
 Bindings MAY also expose convenience surfaces that collapse common first-batch
 patterns into one call, for example:
 
@@ -618,6 +632,23 @@ method names SHOULD be:
 Repository-default session surfaces SHOULD keep one primary spelling per
 operation rather than standardizing multiple verb families for the same open,
 close, or wait action.
+
+Repository-default session-lifecycle behavior is:
+
+- `Close()` is the ordinary graceful shutdown helper: it SHOULD stop admitting
+  new local opens, perform the bounded `GOAWAY`-based drain sequence when that
+  path is in use, and then commit terminal session close
+- `Abort(err)` is stronger than `Close()` and SHOULD commit terminal session
+  shutdown without waiting for graceful drain
+- once terminal session state becomes visible locally, blocked accept, open,
+  read, and write operations SHOULD be woken promptly against that committed
+  state; final `Wait(ctx)` / `Closed()` completion may follow after close-path
+  cleanup finishes
+- `Wait(ctx)` observes final session termination, not merely shutdown
+  initiation
+- `Closed()` becomes true only after final terminal completion
+- `State()` and `Stats()` are local observation helpers; they MUST NOT be
+  treated as completion acknowledgements
 
 ## 9. Cancellation and deadlines
 

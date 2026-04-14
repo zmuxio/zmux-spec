@@ -1153,6 +1153,7 @@ Primary inputs:
 - `fixtures/wire_valid.ndjson`
 - `fixtures/state_cases.ndjson`
 - `fixtures/invalid_cases.ndjson`
+- `fixtures/case_sets.json` -> `session_lifecycle`
 
 Phase 5. API contract
 
