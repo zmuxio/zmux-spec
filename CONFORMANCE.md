@@ -170,8 +170,7 @@ Profile compatibility rule:
 
 Reference-profile claim gate:
 
-- repository-default `CloseRead()` emits `STOP_SENDING(CANCELLED)` unless a
-  binding intentionally exposes an explicit caller-supplied-code variant
+- repository-default `CloseRead()` emits `STOP_SENDING(CANCELLED)`
 - repository-default `Close()` acts as a full local close helper
 - repository-default `Close()` on a unidirectional stream silently ignores the
   locally absent direction rather than failing solely because that half does
@@ -233,8 +232,7 @@ At minimum, test these stream-level cases:
 - local `Close` acting as a full local close helper that ends ordinary use of
   both halves under the repository-default API profile
 - `CloseWrite` preventing further local writes while reads remain usable
-- repository-default `CloseRead()` emitting `STOP_SENDING(CANCELLED)` unless
-  an explicit caller-selected-code variant is used
+- repository-default `CloseRead()` emitting `STOP_SENDING(CANCELLED)`
 - late `DATA` after peer `FIN`
 - duplicate `RESET`
 - peer `DATA|FIN` on a bidirectional stream not releasing the incoming-stream

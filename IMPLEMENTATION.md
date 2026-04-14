@@ -1165,7 +1165,6 @@ Expose a stable host-language surface for:
 - `Write`
 - `Close`
 - `CloseRead`
-- `CloseReadWithCode`
 - `CloseWrite`
 - `Reset`
 - `StreamID`

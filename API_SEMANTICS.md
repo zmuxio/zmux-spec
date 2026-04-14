@@ -218,7 +218,7 @@ Repository-default visibility point:
   with additional pre-terminal bytes beyond the buffer snapshot it had already
   been allowed to consume
 
-For a local read-side stop (`CloseRead()` or `CloseReadWithCode(code)`):
+For a local read-side stop (`CloseRead()`):
 
 - `CloseRead` is the repository-default reader-side stop primitive in `zmux`
 - unread inbound bytes may be discarded immediately
@@ -342,7 +342,6 @@ Default close mapping:
 - `CloseRead()` -> emit `STOP_SENDING(CANCELLED)`, discard unread inbound data
   under the repository-default policy, and thereafter fail local `Read` calls
   on that direction
-- `CloseReadWithCode(code)` -> emit `STOP_SENDING(code)`
 - `Reset(code)` -> emit `RESET(code)`
 - `CloseWithError(err)` or `CloseWithErrorCode(code, reason)` -> emit
   `ABORT(code)` and carry optional diagnostic text when the local error
@@ -359,8 +358,6 @@ connection-style surfaces:
 - use `Close()` for ordinary full stream close
 - use `CloseWrite()` for graceful send-side completion
 - use `CloseRead()` for reader-side stop
-- use `CloseReadWithCode(code)` for caller-selected read-side stop codes when
-  that explicit variant is exposed
 - use `Reset(code)` for send-side abortive termination
 - avoid inventing new primary verbs when established stream-style names are
   already sufficient
@@ -371,8 +368,6 @@ names:
 - `Close()` for full local stream close
 - `CloseWrite()` for graceful send-half completion
 - `CloseRead()` for reader-side stop
-- `CloseReadWithCode(code)` for caller-selected `STOP_SENDING` codes when
-  exposed
 - `Reset(code)` aborts only the local send half
 - `Read()` / `Write()` for byte-stream I/O
 - `StreamID()` for the numeric wire ID when exposed
@@ -380,13 +375,20 @@ names:
 - `Metadata()` for the current advisory metadata snapshot when exposed
 - `UpdateMetadata(update)` for post-open advisory metadata changes when exposed
 
-For new bindings, exposing `Close()`, `CloseWrite()`, `CloseRead()`,
-`CloseReadWithCode(code)`, and `Reset(code)` is RECOMMENDED when those
-operations fit the host-language surface. Bindings SHOULD also expose one
-explicit whole-stream close-with-error surface that carries both a numeric
-application error code and optional diagnostic reason text, either through a
-structured error value consumed by `CloseWithError(err)` or through
-`CloseWithErrorCode(code, reason)`.
+For new bindings, exposing `Close()`, `CloseWrite()`, `CloseRead()`, and
+`Reset(code)` is RECOMMENDED when those operations fit the host-language
+surface. Bindings SHOULD also expose one explicit whole-stream close-with-error
+surface that carries both a numeric application error code and optional
+diagnostic reason text, either through a structured error value consumed by
+`CloseWithError(err)` or through `CloseWithErrorCode(code, reason)`.
+
+Repository-default profile intentionally treats `CloseRead()` as the one
+canonical read-side stop operation. Choosing a different `STOP_SENDING` code
+does not create a second lifecycle action in the way that `Reset(code)` does
+for the local send half; it only changes the code value attached to the same
+read-stop action. Bindings that need direct caller control over the emitted
+`STOP_SENDING` code MAY expose that as a lower-level extension outside the
+repository-default profile.
 
 ### 6.3 Repository-default `Close()` helper
 
@@ -427,8 +429,6 @@ Repository-default naming preference for new bindings is:
 - prefer `OpenStream()` / `OpenUniStream()` and `AcceptStream()` /
   `AcceptUniStream()` as the ordinary open/accept surface
 - prefer `CloseRead()` for reader-side stop
-- if a caller-supplied-code reader-stop variant is exposed, prefer
-  `CloseReadWithCode(code)` for that operation
 - prefer `Reset(code)` for send-side abortive cancellation
 - prefer `CloseWithError(...)` for explicit whole-stream close-with-error
 - prefer `StreamID()` over ad-hoc numeric-ID getter names
@@ -772,7 +772,6 @@ Default method-level correspondence:
 - `CloseWrite()` -> `DATA|FIN`
 - `CloseRead()` -> `STOP_SENDING(CANCELLED)` as the repository-default
   receiver-side close control for one stream direction
-- `CloseReadWithCode(code)` -> `STOP_SENDING(code)`
 - `Reset(code)` -> `RESET(code)`
 - explicit native whole-stream close-with-error helper, if exposed ->
   `CloseWithError(err)` or `CloseWithErrorCode(code, reason)` ->
@@ -789,8 +788,6 @@ Default adapter behavior:
 - adapter surfaces SHOULD expose `CloseWrite()` separately for graceful
   send-half completion
 - adapter surfaces SHOULD expose `CloseRead()` separately for reader-side stop
-- adapter surfaces SHOULD expose `CloseReadWithCode(code)` when caller-chosen
-  `STOP_SENDING` codes are part of the binding's ordinary surface
 - adapter surfaces SHOULD expose `Reset(code)` for send-side abortive
   cancellation
 - adapter surfaces SHOULD expose one explicit whole-stream close-with-error
@@ -886,8 +883,6 @@ Bindings SHOULD document that:
 - `CloseWrite()` finishes only the local send half
 - `CloseRead()` stops local interest in further inbound bytes for that
   direction and emits `STOP_SENDING(CANCELLED)` by default
-- `CloseReadWithCode(code)`, when exposed, preserves the same read-side stop
-  semantics while allowing a caller-selected `STOP_SENDING` code
 - `Reset()` aborts only the local send half
 - explicit whole-stream close-with-error helpers are stronger than `Close()`
   and should surface numeric code plus optional reason text when they are
