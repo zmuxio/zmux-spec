@@ -171,12 +171,16 @@ Profile compatibility rule:
 Reference-profile claim gate:
 
 - repository-default stream-style `CloseRead()` emits `STOP_SENDING(CANCELLED)`
-  while fuller control surfaces MAY additionally expose caller-selected codes
-  and diagnostics for `STOP_SENDING`, `RESET`, and `ABORT`
+  when that convenience profile is exposed, while fuller control surfaces MAY
+  additionally expose caller-selected codes and diagnostics for
+  `STOP_SENDING`, `RESET`, and `ABORT`
 - repository-default `Close()` acts as a full local close helper
 - repository-default `Close()` on a unidirectional stream silently ignores the
   locally absent direction rather than failing solely because that half does
   not exist
+- each exposed API surface keeps one documented primary spelling per
+  operation family, with any extra convenience spellings documented as wrappers
+  over the same semantic action rather than as distinct lifecycle operations
 - before `session-ready`, repository-default sender behavior emits only the
   local preface and a fatal establishment `CLOSE`, and emits none of:
   new-stream `DATA`, stream-scoped control, ordinary session-scoped control,
@@ -198,8 +202,8 @@ implementation planning and release review.
 | `zmux-wire-v1` | pass core wire interoperability; pass invalid-input handling; pass extension-tolerance behavior |
 | `zmux-open_metadata` | satisfy `zmux-wire-v1`; negotiate `open_metadata`; accept valid `DATA|OPEN_METADATA` on first opening `DATA`; reject unnegotiated or misplaced `OPEN_METADATA`; ignore unknown metadata TLVs; drop duplicate singleton metadata while preserving the enclosing `DATA` |
 | `zmux-priority_update` | satisfy `zmux-wire-v1`; negotiate `priority_update`; process `stream_priority` and `stream_group`; ignore `open_info` inside `PRIORITY_UPDATE`; ignore unknown advisory TLVs; ignore duplicate singleton advisory updates as one dropped update |
-| `zmux-api-semantics-profile-v1` | document and implement the repository-default semantic operation families from [API_SEMANTICS.md](./API_SEMANTICS.md), including full local close helper, graceful send-half completion, read-side stop, send-side reset, whole-stream abort, structured error surfacing, open/cancel behavior, and accept visibility rules; exact method names are not required |
-| `zmux-stream-adapter-profile-v1` | satisfy the stream-adapter subset from [API_SEMANTICS.md](./API_SEMANTICS.md), including bidirectional/unidirectional open and accept mapping, one consistent stream-style mapping or fuller documented control surface, and documented limits/non-goals |
+| `zmux-api-semantics-profile-v1` | document and implement the repository-default semantic operation families from [API_SEMANTICS.md](./API_SEMANTICS.md), including full local close helper, graceful send-half completion, read-side stop, send-side reset, whole-stream abort, structured error surfacing, open/cancel behavior, and accept visibility rules; document whether the binding exposes a stream-style convenience profile, a full-control protocol surface, or both; exact API spellings are not required |
+| `zmux-stream-adapter-profile-v1` | satisfy the stream-adapter subset from [API_SEMANTICS.md](./API_SEMANTICS.md), including bidirectional/unidirectional open and accept mapping, one consistent convenience mapping or fuller documented control layer or both, and documented limits/non-goals |
 | `zmux-core-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass core stream-lifecycle scenarios; pass core flow-control scenarios; pass core session-lifecycle scenarios |
 | `zmux-full-v1` | satisfy `zmux-core-v1`; satisfy every currently active same-version optional surface in this repository, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups`; interoperate cleanly with `zmux-core-v1` peers by using only shared negotiated capabilities |
 | `zmux-reference-profile-v1` | satisfy `zmux-full-v1`; satisfy the reference-profile claim gate above; meet the quality behaviors to observe closely enough to preserve the documented repository-default sender, memory, liveness, API, and scheduling behavior |
@@ -251,9 +255,9 @@ At minimum, test these stream-level cases:
   `RESET` or `DATA|FIN`
 - `STOP_SENDING` moving the sender-side state into a no-new-writes substate
   before final conclusion
-- repository-default whole-stream close-with-error helpers mapping optional
-  reason text to DIAG-TLV `debug_text` while preserving the numeric `ABORT`
-  code
+- repository-default primary explicit whole-stream abort entries mapping
+  optional reason text to DIAG-TLV `debug_text` while preserving the numeric
+  `ABORT` code
 - `STOP_SENDING` received after that outbound half is already terminal and
   therefore not requiring any additional concluding frame
 - stream-scoped `MAX_DATA`, `BLOCKED`, and `PRIORITY_UPDATE` not overtaking the
@@ -389,7 +393,7 @@ part of interoperability quality validation:
   names such as `Close()`, `CloseRead()`, `CloseWrite()`, and `Reset()`, with
   `Close()` documented as a full local close helper rather than an
   undocumented send-half-only shorthand, while fuller control surfaces remain
-  free to expose more direct protocol controls
+  free to expose more direct protocol controls and caller-selected codes
 - repository-default bulk protection preserving a bounded minimum class share
   when bulk and interactive work are both continuously active
 - repository-default implementations detecting and shedding abusive empty-frame
