@@ -899,14 +899,19 @@ Repository-default keepalive deadline reset triggers:
 
 Repository-default keepalive timeout behavior:
 
-- a `keepalive_timeout` of `0` means no timeout enforcement; an outstanding
-  `PING` may remain unacknowledged indefinitely without triggering session
-  failure
-- when `keepalive_timeout > 0` and an outstanding `PING` has been waiting
-  longer than the timeout, the session SHOULD be closed with a keepalive
-  timeout error
-- if no timeout is configured but a ping is outstanding, the implementation
-  waits one full `keepalive_interval` before re-evaluating
+- repository-default runtime bindings that expose a configurable keepalive
+  timeout and treat an unset or zero local value as "use the default timeout"
+  derive that timeout adaptively from local policy rather than disabling
+  enforcement outright
+- repository-default adaptive timeout base is `max(2 * keepalive_interval,
+  5s)`, capped at `60s`, and widened further when needed to at least
+  `4 * observed_ping_rtt + 50ms`
+- when the effective keepalive timeout is positive and an outstanding `PING`
+  has been waiting longer than that effective timeout, the session SHOULD be
+  closed with a keepalive timeout error
+- implementations that expose an explicit "disable keepalive timeout"
+  capability MAY leave an outstanding `PING` pending indefinitely and simply
+  wait one full `keepalive_interval` before re-evaluating
 
 - piggyback small control work when the added delay is tiny
 - keep at most one locally originated outstanding protocol `PING` per session
@@ -1038,7 +1043,9 @@ Repository-default graceful drain sequence is:
 4. if needed, send a second more restrictive `GOAWAY` before final shutdown
 5. reclaim never-peer-visible local streams above the final accepted
    watermark
-6. drain remaining active streams
+6. drain streams that still have remaining local close-relevant work; unread
+   inbound-only tails need not delay final close once local send-side work is
+   done
 7. send `CLOSE` or close the underlying transport
 
 ## 9. Implementer checklist

@@ -51,10 +51,12 @@ Repository-default terminology:
   `stream_id` is consumed
 - `transport-submitted`: bytes have been handed to the underlying transport or
   wrapper; this does not by itself prove remote awareness or delivery
-- `peer-visible`: the local implementation has protocol evidence that the peer
-  is aware of the stream's existence, such as any accepted peer-originated
-  stream-scoped frame for that stream or another protocol reaction that
-  references that exact stream ID
+- `peer-visible`: for repository-default local-open bookkeeping, the opening
+  frame has entered the local transport-submission path, or the local
+  implementation has later observed an accepted peer-originated stream-scoped
+  frame or other protocol reaction that references that exact stream ID; this
+  is strong enough to stop local `GOAWAY`-style reclaim for that stream, but it
+  still does not prove remote delivery
 - `session-ready`: both prefaces have been parsed successfully and local
   stream-ID ownership is resolved
 - `stream-local signalling remains valid`: a stream-scoped local response can
@@ -152,7 +154,8 @@ surface for observability. When provided, the recommended event types are:
 
 - `stream_opened`: a local stream has reached `opening-frame-committed` and
   its wire-visible stream ID is now assigned; this event fires before the
-  stream becomes peer-visible through transport submission
+  stream becomes transport-submitted and before later peer-originated evidence,
+  if any, is observed
 - `stream_accepted`: a peer-opened stream has been dequeued from the accept
   queue and returned to the application
 - `session_closed`: the session has left the open or draining state
@@ -299,9 +302,11 @@ Repository-default capacities:
 - urgent-lane hard cap:
   `max(64 KiB, 8 * negotiated max_control_payload_bytes)`
 - repository-default late-data allowance after local `CloseRead`:
-  `min(2 * negotiated max_frame_payload, initial_stream_window / 8)`, where
-  `initial_stream_window` means the negotiated initial stream-scoped receive
-  limit for that stream kind
+  `max(1 KiB, min(2 * negotiated max_frame_payload, initial_stream_window / 8))`,
+  where `initial_stream_window` means the negotiated initial stream-scoped
+  receive limit for that stream kind; the same repository-default per-stream
+  cap is a reasonable default for ignored late tail after peer `RESET` or
+  peer `ABORT` while stream-local late-tail accounting still exists
 - repository-default aggregate late-data allowance across all stopped
   directions: `max(64 KiB, 4 * negotiated max_frame_payload)`
 - repository-default hidden control-opened soft headroom:
@@ -745,6 +750,11 @@ Repository-default session-lifecycle behavior is:
 - `Close()` is the ordinary graceful shutdown helper: it SHOULD stop admitting
   new local opens, perform the bounded `GOAWAY`-based drain sequence when that
   path is in use, and then commit terminal session close
+- repository-default graceful drain SHOULD NOT remain blocked solely because a
+  stream still retains unread inbound bytes after the local side has no
+  remaining send-side work; in particular, peer-opened streams with no
+  outstanding local send work, and fully terminal streams retained only for
+  unread buffered data, need not delay `Close()`
 - `Abort(err)` is stronger than `Close()` and SHOULD commit terminal session
   shutdown without waiting for graceful drain
 - once terminal session state becomes visible locally, blocked accept, open,

@@ -1777,7 +1777,7 @@ Repository-default graceful-shutdown summary:
 | initial permissive `GOAWAY` | stop future peer open intent without prematurely rejecting likely already in-flight peer opens |
 | short drain interval | give already in-flight peer opens and finishing traffic time to arrive |
 | final `GOAWAY` or direct `CLOSE` | narrow the accepted watermark or escalate directly to terminal shutdown |
-| stream drain | let existing streams finish under local policy |
+| stream drain | let streams with remaining local close-relevant work finish under local policy; unread inbound-only tails need not prolong drain once local send-side work is done |
 | final close | send `CLOSE` or terminate the underlying transport when graceful drain is complete |
 
 A receiver that observes a subsequent `GOAWAY` with a higher
