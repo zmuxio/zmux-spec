@@ -247,6 +247,12 @@ Default write behavior:
 - a successful local `Write` only means the bytes entered the local `zmux`
   send path
 - it does not prove the peer application has accepted the stream
+- repository-default ordinary `Write` with zero application bytes and no final
+  intent SHOULD be a local no-op; it should not by itself force an opening
+  `DATA` frame or make a stream peer-visible
+- a zero-length `WriteFinal(...)` / `WritevFinal(...)`, when those helpers are
+  exposed, SHOULD behave like `CloseWrite()` and therefore still finish the
+  local send half with `DATA|FIN`
 - after local `CloseWrite` or repository-default `Close`, further `Write`
   calls should fail immediately with a write-side-closed error
 - after local `Reset`, further `Write` calls on that direction should fail
@@ -317,6 +323,10 @@ Repository-default capacities:
   exists locally
 - repository-default hidden control-opened max age:
   `1s` when local timers are available
+- repository-default hidden open-then-`ABORT` churn window:
+  `1s`
+- repository-default hidden open-then-`ABORT` churn threshold:
+  `128`
 - repository-default provisional-open soft cap per stream class:
   `max(16, max_pending_unaccepted_streams / 4)` when such a stream-count limit
   exists locally
@@ -643,6 +653,9 @@ Those open-time metadata inputs behave as follows:
   default bindings SHOULD still fail or reject the open request rather than
   silently degrading to plain `DATA` when the metadata block cannot be carried
   on the opening frame because of frame-payload or local memory limits
+- if `OPEN_METADATA` bytes alone consume the entire opening-frame payload
+  budget, repository-default bindings MUST keep the opener within that payload
+  limit and emit any trailing application bytes in later `DATA` frames
 - lack of stream or session `MAX_DATA` alone is not a reason to reject
   `open_info`, because `OPEN_METADATA` bytes do not consume those receive
   windows
