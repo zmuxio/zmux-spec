@@ -246,6 +246,9 @@ Default write behavior:
 
 - a successful local `Write` only means the bytes entered the local `zmux`
   send path
+- after a write-oriented call returns, the caller SHOULD be free to reuse or
+  mutate the supplied payload buffers immediately; implementations that queue
+  internally therefore SHOULD detach any borrowed payload bytes before return
 - it does not prove the peer application has accepted the stream
 - repository-default ordinary `Write` with zero application bytes and no final
   intent SHOULD be a local no-op; it should not by itself force an opening
