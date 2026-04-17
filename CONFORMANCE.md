@@ -353,9 +353,10 @@ At minimum, test:
   `ABORT(REFUSED_STREAM)`
 - `CLOSE` terminating all active streams
 - underlying transport closing without a prior `CLOSE`
-- keepalive deadline reset on any outbound transport write, not only on
-  inbound frame receipt: an active sender should not fire idle keepalive
-  probes
+- repository-default directional-idle keepalive scheduling: parsed inbound
+  frames reset read-idle probing, successful outbound transport writes reset
+  write-idle probing, and implementations MAY still emit occasional
+  RTT-sampling `PING` under a separate local max-time-since-last-`PING` cap
 - keepalive jitter preventing synchronized probe bursts across sessions
 - `PING` payload length bounded by `min(local, peer)` control-payload limits,
   not solely by the peer's advertised limit

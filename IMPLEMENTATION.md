@@ -890,7 +890,11 @@ heap tombstone object per fully closed stream.
 Repository-default guidance:
 
 - keepalive is optional
-- if keepalive is enabled, use idle-only `PING`
+- if keepalive is enabled, use session-scoped idle-triggered `PING` rather
+  than fixed-period heartbeats
+- repository-default bindings MAY additionally enforce a slower local cap on
+  time since the last locally originated `PING` so busy sessions still refresh
+  RTT sampling occasionally
 - add jitter so independently configured sessions do not repeatedly align on
   the same keepalive deadlines
 - avoid fixed per-stream keepalive timers or synchronized periodic sweeps when
@@ -899,17 +903,26 @@ Repository-default guidance:
 Repository-default keepalive jitter formula:
 
 - jitter window = `keepalive_interval / 8`
-- each keepalive deadline adds a random value uniformly distributed in
-  `[0, jitter_window]`
+- each directional-idle keepalive deadline subtracts a random value uniformly
+  distributed in `[0, jitter_window]` from its configured base
+- the resulting fire time therefore stays within
+  `[keepalive_interval - jitter_window, keepalive_interval]`
+- any slower local RTT-sampling cap MAY use the same bounded lead jitter shape
 - this prevents thundering-herd synchronization between sessions sharing the
   same interval configuration
 
 Repository-default keepalive deadline reset triggers:
 
-- any successfully parsed inbound frame resets the keepalive deadline
-- any successful outbound transport write resets the keepalive deadline
-- an active sender therefore never fires idle keepalive probes while it is
-  still producing outbound traffic
+- any successfully parsed inbound frame resets the read-idle keepalive
+  deadline
+- any successful outbound transport write resets the write-idle keepalive
+  deadline
+- any successfully originated local `PING` resets a repository-default
+  max-time-since-last-`PING` sampling deadline when that local policy exists
+- an active sender therefore suppresses write-idle keepalive probes while it
+  is still producing outbound traffic, but a repository-default
+  implementation MAY still emit an occasional RTT-sampling `PING` under a
+  separate local max-time-since-last-`PING` cap
 
 Repository-default keepalive timeout behavior:
 
