@@ -375,10 +375,13 @@ purposes but uses a separate input path so that advisory updates can be
 coalesced and merged into data-lane batches without competing for urgent
 control priority.
 
-Urgent control frames within a single batch SHOULD be ordered by the priority
-ranking listed above (most urgent first). When multiple frames target different
-streams, stream-scoped urgent frames within the same priority rank SHOULD be
-emitted in ascending stream-ID order for deterministic batch composition.
+Urgent control frames within a collected batch SHOULD be ordered by the
+priority ranking listed above (most urgent first). When multiple frames target
+different streams, stream-scoped urgent frames within the same priority rank
+SHOULD be emitted in ascending stream-ID order for deterministic batch
+composition. Repository-default implementations need not rescan urgent work
+beyond the current batch window just because a later enqueued frame has a
+higher control rank.
 
 Bulk `DATA` should not indefinitely starve control work.
 
@@ -498,26 +501,31 @@ Repository-default class hysteresis:
 - recompute class on empty-to-active transition or batch boundary rather than
   on every byte
 
-Within each class, use weighted deficit round robin (DRR) across active
-streams. Quiescent streams SHOULD remain outside the active competition set
-until they again have queueable work.
+Within each class, use retained fair scheduling across active streams.
+Weighted deficit round robin (DRR), WFQ, WF2Q+, or another equivalent
+virtual-time selector are all acceptable. Quiescent streams SHOULD remain
+outside the active competition set until they again have queueable work.
 
 Default values:
 
 - interactive quantum = one negotiated `max_frame_payload`
 - bulk quantum = four negotiated `max_frame_payload`
 - interactive quantum <= bulk quantum
-- active streams retain deficit between rounds
+- active streams retain deficit, virtual-time, or equivalent fairness state
+  between rounds
 
 When the session baseline is `group_fair`, the repository-default profile uses
-two-level DRR:
+two-level fair scheduling:
 
-- level 1: active groups compete by DRR
-- level 2: within the selected group, active streams compete by DRR
+- level 1: active groups compete by DRR or an equivalent retained virtual-time
+  selector
+- level 2: within the selected group, active streams compete by DRR or an
+  equivalent retained virtual-time selector
 - `stream_group = 0` is treated semantically as "this stream is its own
   default group"
 - when all active streams have `stream_group = 0`, implementations MAY
-  fast-path to plain per-stream DRR if resulting fairness is equivalent
+  fast-path to plain per-stream DRR or equivalent per-stream WFQ if resulting
+  fairness is equivalent
 
 When a stream changes class, clamp carried deficit into the range
 `[0, 2 * new_quantum]`.
@@ -568,7 +576,7 @@ Repository-default group cardinality bounds:
   example, `8` or `16`)
 - overflow groups beyond the cap are mapped into one fallback local bucket
   rather than creating unbounded scheduler state
-- the fallback bucket participates in the same DRR scheduling as explicit
+- the fallback bucket participates in the same fair scheduling as explicit
   groups
 - inactive or empty groups MAY remain outside the scheduler entirely until
   they again have eligible work
@@ -609,7 +617,8 @@ Repository-default scheduler decision order is:
 1. serve urgent control lane first, subject to urgent-lane hard caps and
    coalescing rules
 2. choose the next data-lane class using class-level fairness guards
-3. within that class, choose the next eligible group or stream using DRR
+3. within that class, choose the next eligible group or stream using DRR or an
+   equivalent retained virtual-time selector
 4. apply any one-shot small-burst bonus or aging adjustment for the chosen
    stream
 5. emit up to one class quantum of frame fragments for that stream while still
