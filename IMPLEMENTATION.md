@@ -630,11 +630,12 @@ It does not reset stream deficit or alter bytes already committed to local
 serialization order.
 
 A suggested implementation of this repository-default profile is a bounded
-active-set two-level virtual-time selector, for example a `WF2Q+`-style
-implementation:
+active-set two-level retained-state fair selector:
 
-- level 1: active groups compete within the current baseline policy
-- level 2: active streams compete within the selected group
+- level 1: active groups compete within the current baseline policy using
+  retained deficit or virtual-time state
+- level 2: active streams compete within the selected group using the same
+  kind of retained fair selector
 - same-stream FIFO is preserved
 - retained scheduler state is kept only for active or recently active groups
   and streams

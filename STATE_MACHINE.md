@@ -225,25 +225,32 @@ Local reader-side stop is separate:
 
 Abortive full close is `ABORT`.
 
-### 6.1 Close and error priority
+### 6.1 Terminal resolution and close visibility
 
 When multiple overlapping close conditions exist, implementations MUST surface
-errors or closure conditions to local API callers in a consistent priority
-order. Repository-default close/error priority is, from strongest to weakest:
+them to local API callers in a consistent way.
+
+Repository-default terminal resolution priority is, from strongest to weakest:
 
 1. `send_aborted` or `recv_aborted` — whole-stream abort error
 2. `send_reset` or `recv_reset` — direction-specific reset error
-3. `send_stop_seen` — peer stop has closed ordinary new writes before final
-   terminal resolution
-4. `recv_stop_sent` — local read stop has closed ordinary further reads before
-   final terminal resolution
-5. `send_fin` — graceful write-side completion
-6. `recv_fin` — graceful read-side EOF
+3. `send_fin` — graceful write-side completion
+4. `recv_fin` — graceful read-side EOF
 
-When both an abort and a reset are present, the abort error takes precedence.
-When both send-side and receive-side conditions exist at the same severity
-level, the send-side abort or reset takes precedence over the receive-side
-equivalent for combined error queries.
+`send_stop_seen` and `recv_stop_sent` are not terminal states. They are
+intermediate local-visibility conditions:
+
+- `send_stop_seen` closes ordinary new writes before later `send_fin`,
+  `send_reset`, or `send_aborted` becomes visible
+- `recv_stop_sent` closes ordinary further reads before later `recv_fin`,
+  `recv_reset`, or `recv_aborted` becomes visible
+
+Once a terminal condition becomes visible on that direction, it takes
+precedence over the earlier stop-only condition. When both an abort and a
+reset are present, the abort error takes precedence. When both send-side and
+receive-side terminal conditions exist at the same severity level, the
+send-side abort or reset takes precedence over the receive-side equivalent for
+combined error queries.
 
 ## 7. Unidirectional constraints
 
