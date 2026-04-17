@@ -18,25 +18,27 @@ transport.
 Multi-connection composition should be implemented above `zmux` by combining
 multiple independent `zmux` sessions in a separate project.
 
-## Document set
+## Recommended Reading Order
 
-1. [SPEC.md](./SPEC.md)  
-   Normative core protocol specification.
-2. [REGISTRY.md](./REGISTRY.md)  
-   Stable numeric assignments and default values.
-3. [ARCHITECTURE.md](./ARCHITECTURE.md)  
-   Architectural boundary, extension discipline, and versioning rules.
-4. [IMPLEMENTATION.md](./IMPLEMENTATION.md)  
-   Repository-default implementation guidance, scheduling profile, and
-   implementer checklist for single-link implementations.
-5. [CONFORMANCE.md](./CONFORMANCE.md)  
-   Interoperability and behavioral validation targets.
-6. [STATE_MACHINE.md](./STATE_MACHINE.md)  
-   Normative stream- and session-state transition reference.
-7. [API_SEMANTICS.md](./API_SEMANTICS.md)  
-   Recommended cross-language stream API contract and default stream-adapter
-   profile.
-8. [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md)  
+For understanding and implementation work, read the Markdown set in this
+order:
+
+1. [ARCHITECTURE.md](./ARCHITECTURE.md)
+   What belongs in `zmux`, what stays out, and how same-version features are
+   added.
+2. [SPEC.md](./SPEC.md)
+   Normative wire protocol and lifecycle rules.
+3. [REGISTRY.md](./REGISTRY.md)
+   Stable numeric assignments and defaults.
+4. [STATE_MACHINE.md](./STATE_MACHINE.md)
+   Compact half-state transition reference for implementers.
+5. [API_SEMANTICS.md](./API_SEMANTICS.md)
+   Cross-language stream and session semantics.
+6. [IMPLEMENTATION.md](./IMPLEMENTATION.md)
+   Repository-default implementation guidance and readiness order.
+7. [CONFORMANCE.md](./CONFORMANCE.md)
+   Validation targets and release-claim gates.
+8. [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md)
    Byte-level examples for codecs and tests.
 
 ## Machine-readable assets
@@ -104,51 +106,25 @@ for the repository-default build order and readiness gates.
 These assets do not override the Markdown specifications. If any discrepancy is
 found, the normative Markdown documents take precedence.
 
-## Current standardized scope
+## Compatibility Target
 
-The current standardized protocol surface is:
+The current public compatibility target in this repository is the complete
+current `zmux v1` surface:
 
 - `preface_ver = 1`
 - `proto_ver = 1`
-- core single-link `zmux v1`
+- single-link `zmux v1`
 - `open_metadata`
 - `priority_update`
+- correct negotiated handling of `priority_hints` and `stream_groups`
+- forward-compatible `EXT` envelope parsing and ignore/skip behavior
 
-### Repository-default library-surface defaults
+The architectural split between base wire rules and same-version extensions
+still matters, but it is not a separate public compatibility tier. In this
+repository, a release claiming `zmux v1` compatibility is expected to implement
+the whole currently standardized surface above, not only the base frame set.
 
-Repository-default library profiles are intentionally stricter than the widest
-API surface:
-
-- application `DATA` and new-stream creation begin only after peer preface
-  parsing completes, and after role resolution completes when `role = auto`
-- repository-default libraries support `role = auto` as part of core
-  establishment; higher-level deployment helpers MAY still default to explicit
-  `initiator` / `responder` roles on obviously asymmetric client/server paths
-- repository-default libraries SHOULD usually hide role choice from ordinary
-  callers: helpers built around obvious dial/accept paths should map directly
-  to explicit roles, while generic session constructors over an already
-  established duplex byte stream should default to `role = auto` unless the
-  caller explicitly overrides it
-- repository-default API guidance distinguishes semantic operation families
-  from any one concrete naming scheme
-- bindings MAY expose a stream-style convenience profile, a fuller control
-  surface, or both
-- repository-default stream-style convenience profiles SHOULD use mainstream
-  names such as `Close()`, `CloseRead()`, `CloseWrite()`, and `Reset()`; the
-  primary explicit whole-stream abort entry, when exposed in that surface,
-  SHOULD carry a numeric code together with optional reason text
-- fuller control surfaces MAY expose caller-selected codes and diagnostics on
-  `STOP_SENDING`, `RESET`, `ABORT`, `GOAWAY`, or `CLOSE`
-- repository-default API surfaces SHOULD keep one primary spelling per
-  operation family inside each exposed surface; when a numeric stream
-  identifier is exposed, `StreamID()` is the repository-default name
-- repository-default bindings SHOULD avoid introducing custom primary stream
-  verbs when established stream/connection-style names already express the
-  same behavior clearly
-
-## Minimum core interoperability
-
-A minimal core implementation is expected to support:
+The base wire contract still includes:
 
 - session preface parsing and negotiation
 - explicit `initiator` / `responder` role negotiation
@@ -166,23 +142,6 @@ A minimal core implementation is expected to support:
 - `GOAWAY`
 - `CLOSE`
 - `DATA|FIN`
-
-Core `zmux v1` therefore includes explicit half-close support:
-
-- write-half close by `DATA|FIN`
-- read-side stop by `STOP_SENDING` as the directional reader-side close
-  control
-- send-half abort by `RESET`
-- full-stream abort by `ABORT`
-
-Beyond the minimum core interoperability surface, the current document set also
-defines:
-
-- parsing the `EXT` frame envelope and ignoring unknown `EXT` subtypes
-- first-`DATA` open-time metadata carriage through `OPEN_METADATA`
-- priority hints
-- stream-group hints
-- `priority_update`
 
 ### Capability and carriage summary
 
@@ -222,14 +181,36 @@ Support for specific standardized `EXT` subtypes is claim-specific. Support for
 the `EXT` frame envelope itself is part of forward-compatible core behavior.
 The `EXT` envelope does not implicitly open streams in `zmux v1`.
 
-### Claims and implementation profiles
+### Repository-default library surfaces
+
+Repository-default library guidance is intentionally stricter than the widest
+possible binding surface:
+
+- application `DATA` and new-stream creation begin only after peer preface
+  parsing completes, and after role resolution completes when `role = auto`
+- repository-default libraries support `role = auto` as part of ordinary
+  establishment; higher-level deployment helpers MAY still default to explicit
+  `initiator` / `responder` roles on obviously asymmetric dial/accept paths
+- repository-default API guidance distinguishes semantic operation families
+  from any one concrete naming scheme
+- bindings MAY expose an ordinary stable stream/session surface, an optional
+  native or fuller-control surface, or both
+- each exposed surface SHOULD keep one primary spelling per operation family
+- when a numeric stream identifier is exposed, `StreamID()` is the
+  repository-default spelling
+- when a binding exposes whole-stream abort, it SHOULD carry a numeric code and
+  MAY additionally carry reason text or structured diagnostics
+- bindings SHOULD avoid inventing multiple co-equal primary verbs for the same
+  action in the same layer
+
+### Claims and profiles
 
 The document set uses three related naming layers:
 
 | Layer | Names used in this repository | Purpose |
 | --- | --- | --- |
 | repository claims | `zmux-wire-v1`, `zmux-api-semantics-profile-v1`, `zmux-stream-adapter-profile-v1`, `zmux-open_metadata`, `zmux-priority_update` | declare which standardized wire or API surfaces an implementation claims |
-| implementation profiles | `zmux-core-v1`, `zmux-full-v1`, `zmux-reference-profile-v1` | summarize expected implementation breadth |
+| implementation profiles | `zmux-v1`, `zmux-reference-profile-v1` | summarize public compatibility breadth |
 | negotiated capability bits | `priority_hints`, `stream_groups`, `open_metadata`, `priority_update` | control on-wire semantics and carriage paths during negotiation |
 
 Repository-level claims are made separately for:
@@ -240,16 +221,15 @@ Repository-level claims are made separately for:
 - `zmux-open_metadata`
 - `zmux-priority_update`
 
-Implementation profile levels:
+Separate claims remain useful for incremental bring-up, targeted testing, and
+partial internal milestones. Public compatibility and release claims should use
+one of these implementation profiles:
 
-- `zmux-core-v1`: implements the mandatory single-link core wire contract and
-  forward-compatible ignore/skip behavior for unsupported same-version
-  extensions, including explicit-role and `role = auto` establishment
-- `zmux-full-v1`: implements `zmux-core-v1` plus all currently active
-  standardized optional same-version surfaces in this repository, currently
-  `open_metadata`, `priority_update`, and the correct negotiated handling of
-  `priority_hints` and `stream_groups`
-- `zmux-reference-profile-v1`: implements `zmux-full-v1` plus the
+- `zmux-v1`: implements the complete currently standardized `zmux v1` surface
+  in this repository, including the base wire contract, `open_metadata`,
+  `priority_update`, and the correct negotiated handling of `priority_hints`
+  and `stream_groups`
+- `zmux-reference-profile-v1`: implements `zmux-v1` plus the
   repository-default API, sender, memory, liveness, and scheduling guidance
   documented in [API_SEMANTICS.md](./API_SEMANTICS.md) and
   [IMPLEMENTATION.md](./IMPLEMENTATION.md)

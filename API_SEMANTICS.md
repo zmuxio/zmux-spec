@@ -1,10 +1,12 @@
 # zmux API Semantics
 
-This document defines the repository-level default cross-language stream
-contract.
+This document defines the repository-level default cross-language stream and
+session contract.
 
 Its purpose is to give independent language bindings one common high-level
-stream contract so that `zmux` behaves consistently across implementations.
+semantic model while keeping exact API spellings flexible. It therefore
+distinguishes operation families from concrete names, and it distinguishes an
+ordinary stable surface from optional native or fuller-control surfaces.
 
 ## 1. Stream model
 
@@ -363,8 +365,9 @@ Default close mapping:
   direction
 - fuller read-stop control, if exposed -> emit `STOP_SENDING(code)` with
   optional diagnostics
-- `Reset(code)` -> emit `RESET(code)`; fuller reset control MAY additionally
-  carry optional diagnostics when that surface is exposed
+- one primary send-reset or send-cancel entry -> emit `RESET(code)`; fuller
+  send-reset control MAY additionally carry optional diagnostics when that
+  surface is exposed
 - the primary whole-stream abort entry in a convenience surface -> emit
   `ABORT(code)` and carry optional diagnostic text when that surface carries
   one
@@ -397,21 +400,22 @@ A binding MAY present those families through:
 ### 6.3 Stream-style convenience profile
 
 The repository-default stream-style convenience profile intentionally follows
-mainstream stream and connection-style surfaces:
+ordinary stream and connection-style surfaces. It SHOULD expose one primary
+ordinary spelling for:
 
-- use `Close()` for ordinary full stream close
-- use `CloseWrite()` for graceful send-side completion
-- use `CloseRead()` for reader-side stop
-- use `Reset(code)` for send-side abortive termination
-- avoid inventing new primary verbs when established stream-style names are
-  already sufficient
+- full local stream close
+- graceful send-half completion
+- read-side stop
+- send-side reset or cancel with code
+- byte-stream I/O
+- stream ID and metadata observation when exposed
 
-Recommended stream-style spellings are:
+Representative spellings include:
 
 - `Close()` for full local stream close
 - `CloseWrite()` for graceful send-half completion
 - `CloseRead()` for reader-side stop
-- `Reset(code)` aborts only the local send half
+- one primary send-reset or send-cancel entry carrying a code
 - `Read()` / `Write()` for byte-stream I/O
 - `StreamID()` for the numeric wire ID when exposed
 - `OpenInfo()` for opener-supplied opaque open-time bytes when exposed
@@ -435,8 +439,8 @@ same semantic action rather than as distinct lifecycle operations.
 Repository-default stream-style profile intentionally treats `CloseRead()` as
 the one convenience read-side stop operation. Choosing a different
 `STOP_SENDING` code does not create a second lifecycle action in the way that
-`Reset(code)` does for the local send half; it only changes the code value
-attached to the same read-stop action.
+the primary send-reset entry does for the local send half; it only changes the
+code value attached to the same read-stop action.
 
 ### 6.4 Full-control protocol surface
 
@@ -515,8 +519,9 @@ When both are exposed:
 - `CloseRead()` is the repository-default convenience shorthand for read-side
   stop with code `CANCELLED`
 - `CloseWrite()` remains graceful completion
-- `Reset(code)` is the repository-default convenience shorthand for a
-  send-side reset using that code when no extra diagnostics are supplied
+- the primary send-reset entry in the convenience surface is the
+  repository-default shorthand for a send-side `RESET(code)` when no extra
+  diagnostics are supplied
 - the primary explicit whole-stream abort entry in the convenience surface is
   a shorthand for `ABORT(code)` with optional reason text when that surface
   carries one
@@ -526,6 +531,27 @@ When both are exposed:
 Bindings SHOULD still keep one primary ordinary spelling per operation family
 inside each exposed surface, rather than presenting multiple co-equal names
 for the same action in that same layer.
+
+### 6.7 Optional native and state-observation surface
+
+Bindings MAY additionally expose non-blocking native or fuller-control state
+queries such as:
+
+- whether a stream was opened locally or by the peer
+- whether a stream is bidirectional or unidirectional
+- whether the local read or write half has already left the open state
+
+When such queries are exposed, repository-default semantics are:
+
+- `ReadClosed()` and `WriteClosed()` report committed local lifecycle state, not
+  whether all already-buffered bytes have been drained
+- `ReadClosed()` therefore MAY become `true` as soon as local read-stop or peer
+  `FIN` / `RESET` / `ABORT` becomes visible in shared stream state, even if one
+  later `Read()` can still drain already-buffered pre-terminal bytes according
+  to the read rules in Section 3
+- `WriteClosed()` likewise becomes `true` when the local send half has left the
+  open state, not only after queued bytes have necessarily been transport-
+  submitted
 
 ## 7. Error mapping
 
@@ -720,7 +746,7 @@ these capability families:
 - opening bidirectional and unidirectional local streams
 - open-time options when open metadata or initial advisory hints are supported
 - ordinary graceful session shutdown
-- terminal session abort
+- terminal session close carrying an error or application-defined close cause
 - waiting for final session termination
 - non-blocking local session inspection when exposed
 - optional one-shot open-and-send conveniences when they fit the host-language
@@ -730,33 +756,52 @@ Repository-default session design likewise distinguishes:
 
 - a stream-style session convenience profile for ordinary open, accept, close,
   and wait usage
-- an optional fuller session-control surface when the binding wants more
-  direct control over graceful drain or terminal diagnostic-bearing shutdown
+- an optional native or fuller session-control surface when the binding wants
+  more direct control over graceful drain, terminal diagnostic-bearing
+  shutdown, or richer local observation
 
-If a binding chooses a stream-style session profile, recommended names are:
+If a binding exposes an ordinary session surface, it SHOULD provide one
+primary spelling for:
+
+- accepting bidirectional and unidirectional peer-opened streams
+- opening bidirectional and unidirectional local streams
+- open-time options when supported
+- optional one-shot open-and-send helpers when they fit the host-language
+  surface
+- graceful session shutdown
+- terminal session close carrying an error or application-defined close cause
+- waiting for final session termination
+- non-blocking local session inspection when exposed
+
+Representative spellings include:
 
 - `AcceptStream(...)` / `AcceptUniStream(...)`
 - `OpenStream(...)` / `OpenUniStream(...)`
 - `OpenStreamWithOptions(...)` / `OpenUniStreamWithOptions(...)`
-  when open-time metadata or initial advisory hints are supported
 - `OpenAndSend(...)` / `OpenAndSendWithOptions(...)`
 - `OpenUniAndSend(...)` / `OpenUniAndSendWithOptions(...)`
 - `Close()` for ordinary session shutdown
-- `Abort(err)` for terminal session abort
-- `Wait(...)` to observe final session termination
-- `Closed()`, `State()`, and `Stats()` for non-blocking local session
-  inspection when exposed
+- one primary terminal session error-close helper
+- `Wait(...)` / `AwaitTermination(...)` to observe final session termination
+- `Closed()` / `IsClosed()`, `State()`, and `Stats()` for non-blocking local
+  session inspection when exposed
 
 Exact session API spellings are not part of the API-semantics claim. Bindings
 SHOULD still keep one primary spelling per capability family inside each API
 layer rather than standardizing multiple verb families for the same action.
 
-A fuller session-control surface MAY additionally expose direct controls
-corresponding to:
+A native or fuller session-control surface MAY additionally expose direct
+controls or observation corresponding to:
 
 - bounded graceful drain initiation
 - terminal session close with caller-selected code and optional diagnostics
 - local observation of close cause
+- protocol ping round-trip measurement
+- direct `GOAWAY` initiation with caller-selected watermarks and optional
+  diagnostics
+- peer `GOAWAY` / `CLOSE` cause queries
+- local and peer preface observation
+- negotiated-parameter observation
 
 Exact spellings for those fuller session controls are intentionally not
 standardized by this document.
@@ -771,8 +816,9 @@ Repository-default session-lifecycle behavior is:
   remaining send-side work; in particular, peer-opened streams with no
   outstanding local send work, and fully terminal streams retained only for
   unread buffered data, need not delay `Close()`
-- `Abort(err)` is stronger than `Close()` and SHOULD commit terminal session
-  shutdown without waiting for graceful drain
+- the primary terminal session error-close helper is stronger than `Close()`
+  and SHOULD commit terminal session shutdown without waiting for graceful
+  drain
 - once terminal session state becomes visible locally, blocked accept, open,
   read, and write operations SHOULD be woken promptly against that committed
   state; final `Wait(...)` / `Closed()` completion may follow after close-path
@@ -908,7 +954,7 @@ conformant API surface:
 - `CloseWrite()` -> `DATA|FIN`
 - `CloseRead()` -> `STOP_SENDING(CANCELLED)` as the repository-default
   receiver-side close control for one stream direction
-- `Reset(code)` -> `RESET(code)`
+- one primary send-reset or send-cancel entry -> `RESET(code)`
 - one primary explicit whole-stream abort helper, if exposed -> `ABORT(code)`
   with optional DIAG-TLV `debug_text`
 - lower-level read-stop control, if exposed -> `STOP_SENDING(code)` with
@@ -931,8 +977,8 @@ Default adapter behavior:
 - adapter surfaces SHOULD expose `CloseWrite()` separately for graceful
   send-half completion
 - adapter surfaces SHOULD expose `CloseRead()` separately for reader-side stop
-- adapter surfaces SHOULD expose `Reset(code)` for send-side abortive
-  cancellation
+- adapter surfaces SHOULD expose one primary send-reset or send-cancel entry
+  for send-side abortive cancellation
 - adapter surfaces SHOULD expose one primary explicit whole-stream abort
   helper that can carry code and optional reason text
 - adapter surfaces MAY additionally expose a fuller control layer for caller-
@@ -1016,7 +1062,7 @@ Recommended operation choices:
 - local side no longer wants to read, but the opposite direction may still
   matter -> `CloseRead()`
 - local send half failed, but the opposite direction may still be useful ->
-  `Reset(code)`
+  the primary send-reset or send-cancel entry
 - the local application is done with the stream as a whole -> `Close()`
 - the whole stream is no longer meaningful and the peer should receive an
   application-defined terminal error -> the primary explicit whole-stream
@@ -1031,6 +1077,6 @@ Bindings SHOULD document that:
 - `CloseWrite()` finishes only the local send half
 - `CloseRead()` stops local interest in further inbound bytes for that
   direction and emits `STOP_SENDING(CANCELLED)` by default
-- `Reset()` aborts only the local send half
+- the primary send-reset or send-cancel entry aborts only the local send half
 - the primary explicit whole-stream abort entry is stronger than `Close()` and
   should surface numeric code plus optional reason text when it is exposed

@@ -2,6 +2,9 @@
 
 This document assigns stable numeric values for `zmux v1`.
 
+It covers both the base wire contract and the currently standardized
+same-version surfaces in this repository.
+
 It is organized by common implementation lookup order:
 
 1. session and preface constants

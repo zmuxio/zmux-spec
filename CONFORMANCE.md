@@ -5,9 +5,10 @@ This document is not a language-specific test suite.
 Its purpose is to define the behavioral surface that independent
 implementations should validate before claiming `zmux` interoperability.
 
-## 1. Core wire interoperability
+## 1. Wire interoperability
 
-At minimum, a conforming core implementation should interoperate on:
+At minimum, a conforming implementation should interoperate on the base wire
+contract:
 
 - session preface parsing and emission
 - `proto_ver` negotiation
@@ -27,7 +28,7 @@ At minimum, a conforming core implementation should interoperate on:
 - `GOAWAY`
 - `CLOSE`
 
-Core conformance includes parsing, validation, and receiver-side handling of
+Base-wire conformance includes parsing, validation, and receiver-side handling of
 `BLOCKED`. Proactive emission of `BLOCKED` remains an implementation policy
 choice rather than a wire-compatibility requirement.
 
@@ -146,23 +147,26 @@ Conformance claims should be made separately for:
 
 Repository-level implementation profiles are:
 
-- `zmux-core-v1`: mandatory single-link core wire interoperability plus forward
-  extension tolerance, including explicit-role and `role = auto`
-  establishment
-- `zmux-full-v1`: `zmux-core-v1` plus every currently active standardized
-  same-version optional surface in this repository, including `open_metadata`,
-  `priority_update`, and the correct negotiated handling of `priority_hints`
-  and `stream_groups`
-- `zmux-reference-profile-v1`: `zmux-full-v1` plus the repository-default API,
+- `zmux-v1`: the complete currently standardized `zmux v1` surface in this
+  repository, including the base wire contract, forward extension tolerance,
+  `open_metadata`, `priority_update`, and the correct negotiated handling of
+  `priority_hints` and `stream_groups`
+- `zmux-reference-profile-v1`: `zmux-v1` plus the repository-default API,
   sender, memory, liveness, and scheduling guidance
 
-### 3.3 Profile compatibility rule
+Separate repository claims remain useful for incremental bring-up, targeted
+testing, and internal release gates. Public compatibility claims should use
+`zmux-v1` or `zmux-reference-profile-v1`, not a reduced `core` tier.
 
-Profile compatibility rule:
+### 3.3 Compatibility rule
 
-- `zmux-full-v1` implementations MUST interoperate cleanly with
-  `zmux-core-v1` peers by negotiating and using only the capabilities both
-  sides share
+Compatibility rule:
+
+- `zmux-v1` implementations MUST interoperate cleanly with each other by
+  negotiating and using only the capabilities both sides share on the wire
+- a release that intentionally lacks one of the currently standardized
+  same-version surfaces in this repository SHOULD NOT claim public
+  `zmux-v1` compatibility
 - `zmux-reference-profile-v1` does not change wire requirements; it narrows
   local behavior toward the repository-default guidance
 
@@ -204,11 +208,10 @@ implementation planning and release review.
 | `zmux-priority_update` | satisfy `zmux-wire-v1`; negotiate `priority_update`; process `stream_priority` and `stream_group`; ignore `open_info` inside `PRIORITY_UPDATE`; ignore unknown advisory TLVs; ignore duplicate singleton advisory updates as one dropped update |
 | `zmux-api-semantics-profile-v1` | document and implement the repository-default semantic operation families from [API_SEMANTICS.md](./API_SEMANTICS.md), including full local close helper, graceful send-half completion, read-side stop, send-side reset, whole-stream abort, structured error surfacing, open/cancel behavior, and accept visibility rules; document whether the binding exposes a stream-style convenience profile, a full-control protocol surface, or both; exact API spellings are not required |
 | `zmux-stream-adapter-profile-v1` | satisfy the stream-adapter subset from [API_SEMANTICS.md](./API_SEMANTICS.md), including bidirectional/unidirectional open and accept mapping, one consistent convenience mapping or fuller documented control layer or both, and documented limits/non-goals |
-| `zmux-core-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass core stream-lifecycle scenarios; pass core flow-control scenarios; pass core session-lifecycle scenarios |
-| `zmux-full-v1` | satisfy `zmux-core-v1`; satisfy every currently active same-version optional surface in this repository, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups`; interoperate cleanly with `zmux-core-v1` peers by using only shared negotiated capabilities |
-| `zmux-reference-profile-v1` | satisfy `zmux-full-v1`; satisfy the reference-profile claim gate above; meet the quality behaviors to observe closely enough to preserve the documented repository-default sender, memory, liveness, API, and scheduling behavior |
+| `zmux-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass stream-lifecycle scenarios; pass flow-control scenarios; pass session-lifecycle scenarios; satisfy every currently active same-version optional surface in this repository, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups` |
+| `zmux-reference-profile-v1` | satisfy `zmux-v1`; satisfy the reference-profile claim gate above; meet the quality behaviors to observe closely enough to preserve the documented repository-default sender, memory, liveness, API, and scheduling behavior |
 
-## 4. Core stream-lifecycle scenarios
+## 4. Stream-lifecycle scenarios
 
 At minimum, test these stream-level cases:
 
@@ -294,7 +297,7 @@ At minimum, test these stream-level cases:
 - `OPEN_METADATA` bytes not consuming stream or session flow-control windows
   even on a zero-credit opening frame
 
-## 5. Core flow-control scenarios
+## 5. Flow-control scenarios
 
 At minimum, test:
 
@@ -330,7 +333,7 @@ At minimum, test:
 - session `MAX_DATA` replenishment triggered immediately when remaining
   advertised session space falls below two negotiated frame payloads
 
-## 6. Core session-lifecycle scenarios
+## 6. Session-lifecycle scenarios
 
 At minimum, test:
 
@@ -389,11 +392,12 @@ part of interoperability quality validation:
   earlier cancelled stream ID on the wire when a later same-class ID has
   already reached `opening-frame-committed`, rather than creating a skipped-ID
   gap
-- repository-default stream-style profiles, when exposed, using mainstream
-  names such as `Close()`, `CloseRead()`, `CloseWrite()`, and `Reset()`, with
-  `Close()` documented as a full local close helper rather than an
-  undocumented send-half-only shorthand, while fuller control surfaces remain
-  free to expose more direct protocol controls and caller-selected codes
+- repository-default stream-style profiles, when exposed, using one clear
+  ordinary spelling for full close, read-side stop, graceful send-half
+  completion, and send-side reset/cancel, with `Close()` documented as a full
+  local close helper rather than an undocumented send-half-only shorthand,
+  while fuller control surfaces remain free to expose more direct protocol
+  controls and caller-selected codes
 - repository-default bulk protection preserving a bounded minimum class share
   when bulk and interactive work are both continuously active
 - repository-default implementations detecting and shedding abusive empty-frame

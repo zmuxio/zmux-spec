@@ -21,6 +21,10 @@ This document mixes two kinds of guidance:
 - repository-default reference profile choices for sender scheduling, queue
   sizing, and other local policy details
 
+This guidance assumes the complete current `zmux-v1` surface described in this
+repository. It does not treat `open_metadata`, `priority_update`,
+`priority_hints`, or `stream_groups` as a separate public compatibility tier.
+
 Where this document says **repository-default**, alternative local tuning is
 allowed as long as wire behavior and documented API semantics remain
 compatible.
@@ -159,8 +163,8 @@ Repository-default send-credit rollback rules are:
 
 - reserved `DATA` bytes still in a withdrawable local state MUST release their
   session and stream send-credit reservations if they are discarded due to
-  peer `STOP_SENDING`, local `Reset`, local `CloseWithError(...)`, peer
-  `GOAWAY` reclaim, or session shutdown
+  peer `STOP_SENDING`, a local send-reset action, a local whole-stream abort
+  action, peer `GOAWAY` reclaim, or session shutdown
 - the same rollback rule applies to reserved `DATA` discarded while a stream
   is still provisional or while the stream has reached
   `opening-frame-committed`, as long as those bytes are still withdrawable by
@@ -188,8 +192,8 @@ behavior should match this sequence:
 | peer `RESET` becomes visible | commit receive-side terminal state -> discard unread inbound bytes for that direction -> restore released session receive budget -> coalesce or schedule resulting `MAX_DATA` work -> wake blocked readers and any local waiters that depend on that half |
 | peer `ABORT` becomes visible | commit full-stream terminal state -> discard unread inbound bytes -> restore released session receive budget -> cancel or detach queued local work that is no longer sendable and release any still-withdrawable reserved send credit -> wake blocked readers and writers |
 | local `CloseRead()` | commit local read-stopped state -> discard unread inbound bytes -> restore released session receive budget -> enqueue `STOP_SENDING(CANCELLED)` if stream-local signalling remains valid -> wake blocked local readers |
-| local `Reset(code)` | commit local send terminal state -> discard unsent application bytes for that outbound half -> release any still-withdrawable reserved send credit -> enqueue `RESET(code)` if stream-local signalling remains valid -> wake blocked local writers |
-| local `CloseWithError(...)` | commit full local terminal state -> discard unread inbound bytes and unsent outbound bytes -> restore receive budget and release reserved send credit -> enqueue `ABORT(code)` with optional diagnostics if stream-local signalling remains valid -> wake blocked readers, writers, and accept/open waiters tied to that stream |
+| local primary send-reset / send-cancel entry | commit local send terminal state -> discard unsent application bytes for that outbound half -> release any still-withdrawable reserved send credit -> enqueue `RESET(code)` if stream-local signalling remains valid -> wake blocked local writers |
+| local primary whole-stream abort entry | commit full local terminal state -> discard unread inbound bytes and unsent outbound bytes -> restore receive budget and release reserved send credit -> enqueue `ABORT(code)` with optional diagnostics if stream-local signalling remains valid -> wake blocked readers, writers, and accept/open waiters tied to that stream |
 | peer `GOAWAY` reclaim of a never-peer-visible local stream | commit local failure for that stream object -> discard queued outbound data -> release reserved send credit -> fail local open/write waiters -> do not wait for explicit peer `ABORT(REFUSED_STREAM)` |
 | session `CLOSE` or underlying transport failure | commit session terminal state first -> mark all remaining streams failed according to session-close semantics -> discard queued outbound and unread inbound buffers -> restore released receive budget locally and release reserved send credit -> wake all blocked session, stream, open, and accept waiters |
 
