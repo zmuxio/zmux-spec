@@ -422,6 +422,10 @@ Repository-default capacities:
 - `session_data_hwm = max(4 MiB, 4 * per_stream_data_hwm)`
 - low watermarks = 50% of the corresponding high watermark
 - `urgent_lane_cap = max(64 KiB, 8 * negotiated max_control_payload_bytes)`
+- a tracked-session-memory release should wake write waiters whenever retained
+  memory decreased and the new value is below the high-pressure threshold; the
+  wake is not limited to releases whose previous value was already at or above
+  that threshold, because write admission projects `current + requested` bytes
 
 Urgent control handling should still be bounded.
 
@@ -1038,6 +1042,22 @@ Repository-default implementations should avoid:
     flow-control state
   - rapid open-then-abort or open-then-reset churn intended to bypass
     concurrent stream limits or exhaust allocators
+
+Repository-default no-op control accounting should treat ignored late terminal
+controls as no-op control traffic. In particular, `RESET`, `STOP_SENDING`, or
+`ABORT` that targets an already terminal/effectively terminal live stream and
+does not change stream state should count toward the same rolling no-op control
+budget as other ignored control frames. Conversely, a terminal control that
+does materially change stream state should clear accumulated no-op control
+budget before any following ignored control frame is judged.
+
+Repository-default visible terminal churn detection is intentionally narrower
+than ordinary terminal-state accounting. It should count a peer-owned stream at
+most once, and only when the stream has become application-visible but has not
+yet been accepted by the application and reaches fully terminal state. Streams
+already accepted by the application, local-opened streams, and bidirectional
+streams that only receive a one-sided `RESET` should not count as visible
+open-then-terminal churn.
 
 Repository-default hidden churn detection:
 

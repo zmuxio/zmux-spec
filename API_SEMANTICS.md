@@ -171,9 +171,11 @@ Event payload fields SHOULD include:
 - whether the stream is application-visible at the time of the event
 
 Event handlers SHOULD be invoked synchronously without holding internal session
-locks so that handler logic cannot deadlock the session. Handler failures
-(including panics in languages that support them) SHOULD be silently recovered
-rather than propagated as session errors.
+locks so that handler logic cannot deadlock the session. Ordinary handler
+failures, such as recoverable exceptions or language-level panics, SHOULD be
+silently recovered rather than propagated as session errors. Bindings SHOULD
+NOT swallow host-language fatal runtime failures or process-fatal signals;
+those are outside the event best-effort contract.
 
 Repository-default event surfaces are opt-in. Ordinary session and stream
 operations MUST NOT depend on an event handler being registered.
@@ -254,12 +256,13 @@ Default write behavior:
 - it does not prove the peer application has accepted the stream
 - repository-default ordinary `Write` with zero application bytes and no final
   intent SHOULD be a local no-op; it should not by itself force an opening
-  `DATA` frame or make a stream peer-visible
+  `DATA` frame, make a stream peer-visible, or observe write-side terminal
+  state
 - a zero-length `WriteFinal(...)` / `WritevFinal(...)`, when those helpers are
   exposed, SHOULD behave like `CloseWrite()` and therefore still finish the
   local send half with `DATA|FIN`
-- after local `CloseWrite` or repository-default `Close`, further `Write`
-  calls should fail immediately with a write-side-closed error
+- after local `CloseWrite` or repository-default `Close`, further material
+  `Write` calls should fail immediately with a write-side-closed error
 - after local `CloseWrite` has committed graceful send completion, later local
   use of the primary send-reset or send-cancel entry SHOULD also fail locally
   and SHOULD NOT retroactively replace an already-queued graceful `DATA|FIN`
@@ -346,6 +349,16 @@ Repository-default capacities:
   `1s`
 - repository-default hidden open-then-`ABORT` churn threshold:
   `128`
+- repository-default ignored terminal-control no-op handling:
+  repeated `RESET`, `STOP_SENDING`, or `ABORT` frames that no longer change
+  effective stream state count against the no-op control budget; an effective
+  terminal control that does change stream state clears accumulated no-op
+  control budget
+- repository-default visible terminal churn handling:
+  count only not-yet-accepted peer-owned application-visible streams that reach
+  fully terminal state; do not count streams after the application has accepted
+  them, local-opened streams, or bidirectional streams that have only a
+  one-sided `RESET`
 - repository-default provisional-open soft cap per stream class:
   `max(16, max_pending_unaccepted_streams / 4)` when such a stream-count limit
   exists locally
@@ -861,6 +874,10 @@ Repository-default session-lifecycle behavior is:
   initiation; bindings SHOULD provide a way to observe the non-graceful
   terminal cause, either as the wait result or through a documented
   accessor/helper for the terminal cause
+- once a terminal session cause has been committed, later transport close
+  noise, writer shutdown failures, interrupt cleanup, or repeated local close
+  attempts MUST NOT replace that cause; a graceful terminal close likewise
+  MUST NOT acquire a non-graceful cause from late cleanup noise
 - `Closed()` becomes true only after final terminal completion
 - `State()` and `Stats()` are local observation helpers; they MUST NOT be
   treated as completion acknowledgements
