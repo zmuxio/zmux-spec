@@ -21,8 +21,8 @@ This document mixes two kinds of guidance:
 - repository-default reference profile choices for sender scheduling, queue
   sizing, and other local policy details
 
-This guidance assumes the complete current `zmux-v1` surface described in this
-repository. It does not treat `open_metadata`, `priority_update`,
+This guidance assumes the complete current `zmux-full-v1` surface described in
+this repository. It does not treat `open_metadata`, `priority_update`,
 `priority_hints`, or `stream_groups` as a separate public compatibility tier.
 
 Where this document says **repository-default**, alternative local tuning is
@@ -428,6 +428,11 @@ Urgent control handling should still be bounded.
 Repository-default guidance:
 
 - keep a hard cap for urgent control memory as well as ordinary data memory
+- treat inability to retain non-`CLOSE` urgent control after coalescing or
+  deduplication as an internal session failure, not as permission to leave
+  local terminal state committed while the peer never receives the signal; if
+  the fallback `CLOSE` is also rejected by an extreme hard cap, finish local
+  failed-session cleanup without that final frame
 - coalesce or deduplicate queued control work where only the newest value
   matters:
   - keep only the newest session-scoped `MAX_DATA`

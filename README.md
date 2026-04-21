@@ -210,7 +210,7 @@ The document set uses three related naming layers:
 | Layer | Names used in this repository | Purpose |
 | --- | --- | --- |
 | repository claims | `zmux-wire-v1`, `zmux-api-semantics-profile-v1`, `zmux-stream-adapter-profile-v1`, `zmux-open_metadata`, `zmux-priority_update` | declare which standardized wire or API surfaces an implementation claims |
-| implementation profiles | `zmux-v1`, `zmux-reference-profile-v1` | summarize public compatibility breadth |
+| implementation profiles | `zmux-full-v1`, `zmux-reference-profile-v1` | summarize public compatibility breadth |
 | negotiated capability bits | `priority_hints`, `stream_groups`, `open_metadata`, `priority_update` | control on-wire semantics and carriage paths during negotiation |
 
 Repository-level claims are made separately for:
@@ -225,11 +225,11 @@ Separate claims remain useful for incremental bring-up, targeted testing, and
 partial internal milestones. Public compatibility and release claims should use
 one of these implementation profiles:
 
-- `zmux-v1`: implements the complete currently standardized `zmux v1` surface
+- `zmux-full-v1`: implements the complete currently standardized `zmux v1` surface
   in this repository, including the base wire contract, `open_metadata`,
   `priority_update`, and the correct negotiated handling of `priority_hints`
   and `stream_groups`
-- `zmux-reference-profile-v1`: implements `zmux-v1` plus the
+- `zmux-reference-profile-v1`: implements `zmux-full-v1` plus the
   repository-default API, sender, memory, liveness, and scheduling guidance
   documented in [API_SEMANTICS.md](./API_SEMANTICS.md) and
   [IMPLEMENTATION.md](./IMPLEMENTATION.md)

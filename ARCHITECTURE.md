@@ -245,14 +245,14 @@ specification.
 
 The current protocol family target is:
 
-- core single-link `zmux v1`
+- single-link `zmux v1` base protocol
 - `open_metadata`
 - `priority_update`
 
 The architectural split between base wire rules and same-version extensions
 remains important, but this repository's public compatibility target is the
-complete current `zmux-v1` surface above rather than separate public `core`
-and `full` release tiers.
+complete current `zmux-full-v1` surface above rather than a pair of public
+`core` / `full` compatibility tiers.
 
 The current target does not include multi-connection session aggregation,
 protocol retransmission, or protocol reordering recovery.

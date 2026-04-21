@@ -8,7 +8,7 @@ state transitions so independent implementations do not invent incompatible
 local interpretations.
 
 It should be read as the stream-lifecycle companion to the complete current
-`zmux-v1` surface, including the opening and terminal rules used by the active
+`zmux-full-v1` surface, including the opening and terminal rules used by the active
 same-version features in this repository.
 
 ## 1. Model

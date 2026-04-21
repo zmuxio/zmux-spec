@@ -4,7 +4,7 @@ This document is the normative core protocol definition for **`zmux v1`**.
 
 Use it together with [ARCHITECTURE.md](./ARCHITECTURE.md),
 [REGISTRY.md](./REGISTRY.md), and [CONFORMANCE.md](./CONFORMANCE.md). In this
-repository, public `zmux-v1` compatibility means this core specification plus
+repository, public `zmux-full-v1` compatibility means this core specification plus
 the currently standardized same-version surfaces and their negotiated handling.
 
 ## 1. Scope and transport model

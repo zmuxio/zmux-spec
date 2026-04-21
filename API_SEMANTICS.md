@@ -154,10 +154,10 @@ require that extra event surface.
 Repository-default implementations MAY expose an optional lifecycle event
 surface for observability. When provided, the recommended event types are:
 
-- `stream_opened`: a local stream has reached `opening-frame-committed` and
-  its wire-visible stream ID is now assigned; this event fires before the
-  stream becomes transport-submitted and before later peer-originated evidence,
-  if any, is observed
+- `stream_opened`: a local stream has become `peer-visible`; repository-default
+  implementations typically fire this once the opener has entered the local
+  transport-submission path or once later peer-originated evidence for that
+  exact stream ID has been observed
 - `stream_accepted`: a peer-opened stream has been dequeued from the accept
   queue and returned to the application
 - `session_closed`: the session has left the open or draining state
@@ -316,6 +316,12 @@ Repository-default capacities:
 - session data low watermark: 50% of the session high watermark
 - urgent-lane hard cap:
   `max(64 KiB, 8 * negotiated max_control_payload_bytes)`
+- if coalescing/deduplication cannot admit urgent control work within that
+  cap or the broader session memory cap, repository-default implementations
+  should fail the session with `INTERNAL` rather than silently committing local
+  terminal state without a corresponding control signal; if the resulting
+  `CLOSE` itself cannot be retained under an extreme cap, the implementation
+  may finish the local failed session without sending that final `CLOSE`
 - repository-default late-data allowance after local `CloseRead`:
   `max(1 KiB, min(2 * negotiated max_frame_payload, initial_stream_window / 8))`,
   where `initial_stream_window` means the negotiated initial stream-scoped
@@ -380,6 +386,11 @@ Default close mapping:
 - `Close()` -> repository-default full-stream close helper that ends ordinary
   local use of the stream and commits graceful local shutdown through
   `CloseWrite()` plus `CloseRead()` under local policy
+
+If read-side stop commits the local receive half before its opener dependency
+or `STOP_SENDING` signal reaches the writer, the local read side remains
+stopped. A later read-stop call SHOULD retry the still-pending outbound signal
+until it is queued or the session becomes terminal.
 
 ### 6.2 Operation families
 
@@ -722,6 +733,10 @@ Repository-default `UpdateMetadata(update)` behavior is:
 - before `opening-frame-committed`, supported advisory fields SHOULD merge into
   the pending opening metadata state when the first opening `DATA` can still
   carry them
+- once the opener carrying those merged fields has entered the local
+  transport-submission path, the local metadata snapshot SHOULD remain
+  consistent with that potentially in-flight opener rather than rolling back to
+  stale local-only values after a later session close or transport failure
 - after `opening-frame-committed`, supported advisory fields SHOULD use the
   standardized post-open carriage path still available for that stream, such as
   `PRIORITY_UPDATE`
