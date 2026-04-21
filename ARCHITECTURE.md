@@ -249,10 +249,9 @@ The current protocol family target is:
 - `open_metadata`
 - `priority_update`
 
-The architectural split between base wire rules and same-version extensions
-remains important, but this repository's public compatibility target is the
-complete current `zmux-full-v1` surface above rather than a pair of public
-`core` / `full` compatibility tiers.
+This repository's public compatibility target is named `zmux-v1` and covers
+the current target above. Same-version extension documents still define their
+own negotiation and validation rules.
 
 The current target does not include multi-connection session aggregation,
 protocol retransmission, or protocol reordering recovery.

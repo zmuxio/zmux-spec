@@ -2,8 +2,8 @@
 
 This document provides small reference encodings for `zmux v1`.
 
-The examples cover the complete current standardized surface in this
-repository, not only the base frame set.
+The examples cover the currently standardized `zmux-v1` wire surface in this
+repository.
 
 All integers except `magic`, `preface_ver`, `role`, and the one-byte `code`
 field use canonical `varint62` encoding.

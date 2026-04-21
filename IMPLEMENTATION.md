@@ -21,9 +21,9 @@ This document mixes two kinds of guidance:
 - repository-default reference profile choices for sender scheduling, queue
   sizing, and other local policy details
 
-This guidance assumes the complete current `zmux-full-v1` surface described in
-this repository. It does not treat `open_metadata`, `priority_update`,
-`priority_hints`, or `stream_groups` as a separate public compatibility tier.
+This guidance assumes `zmux-v1` as defined by this repository, including
+`open_metadata`, `priority_update`, and the correct negotiated handling of
+`priority_hints` and `stream_groups`.
 
 Where this document says **repository-default**, alternative local tuning is
 allowed as long as wire behavior and documented API semantics remain

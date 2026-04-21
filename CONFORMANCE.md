@@ -147,26 +147,27 @@ Conformance claims should be made separately for:
 
 Repository-level implementation profiles are:
 
-- `zmux-full-v1`: the complete currently standardized `zmux v1` surface in this
+- `zmux-v1`: the currently standardized `zmux v1` surface in this
   repository, including the base wire contract, forward extension tolerance,
   `open_metadata`, `priority_update`, and the correct negotiated handling of
   `priority_hints` and `stream_groups`
-- `zmux-reference-profile-v1`: `zmux-full-v1` plus the repository-default API,
+- `zmux-reference-profile-v1`: `zmux-v1` plus the repository-default API,
   sender, memory, liveness, and scheduling guidance
 
 Separate repository claims remain useful for incremental bring-up, targeted
 testing, and internal release gates. Public compatibility claims should use
-`zmux-full-v1` or `zmux-reference-profile-v1`, not a reduced `core` tier.
+`zmux-v1`. Implementations that also follow repository-default local behavior
+may additionally claim `zmux-reference-profile-v1`.
 
 ### 3.3 Compatibility rule
 
 Compatibility rule:
 
-- `zmux-full-v1` implementations MUST interoperate cleanly with each other by
+- `zmux-v1` implementations MUST interoperate cleanly with each other by
   negotiating and using only the capabilities both sides share on the wire
 - a release that intentionally lacks one of the currently standardized
   same-version surfaces in this repository SHOULD NOT claim public
-  `zmux-full-v1` compatibility
+  `zmux-v1` compatibility
 - `zmux-reference-profile-v1` does not change wire requirements; it narrows
   local behavior toward the repository-default guidance
 
@@ -208,8 +209,8 @@ implementation planning and release review.
 | `zmux-priority_update` | satisfy `zmux-wire-v1`; negotiate `priority_update`; process `stream_priority` and `stream_group`; ignore `open_info` inside `PRIORITY_UPDATE`; ignore unknown advisory TLVs; ignore duplicate singleton advisory updates as one dropped update |
 | `zmux-api-semantics-profile-v1` | document and implement the repository-default semantic operation families from [API_SEMANTICS.md](./API_SEMANTICS.md), including full local close helper, graceful send-half completion, read-side stop, send-side reset, whole-stream abort, structured error surfacing, open/cancel behavior, and accept visibility rules; document whether the binding exposes a stream-style convenience profile, a full-control protocol surface, or both; exact API spellings are not required |
 | `zmux-stream-adapter-profile-v1` | satisfy the stream-adapter subset from [API_SEMANTICS.md](./API_SEMANTICS.md), including bidirectional/unidirectional open and accept mapping, one consistent convenience mapping or fuller documented control layer or both, and documented limits/non-goals |
-| `zmux-full-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass stream-lifecycle scenarios; pass flow-control scenarios; pass session-lifecycle scenarios; satisfy every currently active same-version optional surface in this repository, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups` |
-| `zmux-reference-profile-v1` | satisfy `zmux-full-v1`; satisfy the reference-profile claim gate above; meet the quality behaviors to observe closely enough to preserve the documented repository-default sender, memory, liveness, API, and scheduling behavior |
+| `zmux-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass stream-lifecycle scenarios; pass flow-control scenarios; pass session-lifecycle scenarios; satisfy every currently active same-version optional surface in this repository, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups` |
+| `zmux-reference-profile-v1` | satisfy `zmux-v1`; satisfy the reference-profile claim gate above; meet the quality behaviors to observe closely enough to preserve the documented repository-default sender, memory, liveness, API, and scheduling behavior |
 
 ## 4. Stream-lifecycle scenarios
 

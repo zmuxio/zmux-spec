@@ -7,9 +7,9 @@ Its purpose is to restate the core stream lifecycle as explicit half-direction
 state transitions so independent implementations do not invent incompatible
 local interpretations.
 
-It should be read as the stream-lifecycle companion to the complete current
-`zmux-full-v1` surface, including the opening and terminal rules used by the active
-same-version features in this repository.
+It should be read as the stream-lifecycle companion to `zmux-v1`, including the
+opening and terminal rules used by the active same-version features in this
+repository.
 
 ## 1. Model
 
