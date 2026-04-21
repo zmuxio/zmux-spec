@@ -260,6 +260,10 @@ Default write behavior:
   local send half with `DATA|FIN`
 - after local `CloseWrite` or repository-default `Close`, further `Write`
   calls should fail immediately with a write-side-closed error
+- after local `CloseWrite` has committed graceful send completion, later local
+  use of the primary send-reset or send-cancel entry SHOULD also fail locally
+  and SHOULD NOT retroactively replace an already-queued graceful `DATA|FIN`
+  tail
 - after local `Reset`, further `Write` calls on that direction should fail
   immediately
 - after peer `STOP_SENDING`, implementations should fail future local writes as
@@ -339,7 +343,9 @@ Repository-default capacities:
   `max(32, max_pending_unaccepted_streams / 2)` when such a stream-count limit
   exists locally
 - repository-default provisional-open max age:
-  `250ms` when local timers are available
+  `5s` base when local timers are available, widened when observed local
+  `PING` RTT requires at least `6 * observed_ping_rtt + 250ms`, and capped at
+  `20s`
 
 If the host platform exposes deadline or cancellation primitives, send-side
 blocking should honor them consistently.
@@ -732,7 +738,8 @@ patterns into one call, for example:
 - `OpenAndSend(...)` / `OpenAndSendWithOptions(...)` for bidirectional open
   plus immediate first payload submission
 - `OpenUniAndSend(...)` / `OpenUniAndSendWithOptions(...)` for unidirectional
-  open plus immediate first payload submission
+  open plus immediate first payload submission using `WriteFinal(...)`
+  semantics for that first payload
 
 Ordinary `OpenStream()` / `OpenUniStream()` usage remains metadata-free by
 default. Carrying open-time metadata is an opt-in sender choice.
@@ -942,7 +949,8 @@ conformant API surface:
 - `OpenAndSend` / `OpenAndSendWithOptions` -> bidirectional open plus
   immediate first payload submission
 - `OpenUniAndSend` / `OpenUniAndSendWithOptions` -> unidirectional open plus
-  immediate first payload submission
+  immediate first payload submission with `WriteFinal(...)` semantics for that
+  first payload
 - `StreamID()` -> locally known numeric stream ID when exposed
 - `OpenInfo()` -> opener-supplied opaque open-time bytes when known locally
 - `Metadata()` -> current advisory metadata snapshot when exposed
