@@ -316,12 +316,16 @@ Repository-default capacities:
 - session data low watermark: 50% of the session high watermark
 - urgent-lane hard cap:
   `max(64 KiB, 8 * negotiated max_control_payload_bytes)`
-- if coalescing/deduplication cannot admit urgent control work within that
-  cap or the broader session memory cap, repository-default implementations
-  should fail the session with `INTERNAL` rather than silently committing local
-  terminal state without a corresponding control signal; if the resulting
-  `CLOSE` itself cannot be retained under an extreme cap, the implementation
-  may finish the local failed session without sending that final `CLOSE`
+- coalescible urgent control such as pending `MAX_DATA` / `BLOCKED` may be
+  emitted in urgent-lane-sized chunks; overflow remains dirty in the pending
+  registry and must not be dropped merely because one writer batch is full
+- if non-deferrable urgent control, or the handoff of coalesced pending control
+  into a writer-owned batch, cannot be retained within the broader session
+  memory cap, repository-default implementations should fail the session with
+  `INTERNAL` rather than silently committing local terminal state without a
+  corresponding control signal; if the resulting `CLOSE` itself cannot be
+  retained under an extreme cap, the implementation may finish the local failed
+  session without sending that final `CLOSE`
 - repository-default late-data allowance after local `CloseRead`:
   `max(1 KiB, min(2 * negotiated max_frame_payload, initial_stream_window / 8))`,
   where `initial_stream_window` means the negotiated initial stream-scoped
@@ -641,6 +645,9 @@ Repository-default session error translation:
   error with code and optional reason text preserved
 - transport-level EOF or connection reset: surface as a session-closed or
   transport-failure error
+- fatal protocol errors detected while parsing or validating inbound frames on
+  an established reader loop: surface as remote read-side session termination
+  errors, even if the lower-level codec helper itself is context-neutral
 - internal implementation errors: surface as `INTERNAL` errors without
   exposing implementation detail
 
@@ -740,6 +747,11 @@ Repository-default `UpdateMetadata(update)` behavior is:
 - after `opening-frame-committed`, supported advisory fields SHOULD use the
   standardized post-open carriage path still available for that stream, such as
   `PRIORITY_UPDATE`
+- after local validation succeeds, post-open advisory updates remain
+  best-effort until handed to the writer; if retaining the queued advisory frame
+  would exceed the session memory hard cap, repository-default bindings SHOULD
+  drop that pending advisory update and release its retained state rather than
+  mutating only local shadow state or exceeding the cap
 - `open_info` remains open-time metadata only in `zmux v1`; it is not part of
   post-open update semantics
 - if the binding cannot carry requested peer-visible metadata on any
@@ -846,7 +858,9 @@ Repository-default session-lifecycle behavior is:
   state; final `Wait(...)` / `Closed()` completion may follow after close-path
   cleanup finishes
 - `Wait(...)` observes final session termination, not merely shutdown
-  initiation
+  initiation; bindings SHOULD provide a way to observe the non-graceful
+  terminal cause, either as the wait result or through a documented
+  accessor/helper for the terminal cause
 - `Closed()` becomes true only after final terminal completion
 - `State()` and `Stats()` are local observation helpers; they MUST NOT be
   treated as completion acknowledgements
@@ -1011,6 +1025,13 @@ Default adapter behavior:
   in sections 2 and 8 of this document
 - stream adapters should hide control-opened-only streams from the ordinary
   accept queue unless they intentionally expose lower-level internals
+- if an adapter carries open-time metadata through an adapter-local opener
+  prelude or equivalent sideband, fresh read-side stop should submit that
+  opener before sending read-side cancellation so the peer can still make the
+  stream application-visible
+- fresh write-side reset / abort opener visibility is not portable for
+  transports where reset can discard earlier unacknowledged stream data; such
+  adapters may document it as best-effort rather than a conformance guarantee
 - adapter open calls MAY accept open-time scheduling hints, such as initial
   priority, group, or opaque `open_info` values; those inputs become
   peer-visible only when `OPEN_METADATA` is negotiated and actually used on

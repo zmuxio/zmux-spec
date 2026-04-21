@@ -428,11 +428,14 @@ Urgent control handling should still be bounded.
 Repository-default guidance:
 
 - keep a hard cap for urgent control memory as well as ordinary data memory
+- drain coalescible pending urgent control in urgent-lane-sized chunks; leave
+  overflow dirty for the next writer turn instead of dropping it
 - treat inability to retain non-`CLOSE` urgent control after coalescing or
-  deduplication as an internal session failure, not as permission to leave
-  local terminal state committed while the peer never receives the signal; if
-  the fallback `CLOSE` is also rejected by an extreme hard cap, finish local
-  failed-session cleanup without that final frame
+  deduplication, including pending-control handoff into a writer-owned batch
+  when it would exceed the session memory cap, as an internal session failure;
+  this is not permission to leave local terminal state committed while the peer
+  never receives the signal; if the fallback `CLOSE` is also rejected by an
+  extreme hard cap, finish local failed-session cleanup without that final frame
 - coalesce or deduplicate queued control work where only the newest value
   matters:
   - keep only the newest session-scoped `MAX_DATA`
@@ -489,6 +492,12 @@ advisory-control mini-lane for the latest pending `PRIORITY_UPDATE`:
 - it MUST NOT overtake bytes already committed to that stream's local
   serialization order
 - only the newest pending advisory update for that stream needs to be retained
+- when handing off a retained pending `PRIORITY_UPDATE` into a writer-owned
+  advisory batch, repository-default implementations SHOULD project tracked
+  memory as `tracked - pending_priority_bytes + queued_frame_bytes`; if the
+  result would exceed the session memory hard cap, the advisory update SHOULD
+  be dropped and its pending retained state released rather than expanding
+  writer-owned retained memory
 
 Repository-default data-lane classes:
 
@@ -1186,6 +1195,8 @@ Exit criteria:
   session
 - repeated `GOAWAY` is monotonic
 - `CLOSE` terminates the session and remaining streams
+- fatal inbound frame parse or validation failures observed by the established
+  reader loop surface to callers as remote read-side session termination errors
 
 Primary inputs:
 
