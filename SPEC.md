@@ -597,7 +597,9 @@ Senders MUST NOT repeat the same setting ID within one settings block.
 Receivers MUST treat duplicate setting IDs as a session `PROTOCOL` error.
 
 Unknown setting IDs in the preface MUST be ignored unless a stricter
-negotiated document defines otherwise.
+negotiated document defines otherwise. Receivers MUST still validate the TLV
+container structure and duplicate setting IDs, but MUST NOT interpret the value
+bytes of an unknown setting ID.
 
 ### 5.2 Initial receive-window grants
 

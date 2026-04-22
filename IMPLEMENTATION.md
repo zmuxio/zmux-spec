@@ -1011,6 +1011,11 @@ Repository-default local diagnostics include:
 
 These are not wire-visible. They are implementation diagnostics.
 
+Reason-counter maps SHOULD bound the number of distinct application error codes
+retained in memory and expose or otherwise account for observations that exceed
+that bound. Implementations SHOULD continue incrementing already-retained codes
+even after the distinct-code bound is reached.
+
 ## 6. Single-link performance priorities
 
 Once multi-connection coordination is out of scope, the highest-value

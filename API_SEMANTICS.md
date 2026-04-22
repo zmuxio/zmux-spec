@@ -140,6 +140,11 @@ Repository-default diagnostics SHOULD expose counters for:
 - hidden streams reaped by TTL or policy
 - hidden unread bytes discarded
 
+Diagnostic maps keyed by peer-selected or caller-selected application error
+codes SHOULD have a bounded distinct-key footprint. Implementations SHOULD keep
+counting already-retained keys and SHOULD expose or account for overflow
+observations beyond the retained-key bound.
+
 If an implementation deliberately exposes a different accept order, it should
 document that explicitly because it becomes observable application behavior.
 
