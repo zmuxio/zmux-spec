@@ -104,7 +104,7 @@ for shared session and stream state:
   stream or session state should still pass through one clear serialization
   point per session
 - accept-queue insertion should be ordered by the local visibility sequence
-  rather than by opportunistic parser-thread race
+  rather than by opportunistic parser scheduling
 - waiter wakeups should happen only after the state transition and any related
   budget or reservation changes are visible to other local operations
 
@@ -1232,7 +1232,7 @@ Primary inputs:
 
 Phase 5. API contract
 
-Expose a stable host-language surface for:
+Expose a stable binding surface for:
 
 - bidirectional and unidirectional open operations
 - bidirectional and unidirectional accept operations
@@ -1242,7 +1242,7 @@ Expose a stable host-language surface for:
 - one read-side stop operation
 - one send-side reset operation
 - stream ID exposure when the binding chooses to expose numeric IDs
-- conn-style deadlines when the host language naturally supports them
+- I/O deadlines when the binding naturally supports them
 - stream-open and accept operations
 - error-code surfacing
 - explicit whole-stream close-with-error helper with numeric code and optional

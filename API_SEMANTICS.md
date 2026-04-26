@@ -20,8 +20,8 @@ byte stream with:
 - send-half abort
 - full-stream abort
 
-Unidirectional streams should be exposed distinctly when the host language or
-adapter surface can represent that distinction.
+Unidirectional streams should be exposed distinctly when the binding or adapter
+surface can represent that distinction.
 
 ### 1.1 Local object layers
 
@@ -177,10 +177,9 @@ Event payload fields SHOULD include:
 
 Event handlers SHOULD be invoked synchronously without holding internal session
 locks so that handler logic cannot deadlock the session. Ordinary handler
-failures, such as recoverable exceptions or language-level panics, SHOULD be
-silently recovered rather than propagated as session errors. Bindings SHOULD
-NOT swallow host-language fatal runtime failures or process-fatal signals;
-those are outside the event best-effort contract.
+failures that are recoverable by the binding SHOULD be contained rather than
+propagated as session errors. Fatal runtime failures or process-fatal signals
+are outside the event best-effort contract.
 
 Repository-default event surfaces are opt-in. Ordinary session and stream
 operations MUST NOT depend on an event handler being registered.
@@ -293,9 +292,9 @@ Recommended default shape:
 - urgent control frames may bypass ordinary data-queue high-watermark checks
 - ordinary `Write` should block, fail on deadline, or fail on cancellation once
   the relevant high watermark is reached
-- blocking is the preferred default when the host language naturally supports
-  it
-- if the host language does not expose natural blocking stream APIs,
+- blocking is the preferred default when the binding's I/O model naturally
+  supports it
+- if the binding does not expose natural blocking stream APIs,
   implementations should return an explicit retryable backpressure error
   rather than continue growing memory indefinitely
 - ordinary `Write` should not continue consuming memory indefinitely after
@@ -462,7 +461,7 @@ Representative spellings include:
 - `UpdateMetadata(update)` for post-open advisory metadata changes when exposed
 
 For new bindings, exposing at least this stream-style convenience surface is
-RECOMMENDED when those operations fit the host-language surface. Bindings
+RECOMMENDED when those operations fit the binding's ordinary API style. Bindings
 SHOULD also expose one primary explicit whole-stream abort entry in this
 surface when caller-visible whole-stream abort is supported. Acceptable
 shapes include:
@@ -524,7 +523,7 @@ stream-close helper:
 - after `Close()` becomes visible locally, further local `Read` and `Write`
   calls should fail promptly
 - bindings MAY additionally wait for bounded local drain or peer
-  acknowledgement when that blocking contract fits the host-language I/O
+  acknowledgement when that blocking contract fits the binding's I/O
   surface, but they MUST document that choice explicitly
 - for unidirectional streams, `Close()` should silently ignore any locally
   absent direction rather than surfacing an error solely because that half does
@@ -603,8 +602,8 @@ Default minimum error surface:
 - remote application-defined error codes
 
 Repository-default bindings SHOULD expose, preserve, or make queryable a more
-structured local error shape when the host language allows it. Recommended
-fields are:
+structured local error shape when the binding's error model allows it.
+Recommended fields are:
 
 - `scope`: `session` or `stream`
 - `operation`: `open`, `accept`, `read`, `write`, or `close`
@@ -619,7 +618,7 @@ Bindings that expose explicit abortive close helpers SHOULD support carrying
 both a numeric code and optional reason text. A structured application error
 value with `Code` and optional `Reason` is the repository-default model. A
 binding MAY instead expose separate `(code, reason)` parameters if that is
-more idiomatic for the host language.
+more idiomatic for that binding.
 
 Repository-default diagnostic-text mapping is:
 
@@ -801,7 +800,7 @@ these capability families:
 - terminal session close carrying an error or application-defined close cause
 - waiting for final session termination
 - non-blocking local session inspection when exposed
-- optional one-shot open-and-send conveniences when they fit the host-language
+- optional one-shot open-and-send conveniences when they fit the binding's API
   surface
 
 Repository-default session design likewise distinguishes:
@@ -818,7 +817,7 @@ primary spelling for:
 - accepting bidirectional and unidirectional peer-opened streams
 - opening bidirectional and unidirectional local streams
 - open-time options when supported
-- optional one-shot open-and-send helpers when they fit the host-language
+- optional one-shot open-and-send helpers when they fit the binding's API
   surface
 - graceful session shutdown
 - terminal session close carrying an error or application-defined close cause
@@ -1075,8 +1074,8 @@ adapter-level application-defined stream errors.
 Default adapter behavior:
 
 - preserve remote numeric stream error codes when surfacing them locally
-- do not collapse them into one generic reset error unless the host language
-  forces that shape
+- do not collapse them into one generic reset error unless the adapter surface
+  cannot preserve distinct numeric codes
 
 ### 10.6 Deadline and cancellation mapping
 
