@@ -27,7 +27,7 @@
   "11": "max_extension_payload_bytes"
   "12": "scheduler_hints"
   "13": "ping_padding_key"
-  "14": "preface_padding"
+  "63": "preface_padding"
 "defaults":
   "initial_max_stream_data_bidi_locally_opened": 65536
   "initial_max_stream_data_bidi_peer_opened": 65536

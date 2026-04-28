@@ -46,7 +46,11 @@ These IDs are used inside preface `settings_tlv`.
 - `11` = max_extension_payload_bytes
 - `12` = scheduler_hints
 - `13` = ping_padding_key
-- `14` = preface_padding
+- `63` = preface_padding
+
+`preface_padding` is intentionally assigned near the end of the one-byte
+`varint62` setting-ID range so it remains compact while leaving the lower
+unassigned IDs for future semantic settings.
 
 ### 2.1 Standard default values
 
