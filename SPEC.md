@@ -255,9 +255,10 @@ for ordinary `zmux` traffic once establishment has failed. Such retry policy
 belongs to higher-layer connection orchestration rather than the core mux
 contract.
 
-### 2.5 Receive-limit model
+### 2.5 Setting direction model
 
-The preface settings are unilateral receive-side parameters.
+Unless a setting explicitly defines different semantics, preface settings are
+unilateral receive-side parameters.
 
 Each endpoint advertises the limits and hints it wants the peer to obey for
 traffic flowing **toward the advertising endpoint**.
@@ -285,6 +286,8 @@ Examples:
 - local `max_incoming_streams_uni` is the number of peer-initiated
   unidirectional streams that may be active concurrently toward the local
   endpoint
+- local `ping_padding_key` is a sender-side self-announcement used to identify
+  padded `PING` frames originated by the local endpoint
 
 No inbound receive window exists for a locally initiated unidirectional stream,
 because the peer cannot send `DATA` on that stream.
@@ -661,7 +664,28 @@ The standard intent of the recognized values is:
 - `group_fair`: increase the influence of `stream_group` when group hints are
   available
 
-### 5.5 Parameter immutability
+### 5.5 Padding settings
+
+`preface_padding` is a SETTINGS-ID TLV that carries arbitrary bytes and has no
+semantic value. Its only standardized purpose is to vary the encoded length of
+the session preface. Receivers MUST ignore its value bytes without parsing
+them as `varint62`. Senders MAY fill it with random bytes or caller-provided
+opaque bytes under local policy, but MUST NOT attach `zmux` protocol semantics
+to its contents. Senders SHOULD omit it unless local deployment policy wants
+preface length variation. Like all known setting IDs, `preface_padding` MUST
+NOT appear more than once in one settings block.
+
+`ping_padding_key` is encoded as a single `varint62`. A value of `0` means
+PING padding tag recognition is disabled for PINGs originated by the endpoint
+that sent the setting. Non-zero values are opaque per-session keys used only
+to identify padded PING payloads as described in [6.4 PING](#64-ping) and
+[6.5 PONG](#65-pong).
+
+An endpoint SHOULD generate a fresh non-zero `ping_padding_key` for each
+session when it intends to originate padded PING frames. Endpoints MUST NOT
+reuse a fixed global key across independent sessions.
+
+### 5.6 Parameter immutability
 
 `zmux v1` defines no post-preface mechanism that changes core session limits.
 
@@ -841,6 +865,34 @@ bytes     opaque_echo_bytes
 
 In core `zmux v1`, the derived payload length for `PING` MUST be at least `8`.
 
+When the endpoint has advertised a non-zero `ping_padding_key`, it MAY encode
+a padded PING by placing an 8-byte padding tag immediately after the 8-byte
+token:
+
+```text
+8 bytes   token
+8 bytes   ping_padding_tag
+bytes     application_echo_bytes
+bytes     opaque_padding_bytes
+```
+
+The padding tag is the big-endian encoding of:
+
+```text
+z = ping_padding_key XOR token_u64_be XOR 0x6d1d9f6d33f9772d
+z = (z XOR (z >> 30)) * 0xbf58476d1ce4e5b9
+z = (z XOR (z >> 27)) * 0x94d049bb133111eb
+ping_padding_tag = z XOR (z >> 31)
+```
+
+All shifts are unsigned 64-bit shifts, and all multiplications wrap modulo
+`2^64`. `token_u64_be` is the 8-byte PING token interpreted as an unsigned
+64-bit big-endian integer.
+
+The tag is an identification value for length-padding behavior; it is not a
+cryptographic authenticator. The tag and padding bytes remain part of the
+opaque PING payload for endpoints that do not recognize the format.
+
 Allowed flags:
 
 - none
@@ -858,6 +910,9 @@ Additional rules:
 - implementations SHOULD make a defensive copy of the received `PING` payload
   before constructing the `PONG` reply to avoid aliasing the inbound frame
   buffer
+- if a received `PING` carries a valid padding tag for the peer's advertised
+  `ping_padding_key`, the receiver MAY append additional opaque padding bytes
+  to the corresponding `PONG` as described below
 
 ### 6.5 PONG
 
@@ -881,15 +936,23 @@ Allowed flags:
 
 Semantics:
 
-- `PONG`: response, MUST echo the exact payload bytes from the triggering
-  `PING`
+- `PONG`: response to a triggering `PING`
 
 Additional rules:
 
 - a receiver of `PING` SHOULD reply promptly with `PONG`
-- the `PONG` payload MUST be a byte-for-byte verbatim copy of the triggering
-  `PING` payload, including both the 8-byte token and any trailing opaque echo
+- by default, the `PONG` payload MUST be a byte-for-byte verbatim copy of the
+  triggering `PING` payload, including both the 8-byte token and any trailing
+  opaque echo bytes
+- if the triggering `PING` carries a valid padding tag for the PING sender's
+  advertised non-zero `ping_padding_key`, the `PONG` payload MAY instead be
+  the full triggering `PING` payload followed by additional opaque padding
   bytes
+- when appending PONG padding, the sender MUST keep the final `PONG` payload
+  length no larger than the smaller of local and peer `max_control_payload_bytes`
+- an endpoint that originated a padded `PING` MUST accept both an exact `PONG`
+  payload match and a `PONG` payload that has its complete original `PING`
+  payload as a prefix
 - implementations MAY disable periodic pings entirely
 - local implementations MAY decide whether to originate `PING` at all based on
   underlying transport capabilities and deployment policy

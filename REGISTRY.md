@@ -45,6 +45,8 @@ These IDs are used inside preface `settings_tlv`.
 - `10` = max_control_payload_bytes
 - `11` = max_extension_payload_bytes
 - `12` = scheduler_hints
+- `13` = ping_padding_key
+- `14` = preface_padding
 
 ### 2.1 Standard default values
 
@@ -63,6 +65,9 @@ settings are omitted from the session preface.
 - `max_control_payload_bytes = 4096`
 - `max_extension_payload_bytes = 4096`
 - `scheduler_hints = 0`
+- `ping_padding_key = 0`
+
+`preface_padding` carries arbitrary ignored bytes and has no semantic default.
 
 ### 2.2 Standard advisory enums
 

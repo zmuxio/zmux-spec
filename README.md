@@ -115,6 +115,7 @@ The current public compatibility target in this repository is `zmux-v1`:
 - single-link `zmux v1`
 - `open_metadata`
 - `priority_update`
+- optional preface and PING/PONG length padding settings
 - correct negotiated handling of `priority_hints` and `stream_groups`
 - forward-compatible `EXT` envelope parsing and ignore/skip behavior
 
@@ -133,6 +134,7 @@ The base wire contract still includes:
 - `MAX_DATA`
 - `PING`
 - `PONG`
+- standardized `ping_padding_key` and `preface_padding` settings
 - `STOP_SENDING`
 - `BLOCKED`
 - `RESET`

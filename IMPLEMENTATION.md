@@ -962,6 +962,13 @@ Repository-default keepalive timeout behavior:
 - keep at most one locally originated outstanding protocol `PING` per session
 - on very slow links, protocol keepalive should normally stay disabled unless
   the deployment explicitly requires it
+- when local policy enables PING length padding, generate a fresh
+  `ping_padding_key` per session and advertise it in the local preface
+- do not use a process-wide fixed `ping_padding_key`; the key is an opaque
+  per-session tag seed, not a global capability bit
+- a receiver that recognizes a peer's padded `PING` MAY append an independent
+  random opaque suffix to the `PONG`, while unrecognized PING payloads should
+  remain byte-for-byte PONG echoes
 
 Progress and liveness should be interpreted conservatively.
 
@@ -1215,7 +1222,8 @@ Implement:
 
 Exit criteria:
 
-- `PING` / `PONG` payload echo is exact
+- `PING` / `PONG` payload echo is exact unless the PING padding extension
+  permits an opaque suffix on `PONG`
 - at most one locally originated outstanding protocol `PING` exists per
   session
 - repeated `GOAWAY` is monotonic

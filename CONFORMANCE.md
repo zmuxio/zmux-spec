@@ -342,7 +342,10 @@ At minimum, test:
 - immediate post-preface first `DATA` on a new stream
 - no extra mux acknowledgement being required once session establishment is
   complete and stream-ID ownership is resolved
-- variable-length `PING` echoed byte-for-byte by `PONG`
+- variable-length `PING` echoed byte-for-byte by `PONG` when no recognized
+  padding tag is present
+- padded `PING` with a valid `ping_padding_key` tag accepting either exact
+  `PONG` echo or `PONG` echo plus additional opaque suffix bytes
 - locally originated `PING` payload length bounded by the smaller of local and
   peer control-payload limits
 - repeated `GOAWAY` with non-increasing bidirectional and unidirectional
@@ -420,7 +423,8 @@ part of interoperability quality validation:
 - repository-default `debug_text` in error frames being valid UTF-8 and
   truncated at code-point boundaries when payload limits are tight
 - repository-default `PONG` payloads being verbatim byte-for-byte copies of
-  the triggering `PING` payload
+  the triggering `PING` payload unless local PING padding policy appends an
+  opaque suffix for a recognized padded `PING`
 - repository-default frame writes being atomic: each frame is written
   completely to the underlying transport without partial writes
 

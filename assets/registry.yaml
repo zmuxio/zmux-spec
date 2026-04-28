@@ -26,6 +26,8 @@
   "10": "max_control_payload_bytes"
   "11": "max_extension_payload_bytes"
   "12": "scheduler_hints"
+  "13": "ping_padding_key"
+  "14": "preface_padding"
 "defaults":
   "initial_max_stream_data_bidi_locally_opened": 65536
   "initial_max_stream_data_bidi_peer_opened": 65536
@@ -39,6 +41,7 @@
   "max_control_payload_bytes": 4096
   "max_extension_payload_bytes": 4096
   "scheduler_hints": 0
+  "ping_padding_key": 0
 "scheduler_hints":
   "0": "unspecified_or_balanced"
   "1": "latency"
