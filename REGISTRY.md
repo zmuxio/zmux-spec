@@ -48,9 +48,9 @@ These IDs are used inside preface `settings_tlv`.
 - `13` = ping_padding_key
 - `63` = preface_padding
 
-`preface_padding` is intentionally assigned near the end of the one-byte
-`varint62` setting-ID range so it remains compact while leaving the lower
-unassigned IDs for future semantic settings.
+`preface_padding` uses setting ID `63`, the last one-byte `varint62` setting
+ID, so it stays compact while leaving IDs `14..62` available for future
+semantic settings.
 
 ### 2.1 Standard default values
 
