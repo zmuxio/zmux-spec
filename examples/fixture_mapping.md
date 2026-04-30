@@ -3,7 +3,8 @@
 This document is non-normative.
 
 It explains how the generated fixture assets are intended to map onto common
-parser, state-machine, and API assertions in language implementations.
+parser, state-machine, and API assertions in implementations across
+programming languages.
 
 ## 1. Wire fixtures
 
@@ -89,7 +90,7 @@ Recommended use:
 - select subsets for targeted test jobs
 - split CI into codec, state, flow-control, unidirectional, or
   `open_metadata` / `priority_update` jobs
-- keep language-specific harnesses aligned on the same logical case groups
+- keep per-language harnesses aligned on the same logical case groups
 
 ## 5. Golden-case view
 

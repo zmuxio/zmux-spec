@@ -1,6 +1,6 @@
 # zmux Conformance Guidance
 
-This document is not a language-specific test suite.
+This document is implementation-language-neutral.
 
 Its purpose is to define the behavioral surface that independent
 implementations should validate before claiming `zmux` interoperability.

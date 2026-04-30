@@ -1545,15 +1545,15 @@
       "initial_state": null,
       "steps": [
         {
-          "event": "peer_GOAWAY_last_accepted_bidi_100_uni_99",
+          "event": "peer_GOAWAY_last_accepted_bidi_101_uni_99",
           "expect_result": "accepted"
         },
         {
-          "event": "peer_GOAWAY_last_accepted_bidi_80_uni_99",
+          "event": "peer_GOAWAY_last_accepted_bidi_81_uni_99",
           "expect_result": "accepted"
         },
         {
-          "event": "peer_GOAWAY_last_accepted_bidi_80_uni_103",
+          "event": "peer_GOAWAY_last_accepted_bidi_81_uni_103",
           "expect_result": "protocol_violation"
         }
       ]
@@ -3792,15 +3792,15 @@
       "id": "session_goaway_last_accepted_increase",
       "source": "invalid_corpus",
       "category": "session",
-      "description": "A later GOAWAY increases one of its per-kind acceptance watermarks.",
+      "description": "A later GOAWAY increases one of its per-stream-class acceptance watermarks.",
       "expected_result": {
         "scope": "session",
         "error": "PROTOCOL"
       },
       "input_shape": {
-        "prior_last_accepted_bidi_stream_id": 80,
+        "prior_last_accepted_bidi_stream_id": 81,
         "prior_last_accepted_uni_stream_id": 99,
-        "incoming_last_accepted_bidi_stream_id": 80,
+        "incoming_last_accepted_bidi_stream_id": 81,
         "incoming_last_accepted_uni_stream_id": 103
       }
     },
