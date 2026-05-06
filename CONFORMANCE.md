@@ -2,12 +2,12 @@
 
 This document is implementation-language-neutral.
 
-Its purpose is to define the behavioral surface that independent
+Its purpose is to define the protocol behavior that independent
 implementations should validate before claiming `zmux` interoperability.
 
-This document describes protocol behavior, not public API names. Local binding
-or adapter shapes may vary as long as the claimed protocol behavior is
-preserved.
+This document describes protocol behavior, not local operation names or
+non-wire interface shapes. Non-wire interfaces may vary as long as the claimed
+protocol behavior is preserved.
 
 ## 1. Wire interoperability
 
@@ -44,11 +44,16 @@ interoperate on:
   path without `priority_update`
 - `PRIORITY_UPDATE` carrying `stream_priority`
 - `PRIORITY_UPDATE` carrying `stream_group`
+- `PRIORITY_UPDATE` with `stream_group = 0` clearing the explicit group while
+  preserving omitted fields
 - ignoring `open_info` inside `PRIORITY_UPDATE`
 - ignoring unknown TLVs inside a `PRIORITY_UPDATE` payload
 - leaving omitted fields unchanged
 - ignoring a `PRIORITY_UPDATE` payload with duplicate singleton advisory TLVs
-  as one dropped advisory update rather than aborting the stream by default
+  as one dropped advisory update rather than treating it as stream-fatal
+- ignoring `PRIORITY_UPDATE` when `priority_update` was not negotiated
+- ignoring unnegotiated `stream_priority` or `stream_group` fields in both
+  `OPEN_METADATA` and `PRIORITY_UPDATE`
 
 If an implementation claims `open_metadata` support, it should also interoperate
 on:
@@ -56,6 +61,8 @@ on:
 - negotiation of the `open_metadata` capability
 - `DATA|OPEN_METADATA` carrying `stream_priority` on the first opening frame
 - `DATA|OPEN_METADATA` carrying `stream_group` on the first opening frame
+- `DATA|OPEN_METADATA` with `stream_group = 0` leaving the stream without an
+  explicit group
 - `DATA|OPEN_METADATA` carrying `open_info` on the first opening frame
 - skipping unknown metadata TLVs inside `OPEN_METADATA`
 - ignoring duplicate singleton metadata TLVs inside one `OPEN_METADATA` block while
@@ -75,6 +82,10 @@ An implementation should reject or handle correctly:
 - truncated TLV headers inside a valid TLV-bearing frame
 - TLV value lengths that overrun the enclosing payload
 - duplicate setting IDs in one preface settings block
+- standard varint settings whose TLV value is malformed, non-canonical,
+  truncated, or followed by trailing bytes
+- `preface_padding` being accepted as ignored settings payload while still
+  participating in the preface settings length and duplicate-setting rules
 - `max_frame_payload < 16384`
 - `max_control_payload_bytes < 4096`
 - `max_extension_payload_bytes < 4096`
@@ -85,16 +96,31 @@ An implementation should reject or handle correctly:
 - `EXT` where `derived_payload_length < encoded_length(ext_type)`
 - `MAX_DATA` with trailing bytes beyond its one canonical `max_offset`
 - `BLOCKED` with trailing bytes beyond its one canonical `blocked_at`
+- `RESET`, `STOP_SENDING`, `ABORT`, or `CLOSE` payloads without one canonical
+  mandatory `error_code`
+- `GOAWAY` payloads without canonical mandatory bidirectional watermark,
+  unidirectional watermark, and `error_code` fields
 - `PING` with derived payload length `< 8`
 - `PONG` with derived payload length `< 8`
-- `ABORT` on `stream_id = 0`
+- `DATA`, `STOP_SENDING`, `RESET`, or `ABORT` on `stream_id = 0`
+- `PING`, `PONG`, `GOAWAY`, or `CLOSE` on a non-zero `stream_id`
+- `PRIORITY_UPDATE` on `stream_id = 0`
+- non-zero `GOAWAY` watermarks that do not match the advertised stream class
+  or the stream-ID ownership of the peer receiving the `GOAWAY`
+- outbound `GOAWAY`, `CLOSE`, `RESET`, `STOP_SENDING`, and `ABORT`
+  diagnostics being capped to the peer-advertised control-payload limit while
+  preserving mandatory frame fields
 - `DATA|OPEN_METADATA` without negotiated `open_metadata`
 - `DATA|OPEN_METADATA` on an already opened stream
+- `DATA|OPEN_METADATA` with a missing or malformed `metadata_len`, or with
+  `metadata_len` overrunning the enclosing `DATA` payload
 - forbidden non-zero flag combinations on frames other than the valid `DATA`,
   `DATA|OPEN_METADATA`, `DATA|FIN`, and `DATA|OPEN_METADATA|FIN` combinations
 - duplicate singleton TLVs inside one `PRIORITY_UPDATE` payload
 - duplicate standardized singleton DIAG-TLVs inside one enclosing control frame
   while preserving that frame's primary semantics
+- invalid UTF-8 `debug_text` inside a DIAG-TLV being ignored while preserving
+  that frame's primary semantics
 - `PRIORITY_UPDATE` targeting a previously unseen stream being ignored without
   creating stream state
 - `PRIORITY_UPDATE` targeting a terminal stream being ignored without reviving
@@ -129,6 +155,8 @@ An implementation should demonstrate that it:
 
 - ignores unknown capability bits
 - ignores unknown setting IDs
+- treats unknown advisory `scheduler_hints` values as
+  `unspecified_or_balanced` without failing session establishment
 - skips unknown TLVs in known namespaces
 - ignores unknown `EXT` subtypes unless a stricter extension document says
   otherwise
@@ -147,10 +175,10 @@ Protocol conformance claims should be made separately for:
 
 ### 3.2 Protocol compatibility profile
 
-Repository-level protocol compatibility profile:
+Protocol compatibility profile:
 
-- `zmux-v1`: the currently standardized `zmux v1` surface in this
-  repository, including the base wire contract, forward extension tolerance,
+- `zmux-v1`: the currently standardized `zmux v1` protocol feature set,
+  including the base wire contract, forward extension tolerance,
   `open_metadata`, `priority_update`, and the correct negotiated handling of
   `priority_hints` and `stream_groups`
 
@@ -165,8 +193,8 @@ Compatibility rule:
 - `zmux-v1` implementations MUST interoperate cleanly with each other by
   negotiating and using only the capabilities both sides share on the wire
 - a release that intentionally lacks one of the currently standardized
-  same-version protocol surfaces in this repository SHOULD NOT claim public
-  `zmux-v1` compatibility
+  same-version protocol features defined by this document set SHOULD NOT claim
+  public `zmux-v1` compatibility
 - before `session-ready`, an implementation emits only the local preface and a
   fatal establishment `CLOSE`, and emits none of: new-stream `DATA`,
   stream-scoped control, ordinary session-scoped control, or `EXT`
@@ -182,7 +210,7 @@ compact gate summary for implementation planning and release review.
 | `zmux-wire-v1` | pass core wire interoperability; pass invalid-input handling; pass extension-tolerance behavior |
 | `zmux-open_metadata` | satisfy `zmux-wire-v1`; negotiate `open_metadata`; accept valid `DATA|OPEN_METADATA` on first opening `DATA`; reject unnegotiated or misplaced `OPEN_METADATA`; ignore unknown metadata TLVs; drop duplicate singleton metadata while preserving the enclosing `DATA` |
 | `zmux-priority_update` | satisfy `zmux-wire-v1`; negotiate `priority_update`; process `stream_priority` and `stream_group`; ignore `open_info` inside `PRIORITY_UPDATE`; ignore unknown advisory TLVs; ignore duplicate singleton advisory updates as one dropped update |
-| `zmux-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass stream-lifecycle scenarios; pass flow-control scenarios; pass session-lifecycle scenarios; satisfy every currently active same-version optional surface in this repository, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups` |
+| `zmux-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass stream-lifecycle scenarios; pass flow-control scenarios; pass session-lifecycle scenarios; satisfy every currently active same-version optional protocol feature defined by this document set, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups` |
 
 ## 4. Stream-lifecycle scenarios
 
@@ -205,6 +233,9 @@ At minimum, test these stream-level cases:
 - unidirectional stream rejection of wrong-side `MAX_DATA`
 - unidirectional stream rejection of wrong-side `STOP_SENDING`
 - unidirectional stream rejection of wrong-side `RESET`
+- peer opening attempts above an advertised local `GOAWAY` watermark being
+  rejected with `ABORT(REFUSED_STREAM)` without consuming that stream ID or
+  requiring optional `OPEN_METADATA` parsing
 - independent enforcement of bidirectional and unidirectional incoming-stream
   limits
 - `STOP_SENDING` causing the peer to stop future `DATA` on one direction while
@@ -229,9 +260,8 @@ At minimum, test these stream-level cases:
   `RESET` or `DATA|FIN`
 - `STOP_SENDING` moving the sender-side state into a no-new-writes substate
   before final conclusion
-- repository-default primary explicit whole-stream abort entries mapping
-  optional reason text to DIAG-TLV `debug_text` while preserving the numeric
-  `ABORT` code
+- `ABORT` preserving the numeric error code while carrying optional DIAG-TLV
+  `debug_text`
 - `STOP_SENDING` received after that outbound half is already terminal and
   therefore not requiring any additional concluding frame
 - stream-scoped `MAX_DATA`, `BLOCKED`, and `PRIORITY_UPDATE` not overtaking the
@@ -250,19 +280,9 @@ At minimum, test these stream-level cases:
 - `BLOCKED` on a previously unused valid stream ID causing a session
   `PROTOCOL` error
 - stream ID exhaustion handling without wraparound or ID reuse
-- hidden control-opened-only churn detection: rapid `ABORT`-first on
-  previously unseen peer-owned stream IDs triggering session termination
-  when local abuse thresholds are exceeded
-- provisional local open expiry: a locally opened stream that has not reached
-  `opening-frame-committed` within the repository-default max age being failed
-  locally without consuming a stream ID
-- provisional local open hard cap: exceeding the repository-default maximum
-  number of concurrent provisional opens per stream class causing a retryable
-  local error
-- tombstone late-data classification: late `DATA` arriving after a gracefully
-  closed stream (post-`FIN`) producing `ABORT(STREAM_CLOSED)`, while late
-  `DATA` arriving after an abortively closed stream (post-`RESET` or
-  post-`ABORT`) being silently ignored with budget release
+- late-data classification: late `DATA` arriving after peer `FIN` producing
+  `ABORT(STREAM_CLOSED)`, while late in-flight `DATA` after peer `RESET` or
+  peer `ABORT` is ignored with budget release
 - local read-side stop followed by bounded late peer `DATA` being discarded
   and restoring session budget without restoring stream-scoped budget
 - `OPEN_METADATA` bytes not consuming stream or session flow-control windows
@@ -289,11 +309,11 @@ At minimum, test:
 - session `MAX_DATA` advanced when unread buffered data is discarded during
   reset or refusal
 - session `MAX_DATA` advanced when late `DATA` for already closed streams is
-  dropped via compact tombstone or equivalent used-ID bookkeeping
+  dropped through used-ID terminal bookkeeping
 - local read-side stop discarding unread data while restoring session receive
-  budget but suppressing further stream-scoped replenishment by default
-- repository-default late-data policy enforcing both per-direction and
-  aggregate session caps for stopped directions
+  budget without advertising fresh stream credit for that stopped direction
+- late-data absorption after stop, reset, or abort being bounded per direction
+  and in aggregate so ignored payloads cannot consume unbounded memory
 - overflow protection on malicious or corrupted `MAX_DATA` values
 - `BLOCKED` deduplication: only the most recent limiting offset for each scope
   is retained when multiple `BLOCKED` updates are pending
@@ -318,6 +338,8 @@ At minimum, test:
   `PONG` echo or `PONG` echo plus additional opaque suffix bytes
 - locally originated `PING` payload length bounded by the smaller of local and
   peer control-payload limits
+- unmatched `PONG` not completing any outstanding local `PING` and being
+  ignored or counted only as no-op control traffic
 - repeated `GOAWAY` with non-increasing bidirectional and unidirectional
   acceptance watermarks
 - peer `GOAWAY` causing later local open attempts beyond the allowed
@@ -327,17 +349,14 @@ At minimum, test:
   `ABORT(REFUSED_STREAM)`
 - `CLOSE` terminating all active streams
 - underlying transport closing without a prior `CLOSE`
-- repository-default directional-idle keepalive scheduling: parsed inbound
-  frames reset read-idle probing, successful outbound transport writes reset
-  write-idle probing, and implementations MAY still emit occasional
-  RTT-sampling `PING` under a separate local max-time-since-last-`PING` cap
-- keepalive jitter preventing synchronized probe bursts across sessions
 - `PING` payload length bounded by `min(local, peer)` control-payload limits,
   not solely by the peer's advertised limit
 - `GOAWAY` watermark monotonicity: a subsequent peer `GOAWAY` with a higher
   watermark than a previous one being treated as a protocol error
 - session close propagating terminal errors to all remaining open streams
   and waking all blocked operations promptly
+- duplicate terminal `CLOSE` frames received after session termination being
+  ignored without replacing the original terminal cause
 
 ## 7. Quality behaviors to observe
 
@@ -368,44 +387,40 @@ part of interoperability quality validation:
   `opening-frame-committed`, rather than creating a skipped-ID gap
 - `DATA|FIN`, `STOP_SENDING`, `RESET`, and `ABORT` remaining distinct protocol
   actions instead of being collapsed into one ambiguous close behavior
-- repository-default bulk protection preserving a bounded minimum class share
-  when bulk and interactive work are both continuously active
-- repository-default implementations detecting and shedding abusive empty-frame
-  or tiny-control floods rather than allowing unbounded CPU or queue churn
-- repository-default implementations continuing to read and parse underlying
-  bytes so control frames can make progress even when `DATA` admission is
-  blocked by local memory or flow-control policy
-- repository-default implementations detecting and bounding rapid open-then-
-  abort or open-then-reset churn rather than relying only on concurrent stream
-  limits
-- repository-default tombstone compaction converting fully terminal streams
-  with no remaining buffered data into compact tombstone records rather than
-  retaining full live state indefinitely
-- repository-default accept-queue notification using coalescing rather than
-  per-stream signalling to bound notification overhead during stream bursts
-- repository-default event surfaces being opt-in and not affecting ordinary
-  session and stream operation when no handler is registered
-- repository-default `debug_text` in error frames being valid UTF-8 and
-  truncated at code-point boundaries when payload limits are tight
-- repository-default `PONG` payloads being verbatim byte-for-byte copies of
-  the triggering `PING` payload unless local PING padding policy appends an
-  opaque suffix for a recognized padded `PING`
-- repository-default frame writes being atomic: each frame is written
-  completely to the underlying transport without partial writes
+- implementations detecting and shedding abusive empty-frame or tiny-control
+  floods rather than allowing unbounded CPU or queue churn
+- implementations detecting and bounding repeated unmatched `PONG` traffic
+- implementations continuing to read and parse underlying bytes so control
+  frames can make progress even when `DATA` admission is blocked by local
+  memory or flow-control policy
+- implementations detecting and bounding rapid open-then-abort or
+  open-then-reset churn rather than relying only on concurrent stream limits
+- `debug_text` in error frames being valid UTF-8 and truncated at code-point
+  boundaries when payload limits are tight
+- `PONG` payloads being verbatim byte-for-byte copies of the triggering
+  `PING` payload unless local PING padding policy appends an opaque suffix for
+  a recognized padded `PING`
+- frame bytes being serialized contiguously onto the underlying byte stream so
+  frame contents from different streams cannot interleave
 
 ## 8. Shared wire examples
 
 Implementations should share at least:
 
 - valid preface examples
+- valid preface examples carrying ignored `preface_padding`
 - valid stream-open examples
 - valid `MAX_DATA` examples
 - valid `PING` / `PONG` examples
 - valid `GOAWAY` and `CLOSE` examples
-- valid `DATA|OPEN_METADATA|FIN` and zero-length `DATA|OPEN_METADATA` examples
+- valid `DATA|OPEN_METADATA|FIN` and zero-application-byte
+  `DATA|OPEN_METADATA` examples with a valid `metadata_len` prefix
 - valid `ABORT` or `CLOSE` examples carrying `debug_text`
 - tolerance examples where duplicate singleton metadata invalidates only the
   metadata block while preserving the enclosing `DATA`
+- invalid frame-scope examples for session-scoped frames on non-zero
+  `stream_id`, stream-scoped frames on `stream_id = 0`, and
+  `PRIORITY_UPDATE` on `stream_id = 0`
 - invalid establishment examples such as `role = auto` with a zero
   `tie_breaker_nonce`
 - valid `BLOCKED` examples

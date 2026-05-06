@@ -3,9 +3,9 @@
 This document assigns stable numeric values for `zmux v1`.
 
 It covers both the base wire contract and the currently standardized
-same-version surfaces in this repository.
+same-version protocol features defined by this document set.
 
-It is organized by common implementation lookup order:
+It is organized by wire namespace:
 
 1. session and preface constants
 2. settings and defaults
@@ -82,6 +82,9 @@ settings are omitted from the session preface.
 - `2` = balanced_fair
 - `3` = bulk_throughput
 - `4` = group_fair
+
+Unknown `scheduler_hints` values have `unspecified_or_balanced` behavior in
+`zmux v1`.
 
 ### 2.3 Receive-window interpretation summary
 
@@ -188,6 +191,8 @@ Standardized DIAG-TLV behavior:
   frame
 - duplicate standardized singleton DIAG-TLVs invalidate only the DIAG block for
   that frame; they do not alter the enclosing frame's primary semantics
+- invalid UTF-8 in `debug_text` invalidates only that diagnostic value; it does
+  not alter the enclosing frame's primary semantics
 - `debug_text` is human-readable diagnostics only
 - `retry_after_millis` is an advisory retry hint only
 - `offending_stream_id` and `offending_frame_type` are advisory machine-readable
@@ -222,8 +227,7 @@ built-in semantics beyond preserving the numeric value.
 
 These columns are registry guidance, not extra wire fields:
 
-- `Allowed on` indicates the repository-default surfaces where the code is most
-  appropriate
+- `Allowed on` indicates the frame contexts where the code is most appropriate
 - `Retry class` is advisory guidance for higher layers
 - `Default local kind` is the recommended local error-family classification
 - `Severity scope` indicates whether the code is normally session-first,
@@ -240,7 +244,7 @@ These columns are registry guidance, not extra wire fields:
 
 `PRIORITY_UPDATE` is defined by [SPEC.md](./SPEC.md).
 The retired `ML_*` subtype numbers remain reserved for historical continuity
-but are no longer part of the active standardized surface.
+but are no longer part of the active standardized protocol feature set.
 
 ## 8. Reserved ranges
 

@@ -134,7 +134,7 @@ Within one registry namespace:
   semantics
 
 An optional capability or extension feature may be retired from the active
-standard surface without forcing a new `proto_ver`, provided that:
+standard protocol feature set without forcing a new `proto_ver`, provided that:
 
 - the mandatory core interoperability contract is unchanged
 - the retired numeric assignments remain reserved
@@ -152,13 +152,13 @@ Local-policy examples are:
 - fairness heuristics
 - ping cadence and keepalive jitter
 - buffer-pool strategy
-- local observability surfaces
+- local observability
 - collision-retry policy for `role = auto`
 - provisional local-open time limits and hard caps
-- tombstone compaction and retention policy
-- hidden control-opened churn detection thresholds
+- compact terminal-state retention policy
+- control-opened terminal churn detection thresholds
 - accept-queue notification coalescing strategy
-- lifecycle event surface and handler invocation model
+- local lifecycle event model
 
 These affect performance and traffic shape, but they are not part of the base
 interoperability contract.
@@ -191,7 +191,7 @@ The following belong in the base protocol:
 ## 8. What belongs in extension documents
 
 The following do not belong in the base core specification, but they may still
-belong in extension documents within the `zmux` repository:
+belong in `zmux` extension documents:
 
 - additional advisory scheduling metadata
 - optional same-version metadata carriage
@@ -203,7 +203,7 @@ must not invent new first-frame behaviour for previously unseen peer-owned
 stream IDs unless a future `proto_ver` explicitly changes the core opening
 contract.
 
-The current active standardized optional same-version metadata surfaces are
+The current active standardized optional same-version metadata features are
 `open_metadata` and `priority_update`.
 
 ## 9. What stays out of zmux
@@ -249,7 +249,7 @@ The current protocol family target is:
 - `open_metadata`
 - `priority_update`
 
-This repository's public compatibility target is named `zmux-v1` and covers
+This document set's public compatibility target is named `zmux-v1` and covers
 the current target above. Same-version extension documents still define their
 own negotiation and validation rules.
 

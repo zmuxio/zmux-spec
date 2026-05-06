@@ -8,8 +8,8 @@ state transitions so independent implementations do not invent incompatible
 local interpretations.
 
 It should be read as the stream-lifecycle companion to `zmux-v1`, including the
-opening and terminal rules used by the active same-version features in this
-repository.
+opening and terminal rules used by the active same-version features defined by
+this document set.
 
 ## 1. Model
 
@@ -54,7 +54,7 @@ Previously unseen valid peer-owned stream first-frame outcomes:
 | First frame | Result |
 | --- | --- |
 | `DATA` / `DATA|FIN` | stream opens |
-| `ABORT` | hidden terminal bookkeeping by default |
+| `ABORT` | stream ID is recorded as used and terminal |
 | `RESET` | invalid |
 | `STOP_SENDING` | invalid |
 | stream-scoped `MAX_DATA` | invalid |
@@ -107,7 +107,7 @@ the stream to exist.
 - `recv_reset`: peer outbound direction has ended abortively with `RESET`
 - `recv_aborted`: the whole stream has been aborted
 
-Repository-default local read error resolution checks local read intent before
+Recommended local read error resolution checks local read intent before
 protocol half-state. If the local endpoint has issued a read-side stop,
 subsequent local reads SHOULD fail with a local read-stopped error even if the
 protocol receive half has since transitioned to `recv_fin` or `recv_reset`
@@ -234,7 +234,7 @@ Abortive full close is `ABORT`.
 When multiple overlapping close conditions exist, implementations MUST resolve
 them locally in a consistent way.
 
-Repository-default terminal resolution priority is, from strongest to weakest:
+Recommended terminal resolution priority is, from strongest to weakest:
 
 1. `send_aborted` or `recv_aborted` — whole-stream abort error
 2. `send_reset` or `recv_reset` — direction-specific reset error
@@ -303,14 +303,14 @@ Terminal late-frame handling summary:
 ### 8.1 Compact terminal state
 
 Once a stream is fully terminal and no local queued work or buffered data
-remains, implementations MAY compact the stream into a minimal tombstone
-record. A tombstone retains only:
+remains, implementations MAY compact the stream into a minimal terminal
+record. That compact record retains only:
 
 - the stream ID used marker (to prevent reuse)
 - the terminal kind (graceful, reset, or aborted)
 - the late-data handling policy for the receive direction
 
-Repository-default late-data policies for tombstones are:
+Late-data policies for compact terminal records are:
 
 | Stream condition at compaction | Late `DATA` action |
 | --- | --- |
@@ -318,11 +318,11 @@ Repository-default late-data policies for tombstones are:
 | receive half was `recv_fin` (graceful close) | reject with `ABORT(STREAM_CLOSED)` |
 | receive half was `recv_reset` or `recv_aborted` | ignore and apply discard-and-budget-release |
 
-Tombstones MUST NOT be reaped in a way that permits stream ID reuse or loss of
-the used-ID marker semantics for that session. Implementations MAY use
-range-compressed markers, bitmaps, or the `next_expected_stream_id` cursor
-instead of per-stream tombstone objects when the resulting late-frame handling
-and no-reuse semantics remain correct.
+Compact terminal records MUST NOT be reaped in a way that permits stream ID
+reuse or loss of the used-ID marker semantics for that session.
+Implementations MAY use range-compressed markers, bitmaps, or the
+`next_expected_stream_id` cursor instead of per-stream records when the
+resulting late-frame handling and no-reuse semantics remain correct.
 
 ## 9. Invalid events
 
@@ -342,7 +342,7 @@ The following are always invalid:
 
 ## 10. Session lifecycle
 
-Repository-default session lifecycle states are:
+Session lifecycle states are:
 
 - `establishing`: prefaces not yet fully parsed or stream-ID ownership not yet
   resolved
@@ -355,7 +355,7 @@ Repository-default session lifecycle states are:
 - `failed`: the underlying transport failed or session shutdown was not
   orderly
 
-Repository-default transition guidance:
+Transition guidance:
 
 - `establishing -> ready`: both prefaces parsed successfully and role
   resolution complete

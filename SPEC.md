@@ -3,9 +3,9 @@
 This document is the normative core protocol definition for **`zmux v1`**.
 
 Use it together with [ARCHITECTURE.md](./ARCHITECTURE.md),
-[REGISTRY.md](./REGISTRY.md), and [CONFORMANCE.md](./CONFORMANCE.md). In this
-repository, public `zmux-v1` compatibility means this specification plus the
-currently standardized same-version surfaces and their negotiated handling.
+[REGISTRY.md](./REGISTRY.md), and [CONFORMANCE.md](./CONFORMANCE.md). Public
+`zmux-v1` compatibility means this specification plus the currently
+standardized same-version protocol features and their negotiated handling.
 
 ## 1. Scope and transport model
 
@@ -95,9 +95,9 @@ their session preface.
 
 The two peers MAY send the preface in parallel. Implementations MUST NOT block
 sending the local preface while waiting to receive the peer preface first.
-Repository-default implementations SHOULD write the local preface concurrently
-with reading the peer preface so that both directions make forward progress
-without deadlocking on a full transport buffer.
+Endpoints SHOULD write the local preface concurrently with reading the peer
+preface so that both directions make forward progress without deadlocking on a
+full transport buffer.
 
 ### 2.1 Preface wire format
 
@@ -144,9 +144,8 @@ MUST NOT fail the session solely for that reason.
 When `role = auto`, `tie_breaker_nonce` MUST be a non-zero random value within
 the `varint62` range.
 
-Repository-default implementations SHOULD generate that nonce from a strong
-random source and SHOULD NOT reuse a nonce from a failed establishment
-attempt.
+Endpoints using `role = auto` SHOULD generate that nonce from a strong random
+source and SHOULD NOT reuse a nonce from a failed establishment attempt.
 
 The role field is protocol-scoped. It assigns stream-ID ownership and does not
 define business-level client/server semantics. Deployments that already have a
@@ -216,7 +215,7 @@ session-establishment attempt fails with `ROLE_CONFLICT`.
 Higher-layer connection orchestration MAY retry with a fresh random nonce after
 such a collision.
 
-Repository-default collision handling is:
+Recommended collision handling is:
 
 1. fail the current establishment attempt with `ROLE_CONFLICT`
 2. do not send ordinary stream traffic on that failed attempt
@@ -258,8 +257,8 @@ Examples:
   local endpoint for peer-initiated unidirectional streams
 - local `initial_max_data` is the initial session-wide receive window toward
   the local endpoint
-- local `max_frame_payload` is the largest payload the local endpoint is
-  willing to receive in a single frame
+- local `max_frame_payload` is the largest `DATA` payload the local endpoint
+  is willing to receive in a single frame
 - local `max_control_payload_bytes` is the largest control-plane payload the
   local endpoint is willing to accept in one `PING`, `PONG`, `BLOCKED`,
   `RESET`, `STOP_SENDING`, `GOAWAY`, `CLOSE`, or `ABORT`
@@ -313,14 +312,14 @@ After peer preface parsing completes, and after role resolution completes when
 needed, the endpoint MAY immediately create streams and send regular frames.
 No extra mux round trip and no per-stream open acknowledgement are required.
 
-Repository-default implementations therefore treat session establishment as:
+A recommended session-establishment sequence is:
 
 - send local preface immediately
 - parse peer preface immediately
 - transition to session-ready as soon as peer preface parsing succeeds
 - only then allow new stream creation and application `DATA`
 
-Repository-default session-ready summary:
+Session-ready summary:
 
 | Local establishment condition | Required before ordinary stream traffic? |
 | --- | --- |
@@ -330,9 +329,9 @@ Repository-default session-ready summary:
 | negotiated protocol version and capabilities accepted | yes |
 | ordinary stream traffic (`DATA`, `DATA|FIN`, stream-scoped control, `EXT`) | allowed only after every required readiness condition above is satisfied |
 
-Repository-default establishing-state outbound policy is:
+Establishing-state outbound policy:
 
-| Outbound item before `session-ready` | Repository-default policy |
+| Outbound item before `session-ready` | Policy |
 | --- | --- |
 | local session preface | allowed |
 | fatal session `CLOSE` during establishment failure | allowed |
@@ -393,6 +392,14 @@ This cursor advance still applies even if the stream is then immediately
 refused, aborted, or otherwise reaches a terminal state in the same processing
 step.
 
+There is one `GOAWAY`-specific exception to the next-expected check. If the
+receiver has sent `GOAWAY` for a stream class and the peer attempts to open a
+new stream with an ID greater than that advertised local watermark, the
+receiver SHOULD reject that stream with `ABORT(REFUSED_STREAM)` even if the ID
+is not the next expected ID. That rejection does not consume the stream ID and
+does not advance the expected-ID cursor. The receiver MAY make this refusal
+decision before parsing optional opening metadata carried by the refused frame.
+
 A peer-owned new stream ID that skips over lower still-unused IDs of the same
 class is a session `PROTOCOL` error.
 
@@ -412,8 +419,8 @@ same class has already been committed ahead of it.
 If an earlier provisional stream is cancelled after a later stream ID of the
 same class has already been committed, the implementation MUST still consume
 the cancelled earlier ID on the wire so that no peer-observable gap is
-created. Repository-default behavior is to emit `ABORT(CANCELLED)` for that
-cancelled stream ID.
+created. A recommended way to consume the cancelled stream ID is to emit
+`ABORT(CANCELLED)`.
 
 Implementations MUST NOT create peer-observable gaps in local stream-ID usage,
 and they MUST NOT recycle or silently reuse a previously committed stream ID.
@@ -509,6 +516,22 @@ bits 5-7   frame_flags
 - inbound `EXT` payload length MUST NOT exceed the receiver's
   `max_extension_payload_bytes`
 
+When constructing outbound frames, the sender MUST fit the payload within the
+peer-advertised receive limit for that frame class:
+
+- `PING`, `PONG`, `BLOCKED`, `RESET`, `STOP_SENDING`, `GOAWAY`, `CLOSE`, and
+  `ABORT` payloads MUST fit within the peer's
+  `max_control_payload_bytes`
+- `EXT` payloads MUST fit within the peer's
+  `max_extension_payload_bytes`
+- `DATA` payloads MUST fit within the peer's `max_frame_payload`
+
+The sender's own advertised receive limits do not cap ordinary outbound
+control-frame diagnostics. If optional diagnostic TLVs would exceed the
+peer-advertised payload limit, the sender MUST omit or truncate those
+diagnostics while preserving the frame's mandatory fields. `PING` and padded
+`PONG` have the stricter echo-related bounds in Sections 6.4 and 6.5.
+
 For core frames with a strictly defined payload layout and no variable-length
 tail, excess payload bytes beyond the defined fields are invalid. In
 particular:
@@ -519,9 +542,9 @@ particular:
 Trailing garbage in those fixed-layout payloads is a session `PROTOCOL` error.
 
 Conversely, a payload that is too short to contain a frame's mandatory defined
-fields is invalid. Unless a frame-specific rule states otherwise, repository-
-default handling for such structurally truncated payloads is a session
-`FRAME_SIZE` error.
+fields is invalid. Unless a frame-specific rule states otherwise, recommended
+handling for such structurally truncated payloads is a session `FRAME_SIZE`
+error.
 
 A violation of these rules is a session error and SHOULD be signaled with
 `CLOSE(FRAME_SIZE)` before the underlying transport is closed.
@@ -581,6 +604,11 @@ Senders MUST NOT repeat the same setting ID within one settings block.
 
 Receivers MUST treat duplicate setting IDs as a session `PROTOCOL` error.
 
+For each standard setting whose value is a single `varint62`, the TLV value
+MUST contain exactly one canonical `varint62` encoding. A malformed value,
+truncated value, non-canonical integer encoding, or trailing byte after that
+one value is a session `PROTOCOL` error.
+
 Unknown setting IDs in the preface MUST be ignored unless a stricter
 negotiated document defines otherwise. Receivers MUST still validate the TLV
 container structure and duplicate setting IDs, but MUST NOT interpret the value
@@ -634,12 +662,14 @@ close detection, or native keepalive behavior, or when local policy prefers to
 avoid protocol-originated keepalive traffic.
 
 `scheduler_hints` defines a session-wide baseline scheduling intent. Standard
-values are listed in [REGISTRY.md](./REGISTRY.md). Unknown hint values MAY be
-ignored.
+values are listed in [REGISTRY.md](./REGISTRY.md). Unknown hint values MUST
+NOT fail session establishment and MUST be treated as
+`unspecified_or_balanced` for `zmux v1` behavior.
 
 The standard intent of the recognized values is:
 
-- `unspecified_or_balanced`: implementation default general-purpose policy
+- `unspecified_or_balanced`: no standardized scheduling preference; the
+  receiver may use a general-purpose balanced policy
 - `latency`: prefer lower queuing delay and shorter batching windows
 - `balanced_fair`: prefer even treatment across active streams
 - `bulk_throughput`: permit more batching and throughput-oriented scheduling
@@ -718,10 +748,13 @@ Additional rules:
 
 - zero-length `DATA` is valid and may open a stream without payload
 - zero-length `DATA|FIN` is valid and half-closes the sender write side
-- zero-length `DATA|OPEN_METADATA` is valid and may open a stream with
-  initial open-time metadata but no application bytes
-- zero-length `DATA|OPEN_METADATA|FIN` is valid and may open and half-close a
-  stream while carrying only initial open-time metadata
+- zero-application-byte `DATA|OPEN_METADATA` is valid when the payload still
+  contains a canonical `metadata_len` prefix and exactly that many metadata
+  bytes; it may open a stream with initial open-time metadata but no
+  application bytes
+- zero-application-byte `DATA|OPEN_METADATA|FIN` is valid under the same
+  metadata-prefix rule and may open and half-close a stream while carrying
+  only initial open-time metadata
 - excessive zero-length `DATA` that does not materially advance stream or
   session state MAY be treated as abusive traffic; see Sections 11 and 13
 - `OPEN_METADATA` is valid only on the first `DATA` / `DATA|FIN` that opens a
@@ -923,9 +956,9 @@ Semantics:
 Additional rules:
 
 - a receiver of `PING` SHOULD reply promptly with `PONG`
-- by default, the `PONG` payload MUST be a byte-for-byte verbatim copy of the
-  triggering `PING` payload, including both the 8-byte token and any trailing
-  opaque echo bytes
+- unless the padded-PING exception below applies, the `PONG` payload MUST be a
+  byte-for-byte verbatim copy of the triggering `PING` payload, including both
+  the 8-byte token and any trailing opaque echo bytes
 - if the triggering `PING` carries a valid padding tag for the PING sender's
   advertised non-zero `ping_padding_key`, the `PONG` payload MAY instead be
   the full triggering `PING` payload followed by additional opaque padding
@@ -935,6 +968,10 @@ Additional rules:
 - an endpoint that originated a padded `PING` MUST accept both an exact `PONG`
   payload match and a `PONG` payload that has its complete original `PING`
   payload as a prefix
+- a `PONG` payload that does not match any outstanding local `PING` under the
+  exact-match or padded-prefix rules above MUST NOT complete a `PING`;
+  receivers MAY ignore such unmatched `PONG` frames and MAY treat repeated
+  unmatched `PONG` traffic as abuse
 - implementations MAY disable periodic pings entirely
 - local implementations MAY decide whether to originate `PING` at all based on
   underlying transport capabilities and deployment policy
@@ -1027,7 +1064,7 @@ Additional rules:
 - after `ABORT`, no additional stream-scoped traffic for that stream is valid
   except late duplicates that the receiver ignores
 - a receiver that observes peer `ABORT` MUST treat both directions as terminal
-  and SHOULD surface subsequent reads and writes as terminal stream errors
+  and SHOULD report subsequent read or write attempts as terminal stream errors
 - if unread buffered inbound `DATA` is discarded, the receiver MUST apply the
   session-window release rule from Section 8 for those discarded bytes
 - duplicate or late `ABORT` for an already fully terminal stream MUST be
@@ -1171,13 +1208,21 @@ implementations MUST truncate only at valid UTF-8 code-point boundaries. If no
 valid UTF-8 prefix fits within the remaining payload budget, `debug_text`
 SHOULD be omitted entirely rather than sent with invalid encoding.
 
+On receive, semantically invalid diagnostic metadata does not invalidate the
+enclosing control frame's mandatory fields. If `debug_text` is not valid
+UTF-8, the receiver MUST ignore that diagnostic value while preserving the
+enclosing frame's primary semantics. If a standardized singleton DIAG-TLV is
+repeated, the receiver MUST preserve the primary frame semantics and SHOULD
+ignore the duplicated diagnostic block for that frame. This tolerance applies
+only after the DIAG-TLV sequence is structurally parseable; truncated DIAG-TLV
+headers or values remain container-structural TLV errors.
+
 Examples of separate namespaces:
 
 - session preface `settings_tlv` uses the SETTINGS-ID namespace
 - `PRIORITY_UPDATE` payload uses the STREAM-METADATA-TLV namespace
 - `RESET`, `ABORT`, `STOP_SENDING`, `GOAWAY`, and `CLOSE` metadata use the
-  DIAG-TLV
-  namespace
+  DIAG-TLV namespace
 
 ### 7.2 TLV error classes
 
@@ -1232,7 +1277,7 @@ Until such an update is received, a stream uses the default priority value
 - larger values mean stronger scheduling preference
 - the value space is intentionally unbounded within the core integer range
 
-The repository-default interpretation is:
+The non-normative interpretation is:
 
 - higher priority biases the implementation toward lower latency
 - lower priority biases the implementation toward higher batching efficiency and
@@ -1254,7 +1299,7 @@ Advertising `priority_hints` without also negotiating either `open_metadata` or
 peer-visible carriage path. Such a session therefore MUST NOT be described as
 providing peer-visible standardized priority interoperability. New deployments
 SHOULD avoid negotiating `priority_hints` alone unless they intentionally use
-that semantic bit only for local metadata surfaces.
+that semantic bit only for local-only metadata semantics.
 
 ### 7.4 Standard stream-group semantics
 
@@ -1267,10 +1312,15 @@ Until such an update is received, a stream has no explicit group assignment.
 
 `stream_group` is an advisory opaque grouping identifier with these semantics:
 
+- value `0` means no explicit group assignment
 - it may influence local scheduling, fairness, budgeting, or placement policy
 - it does not define standardized non-mux meaning
 - peers MUST NOT assume that matching group values imply matching higher-layer
   semantics across different environments
+
+When carried in `OPEN_METADATA`, `stream_group = 0` leaves the stream without
+an explicit group. When carried in `PRIORITY_UPDATE`, `stream_group = 0`
+clears any previously known explicit group assignment for that stream.
 
 If `stream_groups` was not negotiated, receivers MUST ignore `stream_group`.
 
@@ -1287,7 +1337,7 @@ Advertising `stream_groups` without also negotiating either `open_metadata` or
 peer-visible carriage path. Such a session therefore MUST NOT be described as
 providing peer-visible standardized stream-group interoperability. New
 deployments SHOULD avoid negotiating `stream_groups` alone unless they
-intentionally use that semantic bit only for local metadata surfaces.
+intentionally use that semantic bit only for local-only metadata semantics.
 
 ### 7.5 `OPEN_METADATA` on first `DATA`
 
@@ -1573,7 +1623,7 @@ Previously unseen valid peer-owned stream first-frame handling is therefore:
 | --- | --- |
 | `DATA` | open stream |
 | `DATA|FIN` | open stream and half-close sender write side |
-| `ABORT` | open hidden terminal bookkeeping by default |
+| `ABORT` | record the stream ID as used and terminal |
 | `RESET` | session `PROTOCOL` error |
 | `STOP_SENDING` | session `PROTOCOL` error |
 | stream-scoped `MAX_DATA` | session `PROTOCOL` error |
@@ -1682,9 +1732,9 @@ The sender MUST NOT keep that outbound direction indefinitely half-open after
 case the whole stream is terminated instead of only concluding the outbound
 half.
 
-Repository-default sender conclusion summary after `STOP_SENDING`:
+Sender conclusion summary after `STOP_SENDING`:
 
-| Local outbound state when stop becomes committed | Allowed repository-default outcome |
+| Local outbound state when stop becomes committed | Allowed outcome |
 | --- | --- |
 | no further application bytes have become unavoidable | prefer `RESET(CANCELLED)` |
 | only a negligible already-committed tail remains and graceful completion is immediate | allow `DATA|FIN` |
@@ -1789,7 +1839,7 @@ state-machine desynchronization.
 
 Violation-handling summary:
 
-| Condition | Repository-default handling scope |
+| Condition | Recommended handling scope |
 | --- | --- |
 | previously unseen peer-owned stream receives non-opening core stream frame | session `PROTOCOL` |
 | peer-owned stream ID skips the next expected ID of its class | session `PROTOCOL` |
@@ -1815,9 +1865,9 @@ Recommended sequence:
 5. drain existing streams
 6. send `CLOSE` or close the underlying transport
 
-Repository-default graceful-shutdown summary:
+Graceful-shutdown summary:
 
-| Stage | Repository-default intent |
+| Stage | Intent |
 | --- | --- |
 | stop local admission | prevent new locally opened streams immediately |
 | initial permissive `GOAWAY` | stop future peer open intent without prematurely rejecting likely already in-flight peer opens |
@@ -1841,8 +1891,11 @@ On unrecoverable protocol or internal errors:
 If the underlying transport closes without a prior `CLOSE`, the `zmux` session
 is considered terminated immediately.
 
-Duplicate session-scoped terminal frames received after session termination
-MUST be ignored.
+Duplicate terminal `CLOSE` frames received after session termination MUST be
+ignored. Once a session terminal cause has been selected, later `CLOSE` frames
+MUST NOT replace that cause or its retained diagnostic metadata. Malformed
+diagnostics or payload data on an ignored terminal frame do not create a new
+session error.
 
 ## 11. Error handling and unknown elements
 
@@ -1861,7 +1914,7 @@ their own meanings to non-core values by separate agreement. Core `zmux`
 neither interprets nor remaps them.
 
 Human-readable diagnostics, if sent at all, SHOULD use optional DIAG-TLVs and
-SHOULD be conservative by default.
+SHOULD be conservative.
 
 The standardized DIAG-TLV fields in `zmux v1` are advisory metadata only:
 
@@ -1920,9 +1973,9 @@ Implementations therefore remain free to:
 Implementations should treat resource exhaustion and traffic-shape abuse as
 first-class concerns.
 
-At minimum, repository-default implementations SHOULD bound:
+At minimum, implementations SHOULD bound:
 
-- control-opened-only hidden stream state
+- control-opened terminal stream state
 - not-yet-accepted inbound stream bytes
 - provisional local-open state
 - urgent control-lane memory
@@ -1945,7 +1998,7 @@ when local shedding or throttling is insufficient.
 When such abuse is detected, local defensive action MAY include:
 
 - dropping redundant local work
-- refusing hidden or provisional state
+- refusing control-opened terminal or provisional state
 - stream-local `ABORT(...)` when that remains valid
 - session `CLOSE(PROTOCOL)` or `CLOSE(INTERNAL)` when narrower shedding is
   insufficient
