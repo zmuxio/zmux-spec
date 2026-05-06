@@ -195,9 +195,10 @@ possible binding surface:
   from any one concrete naming scheme
 - bindings MAY expose an ordinary stable stream/session surface, an optional
   native or fuller-control surface, or both
-- each exposed surface SHOULD keep one primary spelling per operation family
-- when a numeric stream identifier is exposed, `StreamID()` is the
-  repository-default spelling
+- each exposed surface SHOULD keep one primary idiomatic operation per
+  operation family
+- when a numeric stream identifier is exposed, bindings SHOULD provide one
+  stable observation operation using the host language's ordinary naming style
 - when a binding exposes whole-stream abort, it SHOULD carry a numeric code and
   MAY additionally carry reason text or structured diagnostics
 - bindings SHOULD avoid inventing multiple co-equal primary verbs for the same

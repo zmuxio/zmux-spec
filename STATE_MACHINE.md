@@ -107,11 +107,11 @@ the stream to exist.
 - `recv_reset`: peer outbound direction has ended abortively with `RESET`
 - `recv_aborted`: the whole stream has been aborted
 
-Repository-default local `Read` error resolution checks local API state before
-protocol half-state. If the local application has issued a read-side stop
-(such as `CloseRead`), subsequent `Read` calls SHOULD fail with a local
-read-stopped error even if the protocol receive half has since transitioned to
-`recv_fin` or `recv_reset` through peer action. This preserves the local
+Repository-default local read error resolution checks local API state before
+protocol half-state. If the local application has issued a read-side stop,
+subsequent read operations SHOULD fail with a local read-stopped error even if
+the protocol receive half has since transitioned to `recv_fin` or `recv_reset`
+through peer action. This preserves the local
 cancellation precedence: once the application has expressed disinterest in
 further reads, the specific peer-side terminal outcome is secondary.
 
@@ -284,8 +284,8 @@ After a stream is fully terminal:
 - late non-opening control frames are ignored
 - late `DATA` after peer `FIN` is invalid
 - late in-flight `DATA` after peer `RESET` or `ABORT` is ignored
-- local `Write` and `Read` should fail promptly with terminal errors rather
-  than hang
+- local write and read operations should fail promptly with terminal errors
+  rather than hang
 
 After a local or peer `RESET`, only the affected half is terminal.
 

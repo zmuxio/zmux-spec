@@ -1534,7 +1534,7 @@ stream-scoped frame is required. Otherwise the receiver SHOULD advertise a
 larger stream-scoped `MAX_DATA` value.
 
 If the local endpoint has already entered reader-side stop for that stream
-direction, such as after local `STOP_SENDING` / `CloseRead`, the receiver MUST
+direction, such as after local `STOP_SENDING`, the receiver MUST
 still restore the released session receive budget, but it SHOULD NOT advertise
 additional stream-scoped `MAX_DATA` for that stream unless it is following an
 explicitly documented bounded late-data policy for already in-flight tail

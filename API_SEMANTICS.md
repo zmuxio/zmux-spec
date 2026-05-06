@@ -4,17 +4,21 @@ This document defines the repository-level default cross-language stream and
 session contract.
 
 Its purpose is to give independent language bindings one common high-level
-semantic model while keeping exact API spellings flexible. It therefore
+semantic model while keeping concrete public API names flexible. It therefore
 distinguishes operation families from concrete names, and it distinguishes an
 ordinary stable surface from optional native or fuller-control surfaces.
+
+This document does not prescribe public API names. Bindings should translate
+the operation families into their host language's ordinary API conventions
+without changing the required behavior.
 
 ## 1. Stream model
 
 A bidirectional `zmux` stream is expected to be exposed as a connection-style
 byte stream with:
 
-- ordered `Read`
-- ordered `Write`
+- ordered inbound byte reads
+- ordered outbound byte writes
 - write-half close
 - read-side stop
 - send-half abort
@@ -82,7 +86,7 @@ Default cross-language contract:
 - a first inbound `RESET` on a previously unseen valid stream ID is not hidden
   stream state in `zmux v1`; it is a session `PROTOCOL` error
 - a previously unseen stream opened only by control-path state should not be
-  queued to `AcceptStream()` by default
+  queued to the ordinary accept-stream operation by default
 
 Accept-queue order:
 
@@ -151,8 +155,8 @@ document that explicitly because it becomes observable application behavior.
 Bindings that need lower-level observability MAY expose richer accept metadata
 or a separate lifecycle-event surface indicating whether a stream experienced
 hidden control-path state before it became application-visible. Repository-
-default ordinary `AcceptStream()` remains intentionally simpler and does not
-require that extra event surface.
+default ordinary accept-stream operations remain intentionally simpler and do
+not require that extra event surface.
 
 ### 2.1 Lifecycle event surface
 
@@ -189,52 +193,51 @@ When a stream becomes application-visible through a first `DATA` /
 decoded open-time metadata alongside the accepted stream, for example through:
 
 - a richer accept result object
-- an `OpenInfo()` / `Metadata()` query on the stream object
+- an open-time metadata or advisory metadata query on the stream object
 - a separate accept-metadata event surface
 
-Repository-default ordinary `AcceptStream()` and `AcceptUniStream()` remain
-usable without any metadata object in the common case where the opener did not
-attach open-time metadata.
+Repository-default ordinary accept-stream operations remain usable without any
+metadata object in the common case where the opener did not attach open-time
+metadata.
 
 ## 3. Read behavior
 
 Default read behavior:
 
-- `Read` returns bytes in wire order
+- read operations return bytes in wire order
 - remote `DATA|FIN` does not cause immediate EOF until already buffered bytes
   are drained
-- after buffered bytes are drained, `Read` returns EOF
+- after buffered bytes are drained, read operations return EOF
 - remote `RESET` should surface as a terminal read-half error rather than EOF
 - once remote `RESET` becomes visible to the API, unread buffered inbound bytes
-  for that direction should be discarded and subsequent `Read` calls should
+  for that direction should be discarded and subsequent read operations should
   return the terminal reset error rather than continue draining pre-reset data
 - remote `RESET` does not by itself require local writes to fail immediately
 - remote `ABORT` should surface as a terminal whole-stream error rather than
   EOF
 - once remote `ABORT` becomes visible to the API, unread buffered inbound
-  bytes should be discarded and both subsequent `Read` and `Write` calls
-  should fail
+  bytes should be discarded and subsequent read and write operations should
+  fail
 
 Repository-default visibility point:
 
 - parser or ingress processing first commits the terminal half or full-stream
   state into shared local stream state
 - blocked readers and writers are then woken against that committed state
-- one blocked `Read` call should either:
+- one blocked read operation should either:
   - complete with already buffered pre-terminal bytes if the terminal state had
     not yet become visible to that call; or
   - fail with the terminal reset or abort error after that state becomes
     visible
-- one `Read` call should not mix newly visible post-terminal error semantics
-  with additional pre-terminal bytes beyond the buffer snapshot it had already
-  been allowed to consume
+- one read operation should not mix newly visible post-terminal error
+  semantics with additional pre-terminal bytes beyond the buffer snapshot it
+  had already been allowed to consume
 
-For a local read-side stop (`CloseRead()`):
+For a local read-side stop:
 
-- `CloseRead` is the repository-default reader-side stop primitive in `zmux`
 - unread inbound bytes may be discarded immediately
-- subsequent `Read` calls should fail with a local read-stopped or cancelled
-  error rather than graceful EOF
+- subsequent read operations should fail with a local read-stopped or
+  cancelled error rather than graceful EOF
 - the peer may still produce a bounded amount of late `DATA` that was already
   in flight before it processed `STOP_SENDING`
 - repository-default flow-control policy restores released session budget but
@@ -252,33 +255,34 @@ For a local read-side stop (`CloseRead()`):
 
 Default write behavior:
 
-- a successful local `Write` only means the bytes entered the local `zmux`
-  send path
+- a successful local write operation only means the bytes entered the local
+  `zmux` send path
 - after a write-oriented call returns, the caller SHOULD be free to reuse or
   mutate the supplied payload buffers immediately; implementations that queue
   internally therefore SHOULD detach any borrowed payload bytes before return
 - it does not prove the peer application has accepted the stream
-- repository-default ordinary `Write` with zero application bytes and no final
-  intent SHOULD be a local no-op; it should not by itself force an opening
-  `DATA` frame, make a stream peer-visible, or observe write-side terminal
-  state
-- a zero-length `WriteFinal(...)` / `WritevFinal(...)`, when those helpers are
-  exposed, SHOULD behave like `CloseWrite()` and therefore still finish the
-  local send half with `DATA|FIN`
-- after local `CloseWrite` or repository-default `Close`, further material
-  `Write` calls should fail immediately with a write-side-closed error
-- after local `CloseWrite` has committed graceful send completion, later local
-  use of the primary send-reset or send-cancel entry SHOULD also fail locally
-  and SHOULD NOT retroactively replace an already-queued graceful `DATA|FIN`
-  tail
-- after local `Reset`, further `Write` calls on that direction should fail
-  immediately
+- repository-default ordinary writes with zero application bytes and no final
+  intent SHOULD be a local no-op; they should not by themselves force an
+  opening `DATA` frame, make a stream peer-visible, or observe write-side
+  terminal state
+- a zero-length final-write operation, when exposed, SHOULD behave like graceful
+  send-half completion and therefore still finish the local send half with
+  `DATA|FIN`
+- after graceful send-half completion or repository-default full local close,
+  further material write operations should fail immediately with a
+  write-side-closed error
+- after graceful send-half completion has committed, later local use of the
+  primary send-reset or send-cancel operation SHOULD also fail locally and SHOULD
+  NOT retroactively replace an already-queued graceful `DATA|FIN` tail
+- after local send-side reset, further write operations on that direction
+  should fail immediately
 - after peer `STOP_SENDING`, implementations should fail future local writes as
   soon as that stop becomes locally visible with a write-cancelled or
   equivalent terminal error
 - writers already blocked on local send-queue space for that direction should
   be unblocked promptly with the same local cancellation/terminal error
-- after local or remote `ABORT`, further `Write` calls should fail immediately
+- after local or remote `ABORT`, further write operations should fail
+  immediately
 
 ## 5. Send-queue backpressure
 
@@ -290,15 +294,15 @@ Recommended default shape:
 - one session-level queued-byte high watermark and low watermark
 - one per-stream queued-byte high watermark and low watermark
 - urgent control frames may bypass ordinary data-queue high-watermark checks
-- ordinary `Write` should block, fail on deadline, or fail on cancellation once
-  the relevant high watermark is reached
+- ordinary write operations should block, fail on deadline, or fail on
+  cancellation once the relevant high watermark is reached
 - blocking is the preferred default when the binding's I/O model naturally
   supports it
 - if the binding does not expose natural blocking stream APIs,
   implementations should return an explicit retryable backpressure error
   rather than continue growing memory indefinitely
-- ordinary `Write` should not continue consuming memory indefinitely after
-  watermarks are exceeded
+- ordinary write operations should not continue consuming memory indefinitely
+  after watermarks are exceeded
 - implementations should bound pending application-invisible peer-opened stream
   state, including:
   - pending unaccepted peer-opened streams
@@ -308,8 +312,8 @@ Recommended default shape:
 Repository-default accept-queue notification model:
 
 - accept queues use coalescing notification rather than per-stream signalling;
-  a single notification wakes a blocked `AcceptStream` caller, which then
-  drains all currently queued streams before blocking again
+  a single notification wakes a blocked accept operation, which then drains
+  all currently queued streams before blocking again
 - this coalescing pattern bounds notification overhead when many streams arrive
   in a short burst
 - the notification primitive SHOULD be bounded (for example, with capacity 1)
@@ -333,7 +337,7 @@ Repository-default capacities:
   corresponding control signal; if the resulting `CLOSE` itself cannot be
   retained under an extreme cap, the implementation may finish the local failed
   session without sending that final `CLOSE`
-- repository-default late-data allowance after local `CloseRead`:
+- repository-default late-data allowance after local read-side stop:
   `max(1 KiB, min(2 * negotiated max_frame_payload, initial_stream_window / 8))`,
   where `initial_stream_window` means the negotiated initial stream-scoped
   receive limit for that stream kind; the same repository-default per-stream
@@ -391,22 +395,22 @@ Repository-default provisional-open overflow policy is:
 
 Default close mapping:
 
-- `CloseWrite()` -> emit `DATA|FIN`
-- repository-default stream-style `CloseRead()` ->
-  emit `STOP_SENDING(CANCELLED)`, discard unread inbound data under the
-  repository-default policy, and thereafter fail local `Read` calls on that
+- graceful send-half completion -> emit `DATA|FIN`
+- repository-default stream-style read-side stop -> emit
+  `STOP_SENDING(CANCELLED)`, discard unread inbound data under the
+  repository-default policy, and thereafter fail local read operations on that
   direction
 - fuller read-stop control, if exposed -> emit `STOP_SENDING(code)` with
   optional diagnostics
-- one primary send-reset or send-cancel entry -> emit `RESET(code)`; fuller
+- one primary send-reset or send-cancel operation -> emit `RESET(code)`; fuller
   send-reset control MAY additionally carry optional diagnostics when that
   surface is exposed
-- the primary whole-stream abort entry in a convenience surface -> emit
+- the primary whole-stream abort operation in a convenience surface -> emit
   `ABORT(code)` and carry optional diagnostic text when that surface carries
   one
-- `Close()` -> repository-default full-stream close helper that ends ordinary
-  local use of the stream and commits graceful local shutdown through
-  `CloseWrite()` plus `CloseRead()` under local policy
+- ordinary full local stream close -> ends ordinary local use of the stream
+  and commits graceful local shutdown through graceful send-half completion
+  plus read-side stop under local policy
 
 If read-side stop commits the local receive half before its opener dependency
 or `STOP_SENDING` signal reaches the writer, the local read side remains
@@ -416,11 +420,11 @@ until it is queued or the session becomes terminal.
 ### 6.2 Operation families
 
 Repository-default API design distinguishes semantic operation families from
-any one concrete method naming scheme.
+any one concrete API naming scheme.
 
 Core stream operation families are:
 
-- full local close helper
+- full local close operation
 - graceful send-half completion
 - read-side stop
 - send-side reset
@@ -439,7 +443,7 @@ A binding MAY present those families through:
 
 The repository-default stream-style convenience profile intentionally follows
 ordinary stream and connection-style surfaces. It SHOULD expose one primary
-ordinary spelling for:
+idiomatic operation for:
 
 - full local stream close
 - graceful send-half completion
@@ -448,37 +452,22 @@ ordinary spelling for:
 - byte-stream I/O
 - stream ID and metadata observation when exposed
 
-Representative spellings include:
-
-- `Close()` for full local stream close
-- `CloseWrite()` for graceful send-half completion
-- `CloseRead()` for reader-side stop
-- one primary send-reset or send-cancel entry carrying a code
-- `Read()` / `Write()` for byte-stream I/O
-- `StreamID()` for the numeric wire ID when exposed
-- `OpenInfo()` for opener-supplied opaque open-time bytes when exposed
-- `Metadata()` for the current advisory metadata snapshot when exposed
-- `UpdateMetadata(update)` for post-open advisory metadata changes when exposed
-
 For new bindings, exposing at least this stream-style convenience surface is
 RECOMMENDED when those operations fit the binding's ordinary API style. Bindings
-SHOULD also expose one primary explicit whole-stream abort entry in this
-surface when caller-visible whole-stream abort is supported. Acceptable
-shapes include:
+SHOULD also expose one primary explicit whole-stream abort operation in this
+surface when caller-visible whole-stream abort is supported. That operation may
+carry a structured error value or explicit code and reason parameters,
+whichever fits the host language.
 
-- a structured-error entry such as `CloseWithError(err)`
-- an explicit code-and-reason entry such as
-  `CloseWithErrorCode(code, reason)`
+If a binding keeps more than one convenience operation for compatibility, it
+SHOULD document one as primary and the others as wrappers over the same
+semantic action rather than as distinct lifecycle operations.
 
-If a binding keeps more than one convenience spelling for compatibility, it
-SHOULD document one as the primary entry and the others as wrappers over the
-same semantic action rather than as distinct lifecycle operations.
-
-Repository-default stream-style profile intentionally treats `CloseRead()` as
-the one convenience read-side stop operation. Choosing a different
+Repository-default stream-style profile intentionally treats read-side stop as
+one convenience operation. Choosing a different
 `STOP_SENDING` code does not create a second lifecycle action in the way that
-the primary send-reset entry does for the local send half; it only changes the
-code value attached to the same read-stop action.
+the primary send-reset operation does for the local send half; it only changes
+the code value attached to the same read-stop action.
 
 ### 6.4 Full-control protocol surface
 
@@ -493,17 +482,17 @@ This surface MAY be exposed through:
 
 - dedicated lower-level control operations
 - option-bearing variants of convenience verbs
-- structured control objects passed to one primary control entry per
+- structured control objects passed to one primary control operation per
   operation family
 
-Exact spellings for that fuller control surface are intentionally not
+Concrete public names for that fuller control surface are intentionally not
 standardized by this document. Representative shapes include:
 
 - an explicit read-stop operation carrying `code` and optional diagnostics
 - a code-bearing variant of the read-side stop action within the same verb
   family
 - an explicit send-reset operation carrying `code` and optional diagnostics
-- a primary whole-stream abort entry that accepts either a structured error
+- a primary whole-stream abort operation that accepts either a structured error
   value or explicit `(code, reason)` parameters
 
 This surface is intentionally capability-oriented. It remains conformant
@@ -511,38 +500,41 @@ whether a binding chooses protocol-native names, stream-style names with
 explicit control parameters, or both, as long as the semantic mapping is
 documented clearly.
 
-### 6.5 Repository-default `Close()` helper
+### 6.5 Repository-default full local stream-close operation
 
-Repository-default `Close()` is not a half-close synonym. It is a full local
-stream-close helper:
+The repository-default ordinary close operation is not a half-close synonym.
+It is a full local stream-close operation:
 
 - if the local send half is still open, it commits graceful send completion
-  through `CloseWrite()`
+  through the graceful send-half completion operation
 - if the local read half is still open, it commits reader-side stop through
-  `CloseRead()` using the repository-default `CANCELLED` stop code
-- after `Close()` becomes visible locally, further local `Read` and `Write`
-  calls should fail promptly
+  the read-side stop operation using the repository-default `CANCELLED` stop
+  code
+- after the ordinary close operation becomes visible locally, further local
+  read and write calls should fail promptly
 - bindings MAY additionally wait for bounded local drain or peer
   acknowledgement when that blocking contract fits the binding's I/O
   surface, but they MUST document that choice explicitly
-- for unidirectional streams, `Close()` should silently ignore any locally
-  absent direction rather than surfacing an error solely because that half does
-  not exist; it therefore behaves like `CloseWrite()` on a local send-only
-  stream and like `CloseRead()` on a local receive-only stream
+- for unidirectional streams, the ordinary close operation should silently
+  ignore any locally absent direction rather than surfacing an error solely
+  because that half does not exist; it therefore behaves like the graceful
+  send-half completion operation on a local send-only stream and like the
+  read-side stop operation on a local receive-only stream
 
 Repository-default implementations MAY additionally expose a separate blocking
-helper such as `Wait(...)` / `WaitClosed(...)` to observe final stream
-termination after `Close()` has committed its local shutdown steps.
+or asynchronous wait operation to observe final stream termination after the
+ordinary close operation has committed its local shutdown steps.
 
-If a binding chooses to make plain `Close()` blocking, it SHOULD still first
-apply the repository-default `CloseWrite()` + `CloseRead()` mapping above and
-only then wait for terminal completion. Plain `Close()` SHOULD NOT be
-implemented by translating it into abortive `ABORT` semantics.
+If a binding chooses to make its ordinary close operation blocking, it SHOULD
+still first apply the repository-default graceful send-half completion plus
+read-side stop mapping above and only then wait for terminal completion. The
+ordinary close operation SHOULD NOT be implemented by translating it into
+abortive `ABORT` semantics.
 
 ### 6.6 Semantic conformance and profile coexistence
 
 Bindings satisfy repository-default API semantics by documenting and
-implementing the operation families above. Exact API spellings are not
+implementing the operation families above. Concrete public API names are not
 mandated by the claim. A conforming binding SHOULD document whether it
 exposes:
 
@@ -554,21 +546,21 @@ A stream-style convenience profile and a full-control protocol surface MAY
 coexist.
 When both are exposed:
 
-- `CloseRead()` is the repository-default convenience shorthand for read-side
-  stop with code `CANCELLED`
-- `CloseWrite()` remains graceful completion
-- the primary send-reset entry in the convenience surface is the
+- the stream-style read-side stop operation is the repository-default
+  convenience shorthand for read-side stop with code `CANCELLED`
+- graceful send-half completion remains distinct from send-side reset
+- the primary send-reset operation in the convenience surface is the
   repository-default shorthand for a send-side `RESET(code)` when no extra
   diagnostics are supplied
-- the primary explicit whole-stream abort entry in the convenience surface is
+- the primary explicit whole-stream abort operation in the convenience surface is
   a shorthand for `ABORT(code)` with optional reason text when that surface
   carries one
-- richer control entry points MAY additionally expose caller-selected codes or
+- richer control operations MAY additionally expose caller-selected codes or
   diagnostics without changing the underlying lifecycle families
 
-Bindings SHOULD still keep one primary ordinary spelling per operation family
-inside each exposed surface, rather than presenting multiple co-equal names
-for the same action in that same layer.
+Bindings SHOULD still keep one primary idiomatic operation per operation
+family inside each exposed surface, rather than presenting multiple co-equal
+names for the same action in that same layer.
 
 ### 6.7 Optional native and state-observation surface
 
@@ -581,15 +573,15 @@ queries such as:
 
 When such queries are exposed, repository-default semantics are:
 
-- `ReadClosed()` and `WriteClosed()` report committed local lifecycle state, not
-  whether all already-buffered bytes have been drained
-- `ReadClosed()` therefore MAY become `true` as soon as local read-stop or peer
-  `FIN` / `RESET` / `ABORT` becomes visible in shared stream state, even if one
-  later `Read()` can still drain already-buffered pre-terminal bytes according
-  to the read rules in Section 3
-- `WriteClosed()` likewise becomes `true` when the local send half has left the
-  open state, not only after queued bytes have necessarily been transport-
-  submitted
+- read-half and write-half closed-state observations report committed local
+  lifecycle state, not whether all already-buffered bytes have been drained
+- a read-half closed-state observation MAY become true as soon as local
+  read-stop or peer `FIN` / `RESET` / `ABORT` becomes visible in shared stream
+  state, even if one later read operation can still drain already-buffered
+  pre-terminal bytes according to the read rules in Section 3
+- a write-half closed-state observation likewise becomes true when the local
+  send half has left the open state, not only after queued bytes have
+  necessarily been transport-submitted
 
 ## 7. Error mapping
 
@@ -614,7 +606,7 @@ Recommended fields are:
 - `direction`: `read`, `write`, or `both`
 - `termination_kind`: `graceful`, `reset`, `abort`, or `session_termination`
 
-Bindings that expose explicit abortive close helpers SHOULD support carrying
+Bindings that expose explicit abortive close operations SHOULD support carrying
 both a numeric code and optional reason text. A structured application error
 value with `Code` and optional `Reason` is the repository-default model. A
 binding MAY instead expose separate `(code, reason)` parameters if that is
@@ -623,7 +615,7 @@ more idiomatic for that binding.
 Repository-default diagnostic-text mapping is:
 
 - on a stream-style convenience surface, the primary explicit whole-stream
-  abort entry sends `ABORT(code)`
+  abort operation sends `ABORT(code)`
 - fuller control surfaces MAY likewise carry optional DIAG-TLV `debug_text`
   on `STOP_SENDING`, `RESET`, `ABORT`, `GOAWAY`, or `CLOSE` when those
   controls are exposed directly
@@ -640,8 +632,8 @@ Repository-default diagnostic-text mapping is:
   DIAG-TLV `debug_text` on the relevant terminating control frame
 
 When the session receives `CLOSE` or the underlying transport fails, blocked
-`Read`, `Write`, and accept operations should be unblocked promptly and fail
-with a session-termination error rather than hang indefinitely.
+read, write, and accept operations should be unblocked promptly and fail with
+a session-termination error rather than hang indefinitely.
 
 Core `zmux` error codes occupy `0-255`. Values above that range should be
 surfaced unchanged rather than collapsed into generic transport errors.
@@ -658,13 +650,13 @@ Repository-default session error translation:
 
 - `NO_ERROR` or nil close cause: return nil or a language-appropriate success
   indication
-- `ApplicationError` with a core or non-core code: surface the structured
-  error with code and optional reason text preserved
+- structured application errors with a core or non-core code: surface the
+  structured error with code and optional reason text preserved
 - transport-level EOF or connection reset: surface as a session-closed or
   transport-failure error
 - fatal protocol errors detected while parsing or validating inbound frames on
   an established reader loop: surface as remote read-side session termination
-  errors, even if the lower-level codec helper itself is context-neutral
+  errors, even if the lower-level codec layer itself is context-neutral
 - internal implementation errors: surface as `INTERNAL` errors without
   exposing implementation detail
 
@@ -673,10 +665,10 @@ Repository-default session error translation:
 Default caller expectations:
 
 - opening a stream does not wait for peer acknowledgement
-- the first local `Write` on a new stream may race with a later peer refusal
+- the first local write operation on a new stream may race with a later peer
+  refusal
 - peer refusal should surface as a later stream error via `ABORT`
-- repository-default bindings expose `OpenStream(...)` or an equivalent
-  cancellable open operation
+- repository-default bindings expose cancellable local open operations
 - if open or first-write cancellation happens after the stream has reached
   `opening-frame-committed` or after an inbound frame for that stream has been
   accepted locally, the implementation should send `ABORT(CANCELLED)` while
@@ -743,16 +735,15 @@ Those open-time metadata inputs behave as follows:
 This matches `zmux`'s no-per-stream-ack opening model and should be documented
 clearly in user-facing APIs.
 
-When a binding exposes open-time or advisory metadata methods, repository-
-default names are:
+When a binding exposes open-time or advisory metadata operations, it should
+cover:
 
-- `OpenInfo()` for the opener's opaque open-time bytes when known locally
-- `Metadata()` for the currently known advisory metadata snapshot
-- `UpdateMetadata(update)` for post-open advisory metadata updates; in
-  `zmux v1`, only standardized advisory fields such as priority and group have
-  update semantics on the wire
+- the opener's opaque open-time bytes when known locally
+- the currently known advisory metadata snapshot
+- post-open advisory metadata updates; in `zmux v1`, only standardized
+  advisory fields such as priority and group have update semantics on the wire
 
-Repository-default `UpdateMetadata(update)` behavior is:
+Repository-default post-open metadata update behavior is:
 
 - before `opening-frame-committed`, supported advisory fields SHOULD merge into
   the pending opening metadata state when the first opening `DATA` can still
@@ -772,21 +763,19 @@ Repository-default `UpdateMetadata(update)` behavior is:
 - `open_info` remains open-time metadata only in `zmux v1`; it is not part of
   post-open update semantics
 - if the binding cannot carry requested peer-visible metadata on any
-  standardized path still available, `UpdateMetadata(update)` SHOULD fail
-  explicitly rather than silently mutating only local shadow state
+  standardized path still available, the post-open metadata update operation
+  SHOULD fail explicitly rather than silently mutating only local shadow state
 
 Bindings MAY also expose convenience surfaces that collapse common first-batch
 patterns into one call, for example:
 
-- `WriteFinal(...)` / `WritevFinal(...)` for one-shot `DATA|FIN`
-- `OpenAndSend(...)` / `OpenAndSendWithOptions(...)` for bidirectional open
-  plus immediate first payload submission
-- `OpenUniAndSend(...)` / `OpenUniAndSendWithOptions(...)` for unidirectional
-  open plus immediate first payload submission using `WriteFinal(...)`
-  semantics for that first payload
+- final-write operations for one-shot `DATA|FIN`
+- bidirectional open plus immediate first payload submission
+- unidirectional open plus immediate first payload submission using
+  final-write semantics for that first payload
 
-Ordinary `OpenStream()` / `OpenUniStream()` usage remains metadata-free by
-default. Carrying open-time metadata is an opt-in sender choice.
+Ordinary local open usage remains metadata-free by default. Carrying open-time
+metadata is an opt-in sender choice.
 
 ### 8.1 Repository-default session surface
 
@@ -812,34 +801,22 @@ Repository-default session design likewise distinguishes:
   shutdown, or richer local observation
 
 If a binding exposes an ordinary session surface, it SHOULD provide one
-primary spelling for:
+primary idiomatic operation for:
 
 - accepting bidirectional and unidirectional peer-opened streams
 - opening bidirectional and unidirectional local streams
 - open-time options when supported
-- optional one-shot open-and-send helpers when they fit the binding's API
+- optional one-shot open-and-send conveniences when they fit the binding's API
   surface
 - graceful session shutdown
 - terminal session close carrying an error or application-defined close cause
 - waiting for final session termination
 - non-blocking local session inspection when exposed
 
-Representative spellings include:
-
-- `AcceptStream(...)` / `AcceptUniStream(...)`
-- `OpenStream(...)` / `OpenUniStream(...)`
-- `OpenStreamWithOptions(...)` / `OpenUniStreamWithOptions(...)`
-- `OpenAndSend(...)` / `OpenAndSendWithOptions(...)`
-- `OpenUniAndSend(...)` / `OpenUniAndSendWithOptions(...)`
-- `Close()` for ordinary session shutdown
-- one primary terminal session error-close helper
-- `Wait(...)` / `AwaitTermination(...)` to observe final session termination
-- `Closed()` / `IsClosed()`, `State()`, and `Stats()` for non-blocking local
-  session inspection when exposed
-
-Exact session API spellings are not part of the API-semantics claim. Bindings
-SHOULD still keep one primary spelling per capability family inside each API
-layer rather than standardizing multiple verb families for the same action.
+Concrete session API names are not part of the API-semantics claim. Bindings
+SHOULD still keep one primary idiomatic operation per capability family
+inside each API layer rather than standardizing multiple verb families for the
+same action.
 
 A native or fuller session-control surface MAY additionally expose direct
 controls or observation corresponding to:
@@ -854,37 +831,37 @@ controls or observation corresponding to:
 - local and peer preface observation
 - negotiated-parameter observation
 
-Exact spellings for those fuller session controls are intentionally not
+Concrete public names for those fuller session controls are intentionally not
 standardized by this document.
 
 Repository-default session-lifecycle behavior is:
 
-- `Close()` is the ordinary graceful shutdown helper: it SHOULD stop admitting
-  new local opens, perform the bounded `GOAWAY`-based drain sequence when that
-  path is in use, and then commit terminal session close
+- the ordinary graceful shutdown operation SHOULD stop admitting new local opens,
+  perform the bounded `GOAWAY`-based drain sequence when that path is in use,
+  and then commit terminal session close
 - repository-default graceful drain SHOULD NOT remain blocked solely because a
   stream still retains unread inbound bytes after the local side has no
   remaining send-side work; in particular, peer-opened streams with no
   outstanding local send work, and fully terminal streams retained only for
-  unread buffered data, need not delay `Close()`
-- the primary terminal session error-close helper is stronger than `Close()`
-  and SHOULD commit terminal session shutdown without waiting for graceful
-  drain
+  unread buffered data, need not delay ordinary graceful shutdown
+- the primary terminal session error-close operation is stronger than ordinary
+  graceful shutdown and SHOULD commit terminal session shutdown without
+  waiting for graceful drain
 - once terminal session state becomes visible locally, blocked accept, open,
   read, and write operations SHOULD be woken promptly against that committed
-  state; final `Wait(...)` / `Closed()` completion may follow after close-path
+  state; final wait or closed-state completion may follow after close-path
   cleanup finishes
-- `Wait(...)` observes final session termination, not merely shutdown
-  initiation; bindings SHOULD provide a way to observe the non-graceful
-  terminal cause, either as the wait result or through a documented
-  accessor/helper for the terminal cause
+- the final session wait operation observes final session termination, not
+  merely shutdown initiation; bindings SHOULD provide a way to observe the
+  non-graceful terminal cause, either as the wait result or through a
+  documented terminal-cause observation operation
 - once a terminal session cause has been committed, later transport close
   noise, writer shutdown failures, interrupt cleanup, or repeated local close
   attempts MUST NOT replace that cause; a graceful terminal close likewise
   MUST NOT acquire a non-graceful cause from late cleanup noise
-- `Closed()` becomes true only after final terminal completion
-- `State()` and `Stats()` are local observation helpers; they MUST NOT be
-  treated as completion acknowledgements
+- closed-state observation becomes true only after final terminal completion
+- session-state and statistics observations are local observation operations;
+  they MUST NOT be treated as completion acknowledgements
 
 ## 9. Cancellation and deadlines
 
@@ -903,13 +880,12 @@ Default cancellation and deadline behavior:
   after an inbound frame for that stream has been accepted locally:
   - send `RESET(CANCELLED)` when cancelling only the local send half
   - send `ABORT(CANCELLED)` when aborting the whole stream
-- read-side cancellation with response still needed -> use `CloseRead()` /
+- read-side cancellation with response still needed -> use read-side stop /
   `STOP_SENDING(CANCELLED)` rather than full `ABORT`
-- `SetDeadline`, `SetReadDeadline`, and `SetWriteDeadline`, if exposed, should
-  affect only local blocking behavior; they do not change wire semantics by
-  themselves
-- `AcceptStream(...)` / `AcceptUniStream(...)`, if exposed, should unblock on
-  session termination, deadline expiry, or cancellation rather than hang
+- deadline controls, if exposed, should affect only local blocking behavior;
+  they do not change wire semantics by themselves
+- accept operations should unblock on session termination, deadline expiry, or
+  cancellation rather than hang
 - after peer `GOAWAY` prevents further locally opened streams of a given kind,
   subsequent local open operations of that kind should fail synchronously
   rather than creating user-visible stream objects that cannot be opened
@@ -926,7 +902,7 @@ Repository-default cancellation matrix:
 | provisional open cancelled before `opening-frame-committed` | no | no | fail locally only |
 | earlier provisional open cancelled after a later same-class stream reached `opening-frame-committed` | yes | not required | emit `ABORT(CANCELLED)` to consume the cancelled earlier ID |
 | cancel only the local send half on an existing stream | yes | any | emit `RESET(CANCELLED)` |
-| read-side cancellation while the opposite direction may still matter | yes | any | `CloseRead()` / `STOP_SENDING(CANCELLED)` |
+| read-side cancellation while the opposite direction may still matter | yes | any | read-side stop / `STOP_SENDING(CANCELLED)` |
 | whole-stream cancellation after open | yes | any | emit `ABORT(CANCELLED)` |
 
 ## 10. Stream adapter profile
@@ -946,8 +922,8 @@ The following concepts map well between a stream-oriented adapter surface and
 - opening unidirectional streams
 - accepting bidirectional streams
 - accepting unidirectional streams
-- ordered `Read`
-- ordered `Write`
+- ordered inbound byte reads
+- ordered outbound byte writes
 - write-half close
 - read-side cancellation
 - write-side cancellation / reset
@@ -983,65 +959,62 @@ Recommended adapter mapping:
 
 ### 10.4 Convenience mapping and fuller control layer
 
-The following names are one recommended stream-style mapping, not the only
-conformant API surface:
+The following operation mapping is recommended for a stream-style adapter
+surface:
 
-- `OpenStream` -> local bidirectional stream open
-- `OpenUniStream` -> local unidirectional stream open
-- `OpenStreamWithOptions` -> local bidirectional stream open with open-time
-  metadata or initial advisory options
-- `OpenUniStreamWithOptions` -> local unidirectional stream open with
-  open-time metadata or initial advisory options
-- `AcceptStream` -> accept next application-visible peer-opened bidirectional
-  stream
-- `AcceptUniStream` -> accept next application-visible peer-opened
-  unidirectional stream
-- `OpenAndSend` / `OpenAndSendWithOptions` -> bidirectional open plus
+- local bidirectional and unidirectional open operations map to the
+  corresponding local stream-ID class
+- open operations with options map to the same opens plus open-time metadata
+  or initial advisory inputs
+- bidirectional and unidirectional accept operations return the next
+  application-visible peer-opened stream of the corresponding class
+- optional open-and-immediately-send conveniences map to a local open plus
   immediate first payload submission
-- `OpenUniAndSend` / `OpenUniAndSendWithOptions` -> unidirectional open plus
-  immediate first payload submission with `WriteFinal(...)` semantics for that
-  first payload
-- `StreamID()` -> locally known numeric stream ID when exposed
-- `OpenInfo()` -> opener-supplied opaque open-time bytes when known locally
-- `Metadata()` -> current advisory metadata snapshot when exposed
-- `UpdateMetadata(update)` -> post-open advisory metadata update request
-- `Read` -> `Read`
-- `Write` -> `Write`
-- `WriteFinal(...)` / `WritevFinal(...)` -> one-shot `DATA|FIN`
-- `Close()` -> repository-default full-stream close helper
-- `CloseWrite()` -> `DATA|FIN`
-- `CloseRead()` -> `STOP_SENDING(CANCELLED)` as the repository-default
-  receiver-side close control for one stream direction
-- one primary send-reset or send-cancel entry -> `RESET(code)`
-- one primary explicit whole-stream abort helper, if exposed -> `ABORT(code)`
-  with optional DIAG-TLV `debug_text`
-- lower-level read-stop control, if exposed -> `STOP_SENDING(code)` with
-  optional diagnostics
-- lower-level send-reset control, if exposed -> `RESET(code)` with optional
-  diagnostics
-- lower-level whole-stream abort control, if exposed -> `ABORT(code)` with
-  optional diagnostics
+- numeric stream-ID observation, when exposed, returns the locally known
+  numeric stream ID
+- open-time metadata and advisory metadata observations return the locally
+  known metadata state
+- post-open advisory metadata updates request the standardized post-open
+  carriage available for that stream
+- read and write operations map to ordered inbound byte reads and ordered
+  outbound byte writes
+- final-write operations map to one-shot `DATA|FIN`
+- ordinary full local stream close maps to the repository-default full local
+  close operation
+- graceful send-half completion maps to `DATA|FIN`
+- repository-default read-side stop maps to `STOP_SENDING(CANCELLED)` for one
+  stream direction
+- the primary send-reset or send-cancel operation maps to `RESET(code)`
+- the primary explicit whole-stream abort operation, if exposed, maps to
+  `ABORT(code)` with optional DIAG-TLV `debug_text`
+- lower-level read-stop, send-reset, and whole-stream abort controls, if
+  exposed, map to the corresponding `STOP_SENDING`, `RESET`, and `ABORT`
+  frames with optional diagnostics
 - a code-bearing convenience variant for read-side stop MAY be used when the
-  adapter chooses to fold fuller read-stop control into the same verb family
+  adapter chooses to fold fuller read-stop control into the same operation
+  family
 
 Default adapter behavior:
 
-- plain `Close()` in a stream adapter should end ordinary local use of the
-  stream rather than acting as an undocumented half-close-only helper
-- repository-default `Close()` SHOULD commit `CloseWrite()` and `CloseRead()`
-  when those halves are still locally open
-- new adapter bindings SHOULD prefer `OpenStream()` / `OpenUniStream()` as the
-  primary outbound-open names
-- adapter surfaces SHOULD expose `CloseWrite()` separately for graceful
-  send-half completion
-- adapter surfaces SHOULD expose `CloseRead()` separately for reader-side stop
-- adapter surfaces SHOULD expose one primary send-reset or send-cancel entry
+- the ordinary close operation in a stream adapter should end ordinary local
+  use of the stream rather than acting as an undocumented half-close-only
+  operation
+- repository-default ordinary close SHOULD commit graceful send-half
+  completion and read-side stop when those halves are still locally open
+- new adapter bindings SHOULD expose clear bidirectional and unidirectional
+  outbound-open operations
+- adapter surfaces SHOULD expose a separate graceful send-half completion
+  operation
+- adapter surfaces SHOULD expose a separate reader-side stop operation, such
+  as read-side cancellation
+- adapter surfaces SHOULD expose one primary send-reset or send-cancel operation
   for send-side abortive cancellation
 - adapter surfaces SHOULD expose one primary explicit whole-stream abort
-  helper that can carry code and optional reason text
+  operation that can carry code and optional reason text
 - adapter surfaces MAY additionally expose a fuller control layer for caller-
   selected codes and diagnostics on `STOP_SENDING`, `RESET`, and `ABORT`
-- adapter surfaces SHOULD keep one primary spelling per operation family
+- adapter surfaces SHOULD keep one primary idiomatic operation per operation
+  family
 - application-visible incoming streams should follow the same rules described
   in sections 2 and 8 of this document
 - stream adapters should hide control-opened-only streams from the ordinary
@@ -1081,20 +1054,18 @@ Default adapter behavior:
 
 For stream adapters:
 
-- cancellable open operations should map to `OpenStream(...)`-style local
-  cancellation
+- cancellable open operations should map to local open cancellation
 - a provisional local open cancelled before first-frame commit should not
   consume a peer-observable `stream_id`
-- bindings SHOULD delay numeric `StreamID()` exposure until first-frame
-  commit; earlier numeric ID exposure is outside the repository-default
-  profile
+- bindings SHOULD delay numeric stream-ID exposure until first-frame commit;
+  earlier numeric ID exposure is outside the repository-default profile
 - local cancellation after the stream has reached `opening-frame-committed` or
   after an inbound frame for that stream has been accepted locally should
   attempt
   `RESET(CANCELLED)` when cancelling only the local send half, or
   `ABORT(CANCELLED)` when the adapter intentionally aborts the whole stream
-- read deadlines should affect local blocking `Read`
-- write deadlines should affect local blocking `Write`
+- read deadlines should affect local blocking read operations
+- write deadlines should affect local blocking write operations
 
 Deadline expiry is local API behavior. It does not create new `zmux` wire
 semantics by itself.
@@ -1123,25 +1094,28 @@ useful.
 
 Recommended operation choices:
 
-- request body finished, response still expected -> `CloseWrite()`
+- request body finished, response still expected -> graceful send-half
+  completion
 - local side no longer wants to read, but the opposite direction may still
-  matter -> `CloseRead()`
+  matter -> read-side stop
 - local send half failed, but the opposite direction may still be useful ->
-  the primary send-reset or send-cancel entry
-- the local application is done with the stream as a whole -> `Close()`
+  the primary send-reset or send-cancel operation
+- the local application is done with the stream as a whole -> ordinary full
+  local stream close
 - the whole stream is no longer meaningful and the peer should receive an
   application-defined terminal error -> the primary explicit whole-stream
-  abort entry
+  abort operation
 
 Bindings SHOULD document that:
 
-- successful `Write` means bytes entered the local send path, not that the
-  peer application accepted them
-- `Close()` ends ordinary local use of the stream as a whole under the
-  repository-default full-close helper semantics
-- `CloseWrite()` finishes only the local send half
-- `CloseRead()` stops local interest in further inbound bytes for that
+- successful write means bytes entered the local send path, not that the peer
+  application accepted them
+- ordinary full local stream close ends ordinary local use of the stream as a
+  whole under the repository-default full-close operation semantics
+- graceful send-half completion finishes only the local send half
+- read-side stop stops local interest in further inbound bytes for that
   direction and emits `STOP_SENDING(CANCELLED)` by default
-- the primary send-reset or send-cancel entry aborts only the local send half
-- the primary explicit whole-stream abort entry is stronger than `Close()` and
-  should surface numeric code plus optional reason text when it is exposed
+- the primary send-reset or send-cancel operation aborts only the local send half
+- the primary explicit whole-stream abort operation is stronger than ordinary
+  close and should surface numeric code plus optional reason text when it is
+  exposed

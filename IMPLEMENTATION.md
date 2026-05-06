@@ -191,9 +191,9 @@ behavior should match this sequence:
 | --- | --- |
 | peer `RESET` becomes visible | commit receive-side terminal state -> discard unread inbound bytes for that direction -> restore released session receive budget -> coalesce or schedule resulting `MAX_DATA` work -> wake blocked readers and any local waiters that depend on that half |
 | peer `ABORT` becomes visible | commit full-stream terminal state -> discard unread inbound bytes -> restore released session receive budget -> cancel or detach queued local work that is no longer sendable and release any still-withdrawable reserved send credit -> wake blocked readers and writers |
-| local `CloseRead()` | commit local read-stopped state -> discard unread inbound bytes -> restore released session receive budget -> enqueue `STOP_SENDING(CANCELLED)` if stream-local signalling remains valid -> wake blocked local readers |
-| local primary send-reset / send-cancel entry | commit local send terminal state -> discard unsent application bytes for that outbound half -> release any still-withdrawable reserved send credit -> enqueue `RESET(code)` if stream-local signalling remains valid -> wake blocked local writers |
-| local primary whole-stream abort entry | commit full local terminal state -> discard unread inbound bytes and unsent outbound bytes -> restore receive budget and release reserved send credit -> enqueue `ABORT(code)` with optional diagnostics if stream-local signalling remains valid -> wake blocked readers, writers, and accept/open waiters tied to that stream |
+| local read-side stop | commit local read-stopped state -> discard unread inbound bytes -> restore released session receive budget -> enqueue `STOP_SENDING(CANCELLED)` if stream-local signalling remains valid -> wake blocked local readers |
+| local primary send-reset / send-cancel operation | commit local send terminal state -> discard unsent application bytes for that outbound half -> release any still-withdrawable reserved send credit -> enqueue `RESET(code)` if stream-local signalling remains valid -> wake blocked local writers |
+| local primary whole-stream abort operation | commit full local terminal state -> discard unread inbound bytes and unsent outbound bytes -> restore receive budget and release reserved send credit -> enqueue `ABORT(code)` with optional diagnostics if stream-local signalling remains valid -> wake blocked readers, writers, and accept/open waiters tied to that stream |
 | peer `GOAWAY` reclaim of a never-peer-visible local stream | commit local failure for that stream object -> discard queued outbound data -> release reserved send credit -> fail local open/write waiters -> do not wait for explicit peer `ABORT(REFUSED_STREAM)` |
 | session `CLOSE` or underlying transport failure | commit session terminal state first -> mark all remaining streams failed according to session-close semantics -> discard queued outbound and unread inbound buffers -> restore released receive budget locally and release reserved send credit -> wake all blocked session, stream, open, and accept waiters |
 
@@ -211,7 +211,7 @@ Repository-default ordering for local stop/reset/abort convergence is:
 Repository-default `STOP_SENDING` convergence profile is:
 
 - once `STOP_SENDING` is committed in shared stream state, all subsequent new
-  application `Write` calls for that outbound direction fail immediately
+  application write operations for that outbound direction fail immediately
 - application data not yet framed MUST be discarded and MUST NOT be converted
   into new `DATA`
 - bytes already encoded into local session buffers but not yet handed to the
@@ -781,8 +781,8 @@ Repository-default replenishment threshold calculation:
 
 Replenishment is suppressed for a stream when:
 
-- the stream has entered local read-stopped state (`STOP_SENDING` sent or
-  `CloseRead` called)
+- the stream has entered local read-stopped state (`STOP_SENDING` sent or a
+  local read-side stop was requested)
 - the stream's receive half is terminal (`recv_fin` or `recv_reset`)
 - the stream is still provisional (no wire-visible ID yet)
 
@@ -818,7 +818,7 @@ Implementations should bound:
 
 - bytes buffered for not-yet-accepted peer-opened streams
 - application-invisible control-opened-only streams
-- late tail data accepted after local `CloseRead`
+- late tail data accepted after local read-side stop
 - late tail data accepted or discarded after remote `RESET` or `ABORT`
 
 Repository-default policy:
@@ -1244,8 +1244,8 @@ Expose a stable binding surface for:
 
 - bidirectional and unidirectional open operations
 - bidirectional and unidirectional accept operations
-- ordered `Read` / `Write`
-- one full local close helper
+- ordered inbound read and outbound write operations
+- one full local close operation
 - one graceful send-half completion operation
 - one read-side stop operation
 - one send-side reset operation
@@ -1253,7 +1253,7 @@ Expose a stable binding surface for:
 - I/O deadlines when the binding naturally supports them
 - stream-open and accept operations
 - error-code surfacing
-- explicit whole-stream close-with-error helper with numeric code and optional
+- explicit whole-stream close-with-error operation with numeric code and optional
   reason text when the binding deliberately chooses to expose it
 - fuller protocol-control operations with caller-selected codes and optional
   diagnostics when the binding chooses to expose them
@@ -1264,7 +1264,7 @@ Exit criteria:
 - post-peer-`RESET` reads fail on the affected inbound half while writes may
   remain usable
 - post-`ABORT` reads and writes fail as terminal errors
-- successful local `Write` is documented as local-send-path success only
+- successful local write is documented as local-send-path success only
 
 Primary references:
 
