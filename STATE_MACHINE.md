@@ -107,13 +107,13 @@ the stream to exist.
 - `recv_reset`: peer outbound direction has ended abortively with `RESET`
 - `recv_aborted`: the whole stream has been aborted
 
-Repository-default local read error resolution checks local API state before
-protocol half-state. If the local application has issued a read-side stop,
-subsequent read operations SHOULD fail with a local read-stopped error even if
-the protocol receive half has since transitioned to `recv_fin` or `recv_reset`
-through peer action. This preserves the local
-cancellation precedence: once the application has expressed disinterest in
-further reads, the specific peer-side terminal outcome is secondary.
+Repository-default local read error resolution checks local read intent before
+protocol half-state. If the local endpoint has issued a read-side stop,
+subsequent local reads SHOULD fail with a local read-stopped error even if the
+protocol receive half has since transitioned to `recv_fin` or `recv_reset`
+through peer action. This preserves the local cancellation precedence: once
+the endpoint has expressed disinterest in further reads, the specific peer-side
+terminal outcome is secondary.
 
 ## 4. Local action transitions
 
@@ -127,12 +127,12 @@ further reads, the specific peer-side terminal outcome is secondary.
 | `send_open` | local `DATA|FIN` | `send_fin` |
 | `send_open` | local `RESET` | `send_reset` |
 | `send_open` | local `ABORT` | `send_aborted` |
-| `send_stop_seen` | local `DATA` | local API error, no state change |
+| `send_stop_seen` | local `DATA` | local error, no state change |
 | `send_stop_seen` | local `DATA|FIN` | `send_fin` |
 | `send_stop_seen` | local `RESET` | `send_reset` |
 | `send_stop_seen` | local `ABORT` | `send_aborted` |
 | `send_fin` / `send_reset` | local `ABORT` | `send_aborted` |
-| `send_fin` / `send_reset` / `send_aborted` | local `DATA`, `DATA|FIN`, `RESET` | local API error, no state change |
+| `send_fin` / `send_reset` / `send_aborted` | local `DATA`, `DATA|FIN`, `RESET` | local error, no state change |
 | `send_aborted` | local repeated `ABORT` | unchanged |
 
 On a locally opened stream, the first outbound `DATA`, `DATA|FIN`, or `ABORT`
@@ -147,7 +147,7 @@ creates the stream if it was previously idle.
 | `recv_open` | local `STOP_SENDING` | `recv_stop_sent` |
 | `recv_open` | local `ABORT` | `recv_aborted` |
 | `recv_fin` / `recv_reset` / `recv_stop_sent` | local `ABORT` | `recv_aborted` |
-| `recv_fin` / `recv_reset` / `recv_aborted` | local `STOP_SENDING` | local API error or no-op |
+| `recv_fin` / `recv_reset` / `recv_aborted` | local `STOP_SENDING` | local error or no-op |
 | `recv_stop_sent` | local repeated `STOP_SENDING` | unchanged |
 | `recv_aborted` | local repeated `ABORT` | unchanged |
 
@@ -231,8 +231,8 @@ Abortive full close is `ABORT`.
 
 ### 6.1 Terminal resolution and close visibility
 
-When multiple overlapping close conditions exist, implementations MUST surface
-them to local API callers in a consistent way.
+When multiple overlapping close conditions exist, implementations MUST resolve
+them locally in a consistent way.
 
 Repository-default terminal resolution priority is, from strongest to weakest:
 
@@ -284,7 +284,7 @@ After a stream is fully terminal:
 - late non-opening control frames are ignored
 - late `DATA` after peer `FIN` is invalid
 - late in-flight `DATA` after peer `RESET` or `ABORT` is ignored
-- local write and read operations should fail promptly with terminal errors
+- local reads and writes should fail promptly with terminal errors
   rather than hang
 
 After a local or peer `RESET`, only the affected half is terminal.

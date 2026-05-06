@@ -32,14 +32,14 @@ order:
    Stable numeric assignments and defaults.
 4. [STATE_MACHINE.md](./STATE_MACHINE.md)
    Compact half-state transition reference for implementers.
-5. [API_SEMANTICS.md](./API_SEMANTICS.md)
-   Cross-language stream and session semantics.
-6. [IMPLEMENTATION.md](./IMPLEMENTATION.md)
-   Repository-default implementation guidance and readiness order.
-7. [CONFORMANCE.md](./CONFORMANCE.md)
+5. [CONFORMANCE.md](./CONFORMANCE.md)
    Validation targets and release-claim gates.
-8. [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md)
+6. [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md)
    Byte-level examples for codecs and tests.
+7. [IMPLEMENTATION.md](./IMPLEMENTATION.md)
+   Non-normative implementation guidance and readiness order.
+8. [API_SEMANTICS.md](./API_SEMANTICS.md)
+   Non-normative cross-language binding guidance.
 
 ## Machine-readable assets
 
@@ -163,14 +163,10 @@ Practical dependency matrix:
   carriage
 - `open_metadata` may still be useful on its own for peer-visible `open_info`
 
-Repository-default APIs MAY still expose open-time priority or group options
-for first-batch scheduling. Those values become peer-visible only when
-`OPEN_METADATA` is negotiated and actually used on the first opening `DATA`;
-otherwise they remain local sender-policy inputs unless later
-`priority_update` frames carry the negotiated advisory metadata. Repository-
-default APIs MAY also expose optional opaque `open_info` bytes for peer-
-visible open-time metadata. Ordinary open calls remain metadata-free by
-default.
+Open-time priority, group, and opaque `open_info` values become peer-visible
+only when a negotiated carriage path actually carries them. Without
+`OPEN_METADATA` on the first opening `DATA` or a negotiated later
+`priority_update`, those values are local sender-policy inputs only.
 
 Implementation note: although `OPEN_METADATA` is encoded inside the first
 opening `DATA` / `DATA|FIN` payload, its metadata prefix does not consume
@@ -181,28 +177,28 @@ Support for specific standardized `EXT` subtypes is claim-specific. Support for
 the `EXT` frame envelope itself is part of forward-compatible core behavior.
 The `EXT` envelope does not implicitly open streams in `zmux v1`.
 
-### Repository-default library surfaces
+### Protocol boundary
 
-Repository-default library guidance is intentionally stricter than the widest
-possible binding surface:
+`zmux-v1` compatibility is a protocol claim. It covers the wire format,
+preface negotiation, stream-ID ownership, stream lifecycle, flow control,
+extension negotiation, error signalling, and forward-compatible parsing rules.
+It does not standardize public API names, constructors, default-configuration
+surfaces, adapter-specific limits, scheduler internals, buffer-pool strategy,
+or keepalive tuning policy.
+
+Protocol-facing behavior that should stay aligned across implementations:
 
 - application `DATA` and new-stream creation begin only after peer preface
   parsing completes, and after role resolution completes when `role = auto`
-- repository-default libraries support `role = auto` as part of ordinary
-  establishment; higher-level deployment helpers MAY still default to explicit
-  `initiator` / `responder` roles on obviously asymmetric dial/accept paths
-- repository-default API guidance distinguishes semantic operation families
-  from any one concrete naming scheme
-- bindings MAY expose an ordinary stable stream/session surface, an optional
-  native or fuller-control surface, or both
-- each exposed surface SHOULD keep one primary idiomatic operation per
-  operation family
-- when a numeric stream identifier is exposed, bindings SHOULD provide one
-  stable observation operation using the host language's ordinary naming style
-- when a binding exposes whole-stream abort, it SHOULD carry a numeric code and
-  MAY additionally carry reason text or structured diagnostics
-- bindings SHOULD avoid inventing multiple co-equal primary verbs for the same
-  action in the same layer
+- `role = auto` is a core establishment mode, while explicit
+  `initiator` / `responder` roles remain preferred when a deployment already
+  has deterministic endpoint ordering
+- graceful send completion, read-side stop, send-side reset, and whole-stream
+  abort remain distinct protocol actions mapped to `DATA|FIN`,
+  `STOP_SENDING`, `RESET`, and `ABORT`
+- a stream ID becomes peer-visible only through the first opening-eligible
+  stream-scoped frame, and implementations must not create peer-observable
+  gaps or reuse consumed IDs
 
 ### Compatibility claims
 
@@ -210,27 +206,27 @@ The document set uses three related naming layers:
 
 | Layer | Names used in this repository | Purpose |
 | --- | --- | --- |
-| repository claims | `zmux-wire-v1`, `zmux-api-semantics-profile-v1`, `zmux-stream-adapter-profile-v1`, `zmux-open_metadata`, `zmux-priority_update` | declare which standardized wire or API surfaces an implementation claims |
-| implementation profiles | `zmux-v1`, `zmux-reference-profile-v1` | summarize public compatibility breadth |
+| protocol claims | `zmux-wire-v1`, `zmux-open_metadata`, `zmux-priority_update` | declare which standardized wire surfaces an implementation claims |
+| protocol compatibility profile | `zmux-v1` | summarizes public protocol compatibility breadth |
+| non-protocol guidance profiles | `zmux-api-semantics-profile-v1`, `zmux-stream-adapter-profile-v1`, `zmux-reference-profile-v1` | document optional local binding, adapter, and reference-policy behavior |
 | negotiated capability bits | `priority_hints`, `stream_groups`, `open_metadata`, `priority_update` | control on-wire semantics and carriage paths during negotiation |
 
-Repository-level claims are made separately for:
+Protocol claims are made separately for:
 
 - `zmux-wire-v1`
-- `zmux-api-semantics-profile-v1`
-- `zmux-stream-adapter-profile-v1`
 - `zmux-open_metadata`
 - `zmux-priority_update`
 
 Separate claims remain useful for incremental bring-up, targeted testing, and
-partial internal milestones. Public compatibility and release claims should use
-`zmux-v1`:
+partial internal milestones. Public protocol compatibility and release claims
+should use `zmux-v1`:
 
 - `zmux-v1`: implements the currently standardized `zmux v1` surface in this
   repository, including the base wire contract, `open_metadata`,
   `priority_update`, and the correct negotiated handling of `priority_hints`
   and `stream_groups`
-- `zmux-reference-profile-v1`: implements `zmux-v1` plus the repository-default
-  API, sender, memory, liveness, and scheduling guidance documented in
+- `zmux-reference-profile-v1`: optional non-protocol profile for
+  implementations that also follow the repository-default binding, sender,
+  memory, liveness, and scheduling guidance documented in
   [API_SEMANTICS.md](./API_SEMANTICS.md) and
   [IMPLEMENTATION.md](./IMPLEMENTATION.md)

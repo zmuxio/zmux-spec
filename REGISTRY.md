@@ -203,7 +203,7 @@ Error-code space is partitioned as follows:
 Core `zmux v1` transports non-core error codes unchanged and does not assign
 built-in semantics beyond preserving the numeric value.
 
-| Code | Name | Allowed on | Retry class | Default API kind | Severity scope |
+| Code | Name | Allowed on | Retry class | Default local kind | Severity scope |
 | --- | --- | --- | --- | --- | --- |
 | `0` | `NO_ERROR` | `CLOSE`, `GOAWAY`, optionally stream-terminal frames when no richer error applies | no automatic retry conclusion | graceful/no-error shutdown | session or stream |
 | `1` | `PROTOCOL` | `CLOSE`, exceptionally `ABORT` when a violation is confined to one already-open stream | not retryable by default | protocol error | session-first |
@@ -224,8 +224,8 @@ These columns are registry guidance, not extra wire fields:
 
 - `Allowed on` indicates the repository-default surfaces where the code is most
   appropriate
-- `Retry class` is advisory guidance for APIs and higher layers
-- `Default API kind` is the recommended local error-family classification
+- `Retry class` is advisory guidance for higher layers
+- `Default local kind` is the recommended local error-family classification
 - `Severity scope` indicates whether the code is normally session-first,
   stream-first, or valid in either scope
 

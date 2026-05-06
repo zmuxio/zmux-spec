@@ -148,29 +148,12 @@ Repository-default implementations SHOULD generate that nonce from a strong
 random source and SHOULD NOT reuse a nonce from a failed establishment
 attempt.
 
-In transports that have a natural connection initiator and acceptor, endpoints
-SHOULD still use explicit `initiator` / `responder` roles when they want the
-most predictable early-send behavior.
-
-`role = auto` is a core establishment mode in `zmux v1`. Repository-default
-libraries support it even if some higher-level deployment helpers still
-default to explicit `initiator` / `responder` roles on obviously asymmetric
-client/server paths.
-
-Repository-default user-facing APIs SHOULD usually hide this choice from
-ordinary callers:
-
-- when the underlying transport or API surface already has a natural dialer
-  and acceptor, the implementation SHOULD map those sides directly onto
-  explicit `initiator` / `responder` roles
-- when the API starts a session on top of an already established generic
-  duplex byte stream without a natural dialer/acceptor distinction, the
-  repository-default behavior SHOULD be to use `role = auto` unless the caller
-  explicitly overrides that choice
-- callers SHOULD need to choose a role explicitly only on advanced raw-stream,
-  symmetric-peer, or manually orchestrated establishment paths
-- `role = auto` is therefore a core wire capability, but not something
-  ordinary client/server users should need to reason about routinely
+The role field is protocol-scoped. It assigns stream-ID ownership and does not
+define business-level client/server semantics. Deployments that already have a
+deterministic endpoint ordering signal, such as a dialer/acceptor relationship,
+SHOULD map that signal to explicit `initiator` / `responder` roles when
+predictable early stream-ID ownership matters. Symmetric peers MAY use
+`role = auto`.
 
 ### 2.4 Negotiation rules
 
@@ -415,9 +398,8 @@ class is a session `PROTOCOL` error.
 
 The pair `(session, stream_id)` uniquely identifies one logical stream.
 
-For local sender-side APIs, a newly requested outbound stream may exist
-provisionally before its first opening-eligible frame is committed to wire
-order.
+An endpoint MAY stage a newly requested outbound stream locally before its
+first opening-eligible frame is committed to wire order.
 
 A local stream ID is considered **consumed** only when the first
 opening-eligible frame for that stream has been committed into that stream
@@ -436,9 +418,9 @@ cancelled stream ID.
 Implementations MUST NOT create peer-observable gaps in local stream-ID usage,
 and they MUST NOT recycle or silently reuse a previously committed stream ID.
 
-If a local API exposes a numeric `stream_id` before that commit point, the
-implementation MUST either treat that ID as already reserved and eventually
-surface it on the wire, or avoid exposing numeric IDs until commit.
+Any local reservation scheme used before that commit point MUST still preserve
+the peer-visible no-gap rule: a reserved ID is either eventually consumed on
+the wire, or no later ID of the same class is consumed ahead of it.
 
 If the local side cannot allocate another outbound stream ID within the allowed
 range, it MUST stop creating new streams on that session. It SHOULD begin
@@ -669,7 +651,7 @@ The standard intent of the recognized values is:
 `preface_padding` is a SETTINGS-ID TLV that carries arbitrary bytes and has no
 semantic value. Its only standardized purpose is to vary the encoded length of
 the session preface. Receivers MUST ignore its value bytes without parsing
-them as `varint62`. Senders MAY fill it with random bytes or caller-provided
+them as `varint62`. Senders MAY fill it with random bytes or locally provided
 opaque bytes under local policy, but MUST NOT attach `zmux` protocol semantics
 to its contents. Senders SHOULD omit it unless local deployment policy wants
 preface length variation. Like all known setting IDs, `preface_padding` MUST
@@ -1559,8 +1541,8 @@ Each stream conceptually moves through:
 - closed
 - reset
 
-The wire protocol does not require these names on the API, but implementations
-MUST preserve the following behavior.
+These names are conceptual protocol states. Implementations MAY use different
+internal names, but their wire behavior MUST preserve the following behavior.
 
 ### 9.1 Opening
 
@@ -1579,10 +1561,9 @@ The opening-eligible stream-scoped core frames in `zmux v1` are:
 If `ABORT` is the first opening-eligible frame on a
 stream, the stream opens with zero application bytes transferred so far.
 
-Such control-opened stream state does not by itself imply application
-visibility. Whether a stream becomes visible to ordinary accept/open APIs is an
-API-contract question defined by local bindings and
-[API_SEMANTICS.md](./API_SEMANTICS.md).
+Such control-opened stream state is protocol-visible terminal bookkeeping. It
+records the stream ID as used and terminal, but it does not require a
+higher-layer accept event or application-visible stream object.
 
 No other core frame type opens a stream in `zmux v1`.
 
@@ -1666,10 +1647,6 @@ after both directions have separately reached graceful or abortive terminal
 conditions. `STOP_SENDING` participates as a reader-side stop or cancel
 control; it does not itself mean peer-graceful EOF.
 
-A connection-style API may therefore expose separate local operations for
-write-half completion, read-side stop, send-half abort, and full-stream abort,
-rather than collapsing them into one close primitive.
-
 ### 9.3 Stop-sending
 
 Any side MAY send `STOP_SENDING` to request that the peer stop sending further
@@ -1684,10 +1661,10 @@ does not close the local sending direction.
 
 An endpoint MUST tolerate a bounded amount of peer `DATA` that was already in
 flight before the peer processed `STOP_SENDING`. Such late-arriving bytes MAY
-be delivered to the application or discarded according to local API policy.
+be delivered locally or discarded according to local delivery policy.
 
-A local API that exposes read-half close semantics should map that operation to
-`STOP_SENDING` plus local discard of unread inbound data.
+When an endpoint locally stops reading a still-open inbound direction, the
+protocol action is `STOP_SENDING` plus local discard of unread inbound data.
 
 If unread inbound `DATA` is discarded as part of local read-side stop, the
 receiver MUST apply the released-window rules from Section 8.
@@ -1712,7 +1689,7 @@ Repository-default sender conclusion summary after `STOP_SENDING`:
 | no further application bytes have become unavoidable | prefer `RESET(CANCELLED)` |
 | only a negligible already-committed tail remains and graceful completion is immediate | allow `DATA|FIN` |
 | bounded graceful-drain attempt expires before conclusion | switch to `RESET(CANCELLED)` |
-| local whole-stream cancellation or stronger terminal action occurs | `ABORT(CANCELLED)` or another caller-selected `ABORT` code |
+| local whole-stream cancellation or stronger terminal action occurs | `ABORT(CANCELLED)` or another locally selected `ABORT` code |
 | outbound half was already terminal before `STOP_SENDING` became visible | no additional concluding frame required |
 
 ### 9.4 Reset
@@ -1752,9 +1729,8 @@ If a peer-owned valid stream ID is previously unseen and the first frame
 received for it is `ABORT`, the receiver MUST treat that stream as entering a
 terminal abort state and MUST record the stream ID as used.
 
-After `ABORT`, both directions of the stream are terminal. A connection-style
-API SHOULD surface subsequent reads and writes as terminal stream errors rather
-than a graceful EOF.
+After `ABORT`, both directions of the stream are terminal. `ABORT` is not a
+graceful EOF signal and MUST NOT be interpreted as one.
 
 `ABORT` remains a stronger action even if one half had already reached graceful
 completion. Sending `ABORT` after local or peer `FIN` does not revoke or

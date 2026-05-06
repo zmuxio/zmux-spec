@@ -5,8 +5,9 @@ This document is implementation-language-neutral.
 Its purpose is to define the behavioral surface that independent
 implementations should validate before claiming `zmux` interoperability.
 
-This document describes behavior, not public API names. A binding may expose
-the same behavior through host-language-specific API shapes.
+This document describes protocol behavior, not public API names. Local binding
+or adapter shapes may vary as long as the claimed protocol behavior is
+preserved.
 
 ## 1. Wire interoperability
 
@@ -136,31 +137,26 @@ An implementation should demonstrate that it:
 
 This is essential for forward evolution.
 
-### 3.1 Repository claims
+### 3.1 Protocol claims
 
-Conformance claims should be made separately for:
+Protocol conformance claims should be made separately for:
 
 - `zmux-wire-v1`
-- `zmux-api-semantics-profile-v1`
-- `zmux-stream-adapter-profile-v1`
 - `zmux-open_metadata`
 - `zmux-priority_update`
 
-### 3.2 Implementation profiles
+### 3.2 Protocol compatibility profile
 
-Repository-level implementation profiles are:
+Repository-level protocol compatibility profile:
 
 - `zmux-v1`: the currently standardized `zmux v1` surface in this
   repository, including the base wire contract, forward extension tolerance,
   `open_metadata`, `priority_update`, and the correct negotiated handling of
   `priority_hints` and `stream_groups`
-- `zmux-reference-profile-v1`: `zmux-v1` plus the repository-default API,
-  sender, memory, liveness, and scheduling guidance
 
-Separate repository claims remain useful for incremental bring-up, targeted
-testing, and internal release gates. Public compatibility claims should use
-`zmux-v1`. Implementations that also follow repository-default local behavior
-may additionally claim `zmux-reference-profile-v1`.
+Separate protocol claims remain useful for incremental bring-up, targeted
+testing, and internal release gates. Public protocol compatibility claims
+should use `zmux-v1`.
 
 ### 3.3 Compatibility rule
 
@@ -169,52 +165,24 @@ Compatibility rule:
 - `zmux-v1` implementations MUST interoperate cleanly with each other by
   negotiating and using only the capabilities both sides share on the wire
 - a release that intentionally lacks one of the currently standardized
-  same-version surfaces in this repository SHOULD NOT claim public
+  same-version protocol surfaces in this repository SHOULD NOT claim public
   `zmux-v1` compatibility
-- `zmux-reference-profile-v1` does not change wire requirements; it narrows
-  local behavior toward the repository-default guidance
+- before `session-ready`, an implementation emits only the local preface and a
+  fatal establishment `CLOSE`, and emits none of: new-stream `DATA`,
+  stream-scoped control, ordinary session-scoped control, or `EXT`
 
-### 3.4 Reference-profile claim gate
+### 3.4 Claim checklist
 
-Reference-profile claim gate:
-
-- repository-default stream-style read-side stop emits
-  `STOP_SENDING(CANCELLED)` when that convenience profile is exposed, while
-  fuller control surfaces MAY additionally expose caller-selected codes and
-  diagnostics for `STOP_SENDING`, `RESET`, and `ABORT`
-- repository-default ordinary close acts as a full local close operation
-- repository-default ordinary close on a unidirectional stream silently ignores
-  the locally absent direction rather than failing solely because that half
-  does not exist
-- each exposed API surface keeps one documented primary idiomatic operation
-  per operation family, with any extra convenience operations documented as
-  wrappers over the same semantic action rather than as distinct lifecycle
-  operations
-- before `session-ready`, repository-default sender behavior emits only the
-  local preface and a fatal establishment `CLOSE`, and emits none of:
-  new-stream `DATA`, stream-scoped control, ordinary session-scoped control,
-  or `EXT`
-- repository-default sender and receiver memory rules enforce the documented
-  hidden-state, provisional-open, and late-tail bounds
-- repository-default liveness rules keep at most one outstanding protocol
-  `PING` and do not treat weak local signals as strong progress
-
-### 3.5 Claim checklist
-
-The table below summarizes the repository-default readiness checklist for each
-claim or implementation-profile level. It does not replace the detailed
-scenario lists later in this document; it is a compact gate summary for
-implementation planning and release review.
+The table below summarizes the readiness checklist for each protocol claim. It
+does not replace the detailed scenario lists later in this document; it is a
+compact gate summary for implementation planning and release review.
 
 | Claim or profile | Minimum acceptance checklist |
 | --- | --- |
 | `zmux-wire-v1` | pass core wire interoperability; pass invalid-input handling; pass extension-tolerance behavior |
 | `zmux-open_metadata` | satisfy `zmux-wire-v1`; negotiate `open_metadata`; accept valid `DATA|OPEN_METADATA` on first opening `DATA`; reject unnegotiated or misplaced `OPEN_METADATA`; ignore unknown metadata TLVs; drop duplicate singleton metadata while preserving the enclosing `DATA` |
 | `zmux-priority_update` | satisfy `zmux-wire-v1`; negotiate `priority_update`; process `stream_priority` and `stream_group`; ignore `open_info` inside `PRIORITY_UPDATE`; ignore unknown advisory TLVs; ignore duplicate singleton advisory updates as one dropped update |
-| `zmux-api-semantics-profile-v1` | document and implement the repository-default semantic operation families from [API_SEMANTICS.md](./API_SEMANTICS.md), including full local close, graceful send-half completion, read-side stop, send-side reset, whole-stream abort, structured error surfacing, open/cancel behavior, and accept visibility rules; document whether the binding exposes a stream-style convenience profile, a full-control protocol surface, or both; exact public API names are not required |
-| `zmux-stream-adapter-profile-v1` | satisfy the stream-adapter subset from [API_SEMANTICS.md](./API_SEMANTICS.md), including bidirectional/unidirectional open and accept mapping, one consistent convenience mapping or fuller documented control layer or both, and documented limits/non-goals |
 | `zmux-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass stream-lifecycle scenarios; pass flow-control scenarios; pass session-lifecycle scenarios; satisfy every currently active same-version optional surface in this repository, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups` |
-| `zmux-reference-profile-v1` | satisfy `zmux-v1`; satisfy the reference-profile claim gate above; meet the quality behaviors to observe closely enough to preserve the documented repository-default sender, memory, liveness, API, and scheduling behavior |
 
 ## 4. Stream-lifecycle scenarios
 
@@ -242,13 +210,10 @@ At minimum, test these stream-level cases:
 - `STOP_SENDING` causing the peer to stop future `DATA` on one direction while
   the opposite direction remains usable
 - half-close in one direction while the reverse direction remains active
-- EOF surfaced only after buffered data is drained following peer `FIN`
-- ordinary close acting as a full local close operation that ends ordinary use of
-  both halves under the repository-default API profile
-- graceful send-half completion preventing further local writes while reads
-  remain usable
-- repository-default stream-style read-side stop emitting
-  `STOP_SENDING(CANCELLED)`
+- EOF reached only after buffered data is drained following peer `FIN`
+- local `DATA|FIN` preventing further local `DATA` on that direction while the
+  reverse direction remains usable
+- local read-side stop being represented on the wire by `STOP_SENDING`
 - late `DATA` after peer `FIN`
 - duplicate `RESET`
 - peer `DATA|FIN` on a bidirectional stream not releasing the incoming-stream
@@ -394,20 +359,15 @@ part of interoperability quality validation:
 - on very slow links, implementations should also avoid repetitive `BLOCKED`,
   keepalive, or similar small-control chatter when no meaningful limiting
   offset or liveness state has changed
-- repository-default sender profiles not emitting early application `DATA`
-  or creating new streams before peer preface parsing completes
-- repository-default bindings not exposing numeric stream ID values before
-  `opening-frame-committed`
-- repository-default handling of provisional-open cancellation consuming an
-  earlier cancelled stream ID on the wire when a later same-class ID has
-  already reached `opening-frame-committed`, rather than creating a skipped-ID
-  gap
-- repository-default stream-style profiles, when exposed, using one clear
-  ordinary operation for full close, read-side stop, graceful send-half
-  completion, and send-side reset/cancel, with the ordinary close operation
-  documented as a full local close operation rather than an undocumented
-  send-half-only shorthand, while fuller control surfaces remain free to
-  expose more direct protocol controls and caller-selected codes
+- senders not emitting early application `DATA` or creating new streams before
+  peer preface parsing completes
+- local stream-ID reservation before `opening-frame-committed` preserving the
+  peer-visible no-gap rule
+- provisional-open cancellation consuming an earlier cancelled stream ID on the
+  wire when a later same-class ID has already reached
+  `opening-frame-committed`, rather than creating a skipped-ID gap
+- `DATA|FIN`, `STOP_SENDING`, `RESET`, and `ABORT` remaining distinct protocol
+  actions instead of being collapsed into one ambiguous close behavior
 - repository-default bulk protection preserving a bounded minimum class share
   when bulk and interactive work are both continuously active
 - repository-default implementations detecting and shedding abusive empty-frame

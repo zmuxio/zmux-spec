@@ -3,8 +3,8 @@
 This document is non-normative.
 
 It explains how the generated fixture assets are intended to map onto common
-parser, state-machine, and API assertions in implementations across
-programming languages.
+parser, state-machine, and session-behavior assertions in implementations
+across programming languages.
 
 ## 1. Wire fixtures
 
@@ -50,7 +50,8 @@ Recommended assertion mapping:
 - `ownership`  
   Decide whether the incoming or outgoing side owns the stream ID.
 - `steps[].event`  
-  Feed the named logical event into the state machine or API layer.
+  Feed the named logical event into the state machine or session-behavior
+  layer.
 - `steps[].expect_state`  
   Assert the resulting conceptual state. For stream lifecycle cases, prefer
   asserting the send-half and receive-half states separately when a structured
