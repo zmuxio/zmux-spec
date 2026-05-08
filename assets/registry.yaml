@@ -104,6 +104,10 @@
       "kind": "reserved"
   "setting_ids":
     -
+      "from": 13
+      "to": 255
+      "kind": "reserved_for_future_standard_assignment"
+    -
       "from": 256
       "to": 511
       "kind": "experimental"

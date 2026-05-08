@@ -16,6 +16,10 @@ It is organized by wire namespace:
 7. `EXT` subtype IDs
 8. reserved ranges
 
+Within each wire namespace, standard assignments are kept compact unless a
+specific compatibility rule requires a gap. Functional grouping is expressed
+by names and sections rather than numeric subranges.
+
 ## 1. Session and preface constants
 
 - `magic = "ZMUX"`
@@ -239,6 +243,7 @@ The following ranges remain reserved:
 - capability bit positions `32-47` are experimental
 - capability bit positions `48-61` are private-use
 - frame types `12-31` are reserved
+- setting IDs `13-255` are reserved for future standard assignment
 - setting IDs `256-511` are experimental
 - setting IDs `512-1023` are reserved for future standard assignment
 - setting IDs `>= 1024` are private-use

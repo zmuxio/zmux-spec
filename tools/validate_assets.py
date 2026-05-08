@@ -83,6 +83,21 @@ def validate_registry(registry):
     require(proto["integer_encoding"] == "varint62", "unexpected integer encoding")
     require(proto["integer_byte_order"] == "big-endian", "unexpected integer byte order")
     require(proto["integer_max"] == 2**62 - 1, "unexpected integer max")
+    assigned_standard_settings = {int(k) for k in registry.get("settings", {}) if int(k) < 256}
+    reserved_standard_settings = set()
+    for item in registry.get("reserved_ranges", {}).get("setting_ids", []):
+        if item.get("kind") != "reserved_for_future_standard_assignment":
+            continue
+        start = item.get("from")
+        end = item.get("to")
+        if start is None or end is None:
+            continue
+        reserved_standard_settings.update(range(max(start, 1), min(end, 255) + 1))
+    for setting_id in range(1, 256):
+        require(
+            setting_id in assigned_standard_settings or setting_id in reserved_standard_settings,
+            f"standard setting ID {setting_id} is neither assigned nor reserved",
+        )
     minima = registry.get("compatibility_minima", {})
     require(minima.get("max_frame_payload") == 16384, "unexpected frame-payload compatibility minimum")
     require(minima.get("max_control_payload_bytes") == 4096, "unexpected control-payload compatibility minimum")

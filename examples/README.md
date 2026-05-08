@@ -57,7 +57,7 @@ This lets an implementation run smaller suites such as:
 
 - codec-only
 - flow-control
-- open-hints
+- `open_metadata`
 - unidirectional-stream behavior
 - `priority_update`
 
