@@ -650,16 +650,9 @@ for the corresponding negotiated core or extension behaviors.
 
 The following settings are hints only:
 
-- `idle_timeout_millis`
-- `keepalive_hint_millis`
 - `scheduler_hints`
 
 Advisory hints MAY be ignored.
-
-In particular, `keepalive_hint_millis` is only a hint. Implementations MAY
-ignore it when the underlying transport already provides satisfactory liveness,
-close detection, or native keepalive behavior, or when local policy prefers to
-avoid protocol-originated keepalive traffic.
 
 `scheduler_hints` defines a session-wide baseline scheduling intent. Standard
 values are listed in [REGISTRY.md](./REGISTRY.md). Unknown hint values MUST

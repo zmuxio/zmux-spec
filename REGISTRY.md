@@ -40,17 +40,11 @@ These IDs are used inside preface `settings_tlv`.
 - `5` = max_incoming_streams_bidi
 - `6` = max_incoming_streams_uni
 - `7` = max_frame_payload
-- `8` = idle_timeout_millis
-- `9` = keepalive_hint_millis
-- `10` = max_control_payload_bytes
-- `11` = max_extension_payload_bytes
-- `12` = scheduler_hints
-- `13` = ping_padding_key
-- `63` = preface_padding
-
-`preface_padding` uses setting ID `63`, the last one-byte `varint62` setting
-ID, so it stays compact while leaving IDs `14..62` available for future
-semantic settings.
+- `8` = max_control_payload_bytes
+- `9` = max_extension_payload_bytes
+- `10` = scheduler_hints
+- `11` = ping_padding_key
+- `12` = preface_padding
 
 ### 2.1 Standard default values
 
@@ -64,8 +58,6 @@ settings are omitted from the session preface.
 - `max_incoming_streams_bidi = 256`
 - `max_incoming_streams_uni = 256`
 - `max_frame_payload = 16384`
-- `idle_timeout_millis = 0`
-- `keepalive_hint_millis = 0`
 - `max_control_payload_bytes = 4096`
 - `max_extension_payload_bytes = 4096`
 - `scheduler_hints = 0`
@@ -108,20 +100,20 @@ default values.
 
 ## 3. Capability bits
 
-- `1 << 0` = priority_hints
-- `1 << 1` = stream_groups
-- `1 << 2` = multilink_basic (deprecated, retired, reserved, not reusable)
+- `1 << 0` = open_metadata
+- `1 << 1` = priority_hints
+- `1 << 2` = stream_groups
 - `1 << 3` = priority_update
-- `1 << 4` = open_metadata
 
 Dependency guidance for active capability claims:
 
+- `open_metadata` means the peer supports optional first-opening-`DATA`
+  metadata; individual streams MAY omit it and open with plain `DATA`
 - `priority_hints` and `stream_groups` define advisory metadata semantics
-- `priority_update` is only a carriage/update path; it has no standalone
+  that can be carried through `OPEN_METADATA` when the corresponding carriage
+  path is also negotiated
+- `priority_update` is a later carriage/update path; it has no standalone
   meaning unless paired with at least one semantic capability
-- `open_metadata` is a first-opening-`DATA` carriage path; it may carry
-  `open_info` alone or, when paired with the corresponding semantic
-  capabilities, `stream_priority` and `stream_group`
 - advertising `priority_hints` or `stream_groups` without also negotiating
   either `open_metadata` or `priority_update` is wire-valid, but it does not
   provide a standardized peer-visible carriage path
@@ -236,21 +228,14 @@ These columns are registry guidance, not extra wire fields:
 ## 7. Standard `EXT` subtype IDs
 
 - `1` = PRIORITY_UPDATE
-- `2` = ML_READY (retired, reserved, not reusable)
-- `3` = ML_ATTACH (retired, reserved, not reusable)
-- `4` = ML_ATTACH_ACK (retired, reserved, not reusable)
-- `5` = ML_DRAIN_REQ (retired, reserved, not reusable)
-- `6` = ML_DRAIN_ACK (retired, reserved, not reusable)
 
 `PRIORITY_UPDATE` is defined by [SPEC.md](./SPEC.md).
-The retired `ML_*` subtype numbers remain reserved for historical continuity
-but are no longer part of the active standardized protocol feature set.
 
 ## 8. Reserved ranges
 
 The following ranges remain reserved:
 
-- capability bit positions `5-31` are reserved for future standard assignment
+- capability bit positions `4-31` are reserved for future standard assignment
 - capability bit positions `32-47` are experimental
 - capability bit positions `48-61` are private-use
 - frame types `12-31` are reserved
@@ -264,7 +249,7 @@ The following ranges remain reserved:
 - DIAG-TLV types `256-511` are experimental
 - DIAG-TLV types `512-1023` are reserved for future standard assignment
 - DIAG-TLV types `>= 1024` are private-use
-- `EXT` subtype IDs `7-255` are standard-extension space
+- `EXT` subtype IDs `2-255` are standard-extension space
 - `EXT` subtype IDs `256-511` are experimental
 - `EXT` subtype IDs `512-1023` are reserved for future standard assignment
 - `EXT` subtype IDs `>= 1024` are private-use

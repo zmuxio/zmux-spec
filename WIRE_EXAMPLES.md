@@ -2,8 +2,7 @@
 
 This document provides small reference encodings for `zmux v1`.
 
-The examples cover the currently standardized `zmux-v1` wire surface in this
-repository.
+The examples cover the currently standardized `zmux-v1` wire behavior.
 
 All integers except `magic`, `preface_ver`, `role`, and the one-byte `code`
 field use canonical `varint62` encoding.
@@ -477,17 +476,17 @@ Fields:
 - `tie_breaker_nonce = 0`
 - `min_proto = 1`
 - `max_proto = 1`
-- `capabilities = 25` (priority_hints | priority_update | open_metadata = 0x19)
+- `capabilities = 11` (open_metadata | priority_hints | priority_update = 0x0b)
 - `settings_len = 4`
 - `settings_tlv = TLV(type=max_frame_payload=7, len=2, value=varint62(32768) = 80 00)`
 
 Bytes:
 
 ```text
-5a 4d 55 58 01 00 00 01 01 19 04 07 02 80 00
+5a 4d 55 58 01 00 00 01 01 0b 04 07 02 80 00
 ```
 
-Note: `capabilities = 25` is encoded as `varint62(25) = 19`. The setting
+Note: `capabilities = 11` is encoded as `varint62(11) = 0b`. The setting
 `max_frame_payload = 32768` is encoded as a 2-byte varint62 `80 00` inside a
 TLV with type `7` and length `2`.
 
@@ -695,8 +694,8 @@ Sequence:
 03 08 08 05       ; local ABORT(stream=8, code=REFUSED_STREAM)
 ```
 
-This illustrates the normal repository-default rejection path after a peer
-opens a stream beyond the accepted `GOAWAY` watermark.
+This illustrates the normal rejection path after a peer opens a stream beyond
+the accepted `GOAWAY` watermark.
 
 ### 3.7 Zero-length `DATA|OPEN_METADATA` opener, then later payload
 

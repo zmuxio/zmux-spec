@@ -24,13 +24,11 @@
     "5": "max_incoming_streams_bidi",
     "6": "max_incoming_streams_uni",
     "7": "max_frame_payload",
-    "8": "idle_timeout_millis",
-    "9": "keepalive_hint_millis",
-    "10": "max_control_payload_bytes",
-    "11": "max_extension_payload_bytes",
-    "12": "scheduler_hints",
-    "13": "ping_padding_key",
-    "63": "preface_padding"
+    "8": "max_control_payload_bytes",
+    "9": "max_extension_payload_bytes",
+    "10": "scheduler_hints",
+    "11": "ping_padding_key",
+    "12": "preface_padding"
   },
   "defaults": {
     "initial_max_stream_data_bidi_locally_opened": 65536,
@@ -40,8 +38,6 @@
     "max_incoming_streams_bidi": 256,
     "max_incoming_streams_uni": 256,
     "max_frame_payload": 16384,
-    "idle_timeout_millis": 0,
-    "keepalive_hint_millis": 0,
     "max_control_payload_bytes": 4096,
     "max_extension_payload_bytes": 4096,
     "scheduler_hints": 0,
@@ -60,11 +56,10 @@
     "max_extension_payload_bytes": 4096
   },
   "capabilities": {
-    "1": "priority_hints",
-    "2": "stream_groups",
-    "4": "multilink_basic",
-    "8": "priority_update",
-    "16": "open_metadata"
+    "1": "open_metadata",
+    "2": "priority_hints",
+    "4": "stream_groups",
+    "8": "priority_update"
   },
   "frame_types": {
     "1": "DATA",
@@ -114,12 +109,7 @@
     "13": "INTERNAL"
   },
   "ext_subtypes": {
-    "1": "PRIORITY_UPDATE",
-    "2": "ML_READY",
-    "3": "ML_ATTACH",
-    "4": "ML_ATTACH_ACK",
-    "5": "ML_DRAIN_REQ",
-    "6": "ML_DRAIN_ACK"
+    "1": "PRIORITY_UPDATE"
   },
   "reserved_ranges": {
     "frame_types": [
@@ -182,7 +172,7 @@
     ],
     "ext_subtype_ids": [
       {
-        "from": 7,
+        "from": 2,
         "to": 255,
         "kind": "standard_extension_space"
       },
@@ -206,16 +196,10 @@
   "capability_status": {
     "1": "active",
     "2": "active",
-    "4": "retired",
-    "8": "active",
-    "16": "active"
+    "4": "active",
+    "8": "active"
   },
   "ext_subtype_status": {
-    "1": "active",
-    "2": "retired",
-    "3": "retired",
-    "4": "retired",
-    "5": "retired",
-    "6": "retired"
+    "1": "active"
   }
 }

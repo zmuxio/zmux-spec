@@ -82,7 +82,7 @@ the normative documents:
 
 ## Implementation usage notes
 
-For implementation work, the repository-default order is:
+For implementation work, a practical validation order is:
 
 1. run parser and codec tests from `fixtures/wire_valid.ndjson` and
    `fixtures/wire_invalid.ndjson`
@@ -92,7 +92,7 @@ For implementation work, the repository-default order is:
    flow-control, `session_lifecycle`, unidirectional-stream,
    `open_metadata`, or `priority_update`
 5. use `tools/rebuild_assets.py` when regenerating derived assets locally
-6. use `tools/validate_assets.py` in CI to catch drift in the repository
+6. use `tools/validate_assets.py` in CI to catch generated-asset drift
 
 The generation steps are intentionally ordered. `golden_cases`, the fixture
 bundle, and the case sets should be regenerated serially rather than in
@@ -101,14 +101,14 @@ parallel so the derived files stay in sync.
 See [examples/README.md](./examples/README.md) for a language-agnostic harness
 outline, [examples/fixture_mapping.md](./examples/fixture_mapping.md) for a
 field-to-assertion mapping guide, and [IMPLEMENTATION.md](./IMPLEMENTATION.md)
-for the repository-default build order and readiness gates.
+for build-order and readiness-gate guidance.
 
 These assets do not override the Markdown specifications. If any discrepancy is
 found, the normative Markdown documents take precedence.
 
 ## Compatibility Target
 
-The current public compatibility target in this repository is `zmux-v1`:
+The current public compatibility target is `zmux-v1`:
 
 - `preface_ver = 1`
 - `proto_ver = 1`
@@ -119,8 +119,8 @@ The current public compatibility target in this repository is `zmux-v1`:
 - correct negotiated handling of `priority_hints` and `stream_groups`
 - forward-compatible `EXT` envelope parsing and ignore/skip behavior
 
-In this repository, a release claiming `zmux-v1` compatibility is expected to
-implement the currently standardized `zmux v1` surface above. Same-version
+A release claiming `zmux-v1` compatibility is expected to implement the
+currently standardized `zmux v1` protocol feature set above. Same-version
 extension documents still define their own negotiation and validation rules.
 
 The base wire contract still includes:
@@ -145,14 +145,10 @@ The base wire contract still includes:
 
 ### Capability and carriage summary
 
-In `zmux v1`, `priority_hints` and `stream_groups` define advisory metadata
-semantics. The standardized peer-visible carriage paths for those values are
-`OPEN_METADATA` on the first opening `DATA` frame and `priority_update` after
-the stream is already open. Those semantic bits do not by themselves imply an
-independent carriage path. New deployments SHOULD therefore negotiate
-`priority_hints` and `stream_groups` together with at least one standardized
-carriage path, unless they intentionally use those semantic bits only for
-local metadata surfaces.
+In `zmux v1`, `open_metadata` and `priority_update` are standardized
+peer-visible carriage paths. `priority_hints` and `stream_groups` define the
+advisory metadata semantics that those paths may carry. The semantic bits do
+not by themselves imply an independent carriage path.
 
 Practical dependency matrix:
 
@@ -183,7 +179,7 @@ The `EXT` envelope does not implicitly open streams in `zmux v1`.
 preface negotiation, stream-ID ownership, stream lifecycle, flow control,
 extension negotiation, error signalling, and forward-compatible parsing rules.
 It does not standardize public API names, constructors, default-configuration
-surfaces, adapter-specific limits, scheduler internals, buffer-pool strategy,
+behavior, adapter-specific limits, scheduler internals, buffer-pool strategy,
 or keepalive tuning policy.
 
 Protocol-facing behavior that should stay aligned across implementations:
@@ -206,10 +202,10 @@ The document set uses three related naming layers:
 
 | Layer | Names used in this repository | Purpose |
 | --- | --- | --- |
-| protocol claims | `zmux-wire-v1`, `zmux-open_metadata`, `zmux-priority_update` | declare which standardized wire surfaces an implementation claims |
+| protocol claims | `zmux-wire-v1`, `zmux-open_metadata`, `zmux-priority_update` | declare which standardized wire behavior an implementation claims |
 | protocol compatibility profile | `zmux-v1` | summarizes public protocol compatibility breadth |
 | non-protocol guidance profiles | `zmux-api-semantics-profile-v1`, `zmux-stream-adapter-profile-v1`, `zmux-reference-profile-v1` | document optional local binding, adapter, and reference-policy behavior |
-| negotiated capability bits | `priority_hints`, `stream_groups`, `open_metadata`, `priority_update` | control on-wire semantics and carriage paths during negotiation |
+| negotiated capability bits | `open_metadata`, `priority_hints`, `stream_groups`, `priority_update` | control on-wire semantics and carriage paths during negotiation |
 
 Protocol claims are made separately for:
 
@@ -221,12 +217,12 @@ Separate claims remain useful for incremental bring-up, targeted testing, and
 partial internal milestones. Public protocol compatibility and release claims
 should use `zmux-v1`:
 
-- `zmux-v1`: implements the currently standardized `zmux v1` surface in this
-  repository, including the base wire contract, `open_metadata`,
+- `zmux-v1`: implements the currently standardized `zmux v1` protocol feature
+  set, including the base wire contract, `open_metadata`,
   `priority_update`, and the correct negotiated handling of `priority_hints`
   and `stream_groups`
 - `zmux-reference-profile-v1`: optional non-protocol profile for
-  implementations that also follow the repository-default binding, sender,
-  memory, liveness, and scheduling guidance documented in
+  implementations that also follow the local binding, sender, memory,
+  liveness, and scheduling guidance documented in
   [API_SEMANTICS.md](./API_SEMANTICS.md) and
   [IMPLEMENTATION.md](./IMPLEMENTATION.md)
