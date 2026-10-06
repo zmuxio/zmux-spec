@@ -55,7 +55,12 @@ the normative documents:
 - [assets/wire_corpus.json](./assets/wire_corpus.json)  
   Small valid and invalid wire examples for codec tests.
 - [assets/state_corpus.json](./assets/state_corpus.json)  
-  Representative stream-state scenarios for behavior tests.
+  Representative stream-state scenarios for behavior tests. The cases in the
+  `portable_state` case set name their preconditions and use only the
+  documented portable event and result vocabulary; the others are
+  reference-implementation regression scenarios with implementation-specific
+  event names or unstated seeded state (see
+  [examples/fixture_mapping.md](./examples/fixture_mapping.md)).
 - [assets/invalid_corpus.json](./assets/invalid_corpus.json)  
   Edge-case invalid inputs and expected outcomes for parser and state-machine
   tests.
@@ -71,8 +76,10 @@ the normative documents:
   Exporter that turns the unified golden cases into sharded fixture files for
   test harnesses.
 - [tools/build_case_sets.py](./tools/build_case_sets.py)  
-  Generator for fixture groupings such as codec-only,
-  flow-control, `session_lifecycle`, `open_metadata`, or `priority_update`.
+  Generator for fixture groupings such as `codec_valid` / `codec_invalid`,
+  `frame_invalid`, flow-control, `session_lifecycle`, `open_metadata`,
+  `priority_update`, or `portable_state`; every fixture ID lands in at least
+  one group.
 - [tools/rebuild_assets.py](./tools/rebuild_assets.py)  
   Serial rebuild script for all generated assets and fixture bundles.
 - [fixtures/index.json](./fixtures/index.json)  
@@ -86,13 +93,20 @@ For implementation work, a practical validation order is:
 
 1. run parser and codec tests from `fixtures/wire_valid.ndjson` and
    `fixtures/wire_invalid.ndjson`
-2. run stream and session behavior tests from `fixtures/state_cases.ndjson`
+2. run stream and session behavior tests from `fixtures/state_cases.ndjson`,
+   starting with the portable cases in the `portable_state` case set
 3. run policy and edge-case checks from `fixtures/invalid_cases.ndjson`
-4. use `fixtures/case_sets.json` to select subsets such as codec-only,
-   flow-control, `session_lifecycle`, unidirectional-stream,
-   `open_metadata`, or `priority_update`
+4. use `fixtures/case_sets.json` to select subsets such as `codec_valid` /
+   `codec_invalid` (byte-level wire fixtures), `frame_invalid`, flow-control,
+   `session_lifecycle`, unidirectional-stream, `open_metadata`,
+   `priority_update`, or `portable_state`
 5. use `tools/rebuild_assets.py` when regenerating derived assets locally
-6. use `tools/validate_assets.py` in CI to catch generated-asset drift
+6. use `tools/validate_assets.py` in CI to catch generated-asset drift; it
+   also checks the corpora against reference codec rules, every hex example in
+   [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md), the error-code table in
+   [SPEC.md](./SPEC.md) Section 4.3 and the expected-code lists in
+   [CONFORMANCE.md](./CONFORMANCE.md) Section 2 against the fixtures, the
+   registry against [REGISTRY.md](./REGISTRY.md), and the Markdown tables
 
 The generation steps are intentionally ordered. `golden_cases`, the fixture
 bundle, and the case sets should be regenerated serially rather than in

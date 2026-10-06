@@ -24,7 +24,9 @@ Typical checks:
 
 Use:
 
-- `fixtures/state_cases.ndjson`
+- `fixtures/state_cases.ndjson`, starting with the `portable_state` case set;
+  the remaining state cases are reference-implementation regression scenarios
+  (see [fixture_mapping.md](./fixture_mapping.md) Section 2)
 
 Typical checks:
 
@@ -55,11 +57,16 @@ Use:
 
 This lets an implementation run smaller suites such as:
 
-- codec-only
+- byte-level codec cases (`codec_valid`, `codec_invalid`) and frame-layer
+  invalid cases (`frame_invalid`)
+- preface and establishment cases (`preface`)
 - flow-control
 - `open_metadata`
 - unidirectional-stream behavior
 - `priority_update`
+- portable state-machine cases (`portable_state`)
+
+Every fixture ID belongs to at least one set.
 
 ## Suggested CI order
 

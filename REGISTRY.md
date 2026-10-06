@@ -167,6 +167,11 @@ Value formats:
   fields should encode them inside this one byte string using their own
   higher-layer format
 
+A `varint62` value here must be exactly one canonical `varint62`. A truncated,
+non-canonical, or over-long `stream_priority` or `stream_group` value in an
+interpreted `OPEN_METADATA` block or `PRIORITY_UPDATE` payload is a session
+`FRAME_SIZE` error ([SPEC.md](./SPEC.md) Section 7.2).
+
 ### 5.2 DIAG-TLV types
 
 - `1` = debug_text
@@ -189,6 +194,9 @@ Standardized DIAG-TLV behavior:
   that frame; they do not alter the enclosing frame's primary semantics
 - invalid UTF-8 in `debug_text` invalidates only that diagnostic value; it does
   not alter the enclosing frame's primary semantics
+- a `retry_after_millis`, `offending_stream_id`, or `offending_frame_type`
+  value that is not exactly one canonical `varint62` likewise invalidates only
+  that diagnostic value; it is not a session or stream error
 - `debug_text` is human-readable diagnostics only
 - `retry_after_millis` is an advisory retry hint only
 - `offending_stream_id` and `offending_frame_type` are advisory machine-readable
@@ -242,22 +250,36 @@ The following ranges remain reserved:
 - capability bit positions `4-31` are reserved for future standard assignment
 - capability bit positions `32-47` are experimental
 - capability bit positions `48-61` are private-use
+- frame type `0` is reserved
 - frame types `12-31` are reserved
+- setting ID `0` is reserved
 - setting IDs `13-255` are reserved for future standard assignment
 - setting IDs `256-511` are experimental
 - setting IDs `512-1023` are reserved for future standard assignment
 - setting IDs `>= 1024` are private-use
+- STREAM-METADATA-TLV type `0` is reserved
+- STREAM-METADATA-TLV types `4-255` are reserved for future standard
+  assignment
 - STREAM-METADATA-TLV types `256-511` are experimental
 - STREAM-METADATA-TLV types `512-1023` are reserved for future standard
   assignment
 - STREAM-METADATA-TLV types `>= 1024` are private-use
+- DIAG-TLV type `0` is reserved
+- DIAG-TLV types `5-255` are reserved for future standard assignment
 - DIAG-TLV types `256-511` are experimental
 - DIAG-TLV types `512-1023` are reserved for future standard assignment
 - DIAG-TLV types `>= 1024` are private-use
+- `EXT` subtype ID `0` is reserved
 - `EXT` subtype IDs `2-255` are standard-extension space
 - `EXT` subtype IDs `256-511` are experimental
 - `EXT` subtype IDs `512-1023` are reserved for future standard assignment
 - `EXT` subtype IDs `>= 1024` are private-use
+
+Value `0` is never assigned in the frame-type, setting-ID, TLV-type, or `EXT`
+subtype namespaces. A receiver handles a reserved or otherwise unassigned
+value like any unknown value of its namespace: an unknown core frame type is a
+session `PROTOCOL` error, and unknown setting IDs, TLV types, and `EXT`
+subtypes are ignored or skipped (SPEC Section 11).
 
 Allocated values remain reserved even after deprecation or retirement. Standard
 documents MUST NOT silently reuse an older assignment for different semantics

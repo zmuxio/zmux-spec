@@ -51,7 +51,10 @@ interoperate on:
 - leaving omitted fields unchanged
 - ignoring a `PRIORITY_UPDATE` payload with duplicate singleton advisory TLVs
   as one dropped advisory update rather than treating it as stream-fatal
-- ignoring `PRIORITY_UPDATE` when `priority_update` was not negotiated
+- ignoring `PRIORITY_UPDATE` when `priority_update` was not negotiated,
+  before parsing its payload or checking its `stream_id`, so a malformed
+  payload or `stream_id = 0` does not fail the session (only an undecodable
+  `ext_type` is still `PROTOCOL`; SPEC Section 7.6)
 - ignoring unnegotiated `stream_priority` or `stream_group` fields in both
   `OPEN_METADATA` and `PRIORITY_UPDATE`
 
@@ -104,7 +107,7 @@ An implementation should reject or handle correctly:
 - `PONG` with derived payload length `< 8`
 - `DATA`, `STOP_SENDING`, `RESET`, or `ABORT` on `stream_id = 0`
 - `PING`, `PONG`, `GOAWAY`, or `CLOSE` on a non-zero `stream_id`
-- `PRIORITY_UPDATE` on `stream_id = 0`
+- `PRIORITY_UPDATE` on `stream_id = 0` when `priority_update` was negotiated
 - non-zero `GOAWAY` watermarks that do not match the advertised stream class
   or the stream-ID ownership of the peer receiving the `GOAWAY`
 - outbound `GOAWAY`, `CLOSE`, `RESET`, `STOP_SENDING`, and `ABORT`
@@ -117,10 +120,14 @@ An implementation should reject or handle correctly:
 - forbidden non-zero flag combinations on frames other than the valid `DATA`,
   `DATA|OPEN_METADATA`, `DATA|FIN`, and `DATA|OPEN_METADATA|FIN` combinations
 - duplicate singleton TLVs inside one `PRIORITY_UPDATE` payload
+- a non-canonical or truncated `stream_priority` value inside a
+  `PRIORITY_UPDATE` payload or an `OPEN_METADATA` block
 - duplicate standardized singleton DIAG-TLVs inside one enclosing control frame
   while preserving that frame's primary semantics
 - invalid UTF-8 `debug_text` inside a DIAG-TLV being ignored while preserving
   that frame's primary semantics
+- a non-canonical `retry_after_millis` value inside a DIAG-TLV being ignored
+  while preserving that frame's primary semantics
 - `PRIORITY_UPDATE` targeting a previously unseen stream being ignored without
   creating stream state
 - `PRIORITY_UPDATE` targeting a terminal stream being ignored without reviving
@@ -144,10 +151,45 @@ An implementation should reject or handle correctly:
   stream ID being treated as invalid
 - illegal stream ID ownership bits
 - stream ID reuse
-- peer-created stream IDs skipping the next expected ID of their class
+- peer-created stream IDs skipping the next expected ID of their class (when
+  the ID is not above a local `GOAWAY` watermark of that class)
 - unknown core frame types
 - `role = auto` with `tie_breaker_nonce = 0`
 - equal `tie_breaker_nonce` when both peers use `role = auto`
+
+Expected session error codes for the structural cases above follow SPEC
+Sections 3.2, 4.3, 6.11, and 7.2:
+
+- `FRAME_SIZE`: `frame_length = 0` or `frame_length = 1`;
+  `frame_length < 1 + encoded_length(stream_id)`; frame payloads larger than
+  receiver limits; missing, truncated, or non-canonical mandatory payload
+  fields (the `MAX_DATA`, `BLOCKED`, `STOP_SENDING`, `RESET`, `ABORT`, `CLOSE`,
+  and `GOAWAY` fields and `metadata_len`); `PING` or `PONG` payloads shorter
+  than `8` bytes; container-structural TLV errors inside DIAG-TLV sequences,
+  `OPEN_METADATA` blocks, and `PRIORITY_UPDATE` payloads (the latter only when
+  `priority_update` was negotiated; SPEC Section 7.6), including when the same
+  block also repeats a singleton TLV; and a truncated, non-canonical, or over-long
+  `stream_priority` or `stream_group` value in an interpreted `OPEN_METADATA`
+  block or `PRIORITY_UPDATE` payload that precedes any duplicate singleton
+  (SPEC Section 7.2)
+- `PROTOCOL`: non-canonical `frame_length` or `stream_id` encodings; trailing
+  bytes after the one `MAX_DATA` or `BLOCKED` value; an `EXT` payload too short
+  for its `ext_type`, or with a non-canonical `ext_type`; invalid preface fields
+  and setting values; and the frame-scope, flag, and unknown-frame-type cases
+  above
+
+Expected establishment `CLOSE` codes follow SPEC Sections 2.4 and 2.6:
+`PROTOCOL` for invalid magic, an invalid `role`, a zero `role = auto` nonce,
+an invalid preface integer, a malformed settings block, or a payload limit
+below its minimum; `UNSUPPORTED_VERSION` for an unsupported `preface_ver` or
+no overlapping protocol version; `ROLE_CONFLICT` for the same explicit role or
+equal `role = auto` nonces; `FRAME_SIZE` for `settings_len` above `4096`;
+and `INTERNAL` for a local failure such as an establishment timeout.
+
+A non-canonical, truncated, or over-long `varint62` value of a standardized
+DIAG-TLV (`retry_after_millis`, `offending_stream_id`, `offending_frame_type`)
+is not an error: the receiver ignores that diagnostic value and keeps the
+enclosing frame's primary semantics (SPEC Section 7.1).
 
 ## 3. Extension-tolerance behavior
 
@@ -208,7 +250,7 @@ compact gate summary for implementation planning and release review.
 | Claim or profile | Minimum acceptance checklist |
 | --- | --- |
 | `zmux-wire-v1` | pass core wire interoperability; pass invalid-input handling; pass extension-tolerance behavior |
-| `zmux-open_metadata` | satisfy `zmux-wire-v1`; negotiate `open_metadata`; accept valid `DATA|OPEN_METADATA` on first opening `DATA`; reject unnegotiated or misplaced `OPEN_METADATA`; ignore unknown metadata TLVs; drop duplicate singleton metadata while preserving the enclosing `DATA` |
+| `zmux-open_metadata` | satisfy `zmux-wire-v1`; negotiate `open_metadata`; accept valid `DATA\|OPEN_METADATA` on first opening `DATA`; reject unnegotiated or misplaced `OPEN_METADATA`; ignore unknown metadata TLVs; drop duplicate singleton metadata while preserving the enclosing `DATA` |
 | `zmux-priority_update` | satisfy `zmux-wire-v1`; negotiate `priority_update`; process `stream_priority` and `stream_group`; ignore `open_info` inside `PRIORITY_UPDATE`; ignore unknown advisory TLVs; ignore duplicate singleton advisory updates as one dropped update |
 | `zmux-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass stream-lifecycle scenarios; pass flow-control scenarios; pass session-lifecycle scenarios; satisfy every currently active same-version optional protocol feature defined by this document set, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups` |
 
@@ -236,6 +278,13 @@ At minimum, test these stream-level cases:
 - peer opening attempts above an advertised local `GOAWAY` watermark being
   rejected with `ABORT(REFUSED_STREAM)` without consuming that stream ID or
   requiring optional `OPEN_METADATA` parsing
+- after a restrictive local `GOAWAY`, peer `RESET`, `STOP_SENDING`,
+  stream-scoped `BLOCKED`, stream-scoped `MAX_DATA`, or stream-scoped `EXT` on
+  a refused peer-owned stream ID above the watermark (sent before the peer
+  observed the refusal) being ignored without a session `PROTOCOL` error,
+  further `DATA` on that ID being discarded without another
+  `ABORT(REFUSED_STREAM)`, and the session staying in draining with its
+  accepted streams intact
 - independent enforcement of bidirectional and unidirectional incoming-stream
   limits
 - `STOP_SENDING` causing the peer to stop future `DATA` on one direction while
@@ -285,6 +334,26 @@ At minimum, test these stream-level cases:
   peer `ABORT` is ignored with budget release
 - local read-side stop followed by bounded late peer `DATA` being discarded
   and restoring session budget without restoring stream-scoped budget
+- local read-side stop, or local `ABORT`, while the peer still has its full
+  outstanding stream credit in flight (for example four maximum-size `DATA`
+  frames under the default `64 KiB` initial stream window) not failing the
+  session: the late bytes are discarded with session budget release and no
+  stream-scoped `MAX_DATA` is advertised for the stopped direction
+- on a live read-stopped direction (local read-side stop, no local `ABORT`),
+  one byte beyond the advertised stream credit producing `ABORT(FLOW_CONTROL)`
+  rather than a session error, provided the session limit still holds; after
+  a local `ABORT`, exceeding the captured late-data allowance is possible only
+  for a non-compliant peer, and the implementation may then either fail the
+  session with `PROTOCOL` (the peer sent beyond the stream credit it was
+  granted) or keep discarding the bytes with session budget release
+  (API_SEMANTICS Section 3)
+- local read-side stop followed by a local `ABORT` of the same stream while
+  late `DATA` is still arriving: the allowance captured at the stop keeps
+  applying, so late bytes within the stream credit outstanding at the stop
+  never fail the session even when they exceed the credit outstanding at the
+  abort
+- late `DATA` after peer `FIN` producing `ABORT(STREAM_CLOSED)` even when the
+  local endpoint had already stopped reading that direction
 - `OPEN_METADATA` bytes not consuming stream or session flow-control windows
   even on a zero-credit opening frame
 
@@ -307,13 +376,23 @@ At minimum, test:
 - sender opening a stream under zero initial stream credit while carrying
   `OPEN_METADATA` on the opening `DATA`
 - session `MAX_DATA` advanced when unread buffered data is discarded during
-  reset or refusal
+  reset or refusal, including the application bytes of the refused opening
+  `DATA` frame itself whether the refusal comes from a local `GOAWAY`
+  watermark, an incoming-stream limit, or the accept backlog
+- `DATA` rejected with a stream-local `ABORT` (`STREAM_CLOSED`, `STREAM_STATE`,
+  or stream `FLOW_CONTROL`) still being checked against, counted in, and
+  released to the session window
 - session `MAX_DATA` advanced when late `DATA` for already closed streams is
   dropped through used-ID terminal bookkeeping
 - local read-side stop discarding unread data while restoring session receive
   budget without advertising fresh stream credit for that stopped direction
 - late-data absorption after stop, reset, or abort being bounded per direction
-  and in aggregate so ignored payloads cannot consume unbounded memory
+  and in aggregate so ignored payloads cannot consume unbounded memory, with
+  an aggregate overflow only discarding further late bytes rather than failing
+  the session
+- a long-lived session in which many sequential streams each absorb a small
+  late tail after local read-side stop staying usable: aggregate late-data
+  accounting tracks currently retained state, not a lifetime total
 - overflow protection on malicious or corrupted `MAX_DATA` values
 - `BLOCKED` deduplication: only the most recent limiting offset for each scope
   is retained when multiple `BLOCKED` updates are pending
@@ -329,6 +408,10 @@ At minimum, test:
 At minimum, test:
 
 - normal session startup with parallel preface exchange
+- no frame other than the local preface, and a fatal establishment `CLOSE` on
+  failure, being emitted before the peer preface is parsed: capture outbound
+  bytes while withholding the peer preface and check that no `PING`, `PONG`,
+  `MAX_DATA`, `BLOCKED`, `GOAWAY`, `EXT`, or stream frame appears
 - immediate post-preface first `DATA` on a new stream
 - no extra mux acknowledgement being required once session establishment is
   complete and stream-ID ownership is resolved
@@ -422,11 +505,19 @@ Implementations should share at least:
   `stream_id`, stream-scoped frames on `stream_id = 0`, and
   `PRIORITY_UPDATE` on `stream_id = 0`
 - invalid establishment examples such as `role = auto` with a zero
-  `tie_breaker_nonce`
+  `tie_breaker_nonce`, a truncated setting value, a repeated
+  `preface_padding`, and `settings_len` above `4096`
+- known-answer `ping_padding_tag` values and a padded `PING` carrying one
 - valid `BLOCKED` examples
 - valid `STOP_SENDING` examples
 - valid `PRIORITY_UPDATE` examples when that extension is implemented
-- invalid non-canonical varint examples
+- invalid non-canonical varint examples, both in the frame header
+  (`PROTOCOL`) and in a mandatory payload field (`FRAME_SIZE`)
+- non-canonical standardized TLV values: a `stream_priority` value in
+  `PRIORITY_UPDATE` (`FRAME_SIZE`) and a `retry_after_millis` DIAG value that
+  is ignored
 - invalid oversized-frame examples
+- invalid frame-size and malformed-payload examples that pin the `FRAME_SIZE`
+  versus `PROTOCOL` split of SPEC Section 4.3
 
 See [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md) for a starting point.

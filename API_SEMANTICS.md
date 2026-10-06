@@ -72,7 +72,11 @@ Repository-default terminology:
 - `provisional-expired`: a provisional local stream handle has exceeded a
   local policy time limit without reaching `opening-frame-committed`;
   repository-default behavior is to fail that stream with a retryable local
-  error and release any provisional reservation without consuming a stream ID
+  error and release any provisional reservation without consuming a stream ID.
+  The limit measures idle provisional time only: time the stream spends
+  blocked in an operation that would commit it, waiting behind an earlier
+  same-class opener, does not count, whether that opener then opens or is
+  abandoned (expires, is cancelled, or has its ID consumed by `ABORT`)
 
 ## 2. Application-visible incoming streams
 
@@ -218,6 +222,11 @@ Default read behavior:
 - once remote `ABORT` becomes visible to the API, unread buffered inbound
   bytes should be discarded and subsequent read and write operations should
   fail
+- once the session terminates, including graceful termination by peer
+  `CLOSE(NO_ERROR)` or a local graceful close, read operations on a receive
+  half that has not observed peer `FIN` fail with a session-termination error
+  rather than returning EOF or empty data; EOF is reported only after an
+  actual peer `FIN`
 
 Repository-default visibility point:
 
@@ -239,17 +248,64 @@ For a local read-side stop:
 - subsequent read operations should fail with a local read-stopped or
   cancelled error rather than graceful EOF
 - the peer may still produce a bounded amount of late `DATA` that was already
-  in flight before it processed `STOP_SENDING`
+  in flight before it processed `STOP_SENDING`; a compliant peer may have up to
+  the stream credit that was still outstanding when the stop committed (the
+  last advertised stream `MAX_DATA` minus the bytes already received on that
+  direction) in flight
 - repository-default flow-control policy restores released session budget but
   suppresses further stream-local replenishment for that stopped direction
   unless a bounded late-data policy is explicitly documented
+- the stopped direction keeps enforcing the stream credit it already
+  advertised: late `DATA` that would exceed it while the session limit still
+  holds is answered with `ABORT(FLOW_CONTROL)`, and late `DATA` that would
+  exceed the session limit fails the session with `CLOSE(FLOW_CONTROL)`
 - repository-default late-data policy SHOULD bound both:
-  - one per-stopped-direction tail allowance
+  - one per-stopped-direction tail allowance, captured when the read-side stop
+    commits and never smaller than the stream credit outstanding at that
+    moment (see the repository-default capacities in Section 5)
   - one aggregate session-wide allowance across all stopped directions
+- late `DATA` within the per-direction allowance MUST NOT fail the session; it
+  is discarded, or delivered if local delivery policy allows, and its bytes go
+  through the session discard-and-budget-release path
+- a compliant peer can never exceed the per-direction allowance, because any
+  byte beyond the outstanding credit already violates stream flow control; a
+  live read-stopped direction answers that byte with `ABORT(FLOW_CONTROL)` as
+  above, but where stream-local signalling is no longer available, such as
+  after a local `ABORT` or on a compacted tombstone that no longer tracks
+  stream credit, repository-default implementations MAY treat exceeding the
+  allowance as a session `PROTOCOL` error (the peer sent beyond the stream
+  credit it was granted) or MAY keep discarding the bytes with session budget
+  release
+- the aggregate allowance tracks late-tail accounting that is currently
+  retained, not a lifetime total: a stopped direction's or tombstone's counted
+  late bytes are subtracted once, when that stream or tombstone is reaped or
+  forgotten, or when the stopped direction's tail completes through peer
+  `RESET`, `DATA|FIN`, or `ABORT`; each implementation picks one of those
+  points and does not subtract twice
 - if the aggregate late-data allowance is exceeded, repository-default policy
-  SHOULD discard additional late tail data and MAY escalate to stream-local or
-  session-local failure when local memory pressure makes continued absorption
-  unsafe
+  SHOULD discard additional late tail data through the same
+  discard-and-budget-release path and MUST NOT fail the session for that
+  reason alone; discarded late bytes are not buffered, so they do not create
+  memory pressure
+- the same per-direction allowance and aggregate accounting apply to late
+  `DATA` after a local whole-stream `ABORT`, with the allowance captured when
+  the local abort commits
+- the allowance is captured at the first local read-side stop or local `ABORT`
+  of that direction and never decreases: a local `ABORT` after a local
+  read-side stop keeps the larger of the two captured values, and late bytes
+  keep counting from the first capture, so bytes the peer sent within the
+  credit outstanding at the stop can never exceed it
+- once a peer `FIN` has been observed on the direction, later `DATA` on it is
+  not late tail data: it is answered with `ABORT(STREAM_CLOSED)` (SPEC Section
+  9.6) whether or not a local read-side stop happened, on live streams and on
+  compacted tombstones alike
+- bytes that are not late tail data do not consume these allowances: the
+  application bytes of a refused opening `DATA` frame, `DATA` on a peer-owned
+  stream ID refused under a local `GOAWAY` watermark, and `DATA` rejected with a
+  stream-local `ABORT` on a live stream (`STREAM_CLOSED`, `STREAM_STATE`, or
+  stream `FLOW_CONTROL`) are still checked against the session window, counted
+  as received, and released as session credit, but are not charged to
+  late-data caps
 
 ## 4. Write behavior
 
@@ -337,14 +393,27 @@ Repository-default capacities:
   corresponding control signal; if the resulting `CLOSE` itself cannot be
   retained under an extreme cap, the implementation may finish the local failed
   session without sending that final `CLOSE`
-- repository-default late-data allowance after local read-side stop:
-  `max(1 KiB, min(2 * negotiated max_frame_payload, initial_stream_window / 8))`,
+- repository-default late-data floor:
+  `late_data_floor = max(1 KiB, min(2 * negotiated max_frame_payload, initial_stream_window / 8))`,
   where `initial_stream_window` means the negotiated initial stream-scoped
-  receive limit for that stream kind; the same repository-default per-stream
-  cap is a reasonable default for ignored late tail after peer `RESET` or
-  peer `ABORT` while stream-local late-tail accounting still exists
+  receive limit for that stream kind
+- repository-default late-data allowance for a direction stopped by local
+  read-side stop or ended by local `ABORT`, captured when the first of those
+  commits:
+  `max(late_data_floor, advertised_stream_limit - stream_received_at_commit)`;
+  a later local `ABORT` of an already stopped direction keeps the larger value
+  and does not restart the late-byte count (Section 3); the allowance is
+  carried into the tombstone when the stream compacts, so a compliant peer can
+  never exceed it
+- `late_data_floor` alone remains a reasonable per-stream cap for ignored late
+  tail after peer `RESET` or peer `ABORT` while stream-local late-tail
+  accounting still exists, because a compliant peer sends no `DATA` after its
+  own `RESET` or `ABORT` on that direction
 - repository-default aggregate late-data allowance across all stopped
-  directions: `max(64 KiB, 4 * negotiated max_frame_payload)`
+  directions and late-tail tombstones: `max(64 KiB, 4 * negotiated
+  max_frame_payload)`, measured against currently retained late-tail
+  accounting; exceeding it discards further late bytes with session budget
+  release rather than failing the session (Section 3)
 - repository-default hidden control-opened soft headroom:
   `max(16, max_pending_unaccepted_streams / 4)` when such a stream-count limit
   exists locally
@@ -649,7 +718,9 @@ leak through the public error surface.
 Repository-default session error translation:
 
 - `NO_ERROR` or nil close cause: return nil or a language-appropriate success
-  indication
+  indication from session-level wait and close operations; stream reads on a
+  receive half without peer `FIN` still fail with a session-termination error
+  (Section 3)
 - structured application errors with a core or non-core code: surface the
   structured error with code and optional reason text preserved
 - transport-level EOF or connection reset: surface as a session-closed or
@@ -673,6 +744,11 @@ Default caller expectations:
   `opening-frame-committed` or after an inbound frame for that stream has been
   accepted locally, the implementation should send `ABORT(CANCELLED)` while
   outbound stream signalling remains valid
+- once the local stream-ID space of a class is exhausted, open operations of
+  that class fail with a local open-limited or session-draining error, not a
+  protocol error (see [IMPLEMENTATION.md](./IMPLEMENTATION.md) Section 8)
+- invalid open-time options such as an unusable `open_info` fail the open
+  before a stream ID is consumed
 
 Repository-default sender APIs should treat local open as a two-stage action:
 
@@ -847,6 +923,10 @@ Repository-default session-lifecycle behavior is:
 - the primary terminal session error-close operation is stronger than ordinary
   graceful shutdown and SHOULD commit terminal session shutdown without
   waiting for graceful drain
+- neither close operation SHOULD block indefinitely on a stalled transport
+  writer: after a bounded wait for the final `CLOSE`, the implementation closes
+  the underlying transport; concurrent close calls emit at most one `CLOSE`
+  frame and observe the same terminal outcome
 - once terminal session state becomes visible locally, blocked accept, open,
   read, and write operations SHOULD be woken promptly against that committed
   state; final wait or closed-state completion may follow after close-path
@@ -886,6 +966,12 @@ Default cancellation and deadline behavior:
   they do not change wire semantics by themselves
 - accept operations should unblock on session termination, deadline expiry, or
   cancellation rather than hang
+- a protocol ping operation with a deadline or cancellation honours it while
+  waiting for the session writer as well as while waiting for `PONG`
+- session establishment is bounded by a configurable local establishment
+  timeout (repository default `10s`; see
+  [IMPLEMENTATION.md](./IMPLEMENTATION.md) Section 1); expiry fails
+  establishment locally
 - after peer `GOAWAY` prevents further locally opened streams of a given kind,
   subsequent local open operations of that kind should fail synchronously
   rather than creating user-visible stream objects that cannot be opened

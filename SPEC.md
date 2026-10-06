@@ -173,6 +173,17 @@ The session MUST fail if:
 - either peer advertises `max_control_payload_bytes < 4096`
 - either peer advertises `max_extension_payload_bytes < 4096`
 
+When the failing endpoint can still signal the failure, it sends a fatal
+establishment `CLOSE` (Section 2.7). The `CLOSE` code SHOULD be:
+
+| Establishment failure | `CLOSE` code |
+| --- | --- |
+| invalid `magic`, invalid `role` value, `role = auto` with `tie_breaker_nonce = 0`, an invalid preface integer (Section 3.2), a malformed settings block (Section 5.1), or a payload limit below its minimum | `PROTOCOL` |
+| unsupported `preface_ver`, or no overlapping protocol version | `UNSUPPORTED_VERSION` |
+| both peers use the same explicit role, or `role = auto` with equal nonces | `ROLE_CONFLICT` |
+| `settings_len` above `4096` (Section 2.6) | `FRAME_SIZE` |
+| a local failure not caused by the peer preface, such as a local establishment timeout | `INTERNAL` |
+
 Role resolution rules:
 
 - if one peer advertises `initiator` and the other `responder`, those explicit
@@ -292,18 +303,22 @@ completes.
 `settings_len` in the session preface MUST NOT exceed `4096` bytes in
 `zmux v1`.
 
-A larger value is a negotiation error and the session MUST fail.
+A larger value is a negotiation error and the session MUST fail. The receiver
+can detect it from the `settings_len` field alone, before reading
+`settings_tlv`, and SHOULD signal it with `CLOSE(FRAME_SIZE)`.
 
 ### 2.7 Early post-preface traffic
 
-Once the preface is sent, a peer MAY start sending regular `zmux` frames
-without waiting for an explicit handshake acknowledgement.
+No handshake acknowledgement frame is required by `zmux v1`. Once the local
+preface has been sent and the peer preface has been fully parsed, and roles
+are resolved when either side uses `role = auto`, a peer MAY start sending
+regular `zmux` frames without waiting for any acknowledgement.
 
-No additional handshake ACK frame is required by `zmux v1`.
-
-`zmux v1` still requires one sender-local readiness condition before ordinary
-stream traffic begins: an endpoint MUST finish parsing the peer preface before
-it creates new local streams or sends application `DATA`.
+`zmux v1` requires one sender-local readiness condition before any other frame
+is sent: until an endpoint has finished parsing the peer preface, it MUST NOT
+send any frame other than its local session preface and, on establishment
+failure, a fatal session `CLOSE`. In particular, it MUST NOT create new local
+streams or send application `DATA` before that point.
 
 For endpoints using `role = auto`, that readiness condition also includes role
 resolution.
@@ -317,17 +332,18 @@ A recommended session-establishment sequence is:
 - send local preface immediately
 - parse peer preface immediately
 - transition to session-ready as soon as peer preface parsing succeeds
-- only then allow new stream creation and application `DATA`
+- only then allow new stream creation, application `DATA`, and other regular
+  frames
 
 Session-ready summary:
 
-| Local establishment condition | Required before ordinary stream traffic? |
+| Local establishment condition | Required before regular frames? |
 | --- | --- |
 | local preface sent | yes |
 | peer preface fully parsed | yes |
 | role resolved when either side uses `role = auto` | yes |
 | negotiated protocol version and capabilities accepted | yes |
-| ordinary stream traffic (`DATA`, `DATA|FIN`, stream-scoped control, `EXT`) | allowed only after every required readiness condition above is satisfied |
+| regular frames (`DATA`, `DATA\|FIN`, stream-scoped control, session-scoped control, `EXT`) | allowed only after every required readiness condition above is satisfied |
 
 Establishing-state outbound policy:
 
@@ -335,10 +351,10 @@ Establishing-state outbound policy:
 | --- | --- |
 | local session preface | allowed |
 | fatal session `CLOSE` during establishment failure | allowed |
-| new-stream `DATA` / `DATA|FIN` | not allowed |
-| stream-scoped control (`STOP_SENDING`, `RESET`, `ABORT`, stream `MAX_DATA`, stream `BLOCKED`) | not allowed |
-| ordinary session-scoped control (`PING`, `PONG`, session `MAX_DATA`, session `BLOCKED`, `GOAWAY`) | not allowed |
-| `EXT` | not allowed |
+| new-stream `DATA` / `DATA\|FIN` | MUST NOT be sent |
+| stream-scoped control (`STOP_SENDING`, `RESET`, `ABORT`, stream `MAX_DATA`, stream `BLOCKED`) | MUST NOT be sent |
+| ordinary session-scoped control (`PING`, `PONG`, session `MAX_DATA`, session `BLOCKED`, `GOAWAY`) | MUST NOT be sent |
+| `EXT` | MUST NOT be sent |
 
 This keeps the core protocol free of preface-race resource ambiguity while
 preserving ackless stream opening once the session is ready.
@@ -400,8 +416,33 @@ is not the next expected ID. That rejection does not consume the stream ID and
 does not advance the expected-ID cursor. The receiver MAY make this refusal
 decision before parsing optional opening metadata carried by the refused frame.
 
-A peer-owned new stream ID that skips over lower still-unused IDs of the same
-class is a session `PROTOCOL` error.
+Because advertised `GOAWAY` watermarks are non-increasing (Section 6.9), a
+peer-owned stream ID that is greater than the current local `GOAWAY`
+watermark of its class, and that has no existing local stream state or
+terminal bookkeeping, can never again be accepted as a new stream in that
+session. Such an ID is **known-absent (refused)** whether or not a frame for it
+has been observed yet. The peer may legitimately have opened that stream, and
+may still send frames on it, before it observes the `GOAWAY` or the refusal.
+The receiver therefore handles frames on a known-absent refused ID without
+creating stream state:
+
+- a non-opening stream-scoped frame on it (`RESET`, `STOP_SENDING`,
+  stream-scoped `MAX_DATA`, stream-scoped `BLOCKED`, or stream-scoped `EXT`)
+  MUST be ignored rather than treated as a session `PROTOCOL` error; receivers
+  MAY count such frames toward local ignored-control budgets (Section 11)
+- `DATA` on it opens nothing; its payload is discarded and its application-data
+  bytes follow the refused-stream rule in Section 8 (checked against and
+  counted in the session window, then released)
+- the receiver SHOULD send `ABORT(REFUSED_STREAM)` at most once per refused
+  stream ID. Because a peer opens the stream IDs of one class in increasing
+  order, tracking the highest refused peer-owned stream ID per class is
+  sufficient: a later frame on an ID at or below that value is discarded or
+  ignored without another `ABORT`
+- a peer `ABORT` on it creates no stream state; because the peer has already
+  terminated that stream, no reply is required
+
+Outside that `GOAWAY` exception, a peer-owned new stream ID that skips over
+lower still-unused IDs of the same class is a session `PROTOCOL` error.
 
 The pair `(session, stream_id)` uniquely identifies one logical stream.
 
@@ -454,15 +495,42 @@ The remaining bits are decoded as a big-endian (network byte order) unsigned
 integer.
 
 All integer encodings in `zmux v1` MUST use the shortest valid representation.
-Non-canonical encodings are protocol errors.
+A non-canonical encoding is an invalid integer encoding.
 
-Receivers MUST bound varint parsing accordingly. Any integer field that:
+Receivers MUST bound varint parsing accordingly. An integer field is invalid if
+it:
 
 - uses any length other than `1`, `2`, `4`, or `8` bytes
 - decodes to a value larger than `2^62 - 1`
 - ends prematurely before the announced length is complete
+- does not use the shortest valid representation
 
-is a session `PROTOCOL` error.
+An invalid integer is a session error, except for the value of a
+standardized DIAG-TLV (the last item below). The handling depends on where the
+integer appears:
+
+- frame header fields (`frame_length` and `stream_id`) and session preface
+  fields, including standard setting values (Section 5.1): session `PROTOCOL`
+  error. The one exception is a `stream_id` whose announced encoded length
+  does not fit within `frame_length`; that violates the frame-size rules and is
+  a session `FRAME_SIZE` error (Section 4.3)
+- mandatory fields inside a frame payload, such as `max_offset`,
+  `blocked_at`, `error_code`, the `GOAWAY` watermarks, and `metadata_len`, and
+  the `type` and `length` fields of a TLV carried inside a frame payload: the
+  payload is malformed, which is a session `FRAME_SIZE` error (Sections 4.3
+  and 7.2) unless a frame-specific rule states otherwise
+- `ext_type` is such a frame-specific exception: any failure to decode it is a
+  session `PROTOCOL` error (Section 6.11)
+- the value of a standardized `varint62` STREAM-METADATA-TLV
+  (`stream_priority` or `stream_group`) in an `OPEN_METADATA` block or a
+  `PRIORITY_UPDATE` payload that the receiver interprets, including a value
+  followed by further bytes inside the same TLV value: the enclosing payload is
+  malformed, which is a session `FRAME_SIZE` error (Section 7.2)
+- the value of a standardized `varint62` DIAG-TLV (`retry_after_millis`,
+  `offending_stream_id`, or `offending_frame_type`): this is semantically
+  invalid diagnostic metadata, not a session error; the receiver ignores that
+  diagnostic value and keeps the enclosing frame's primary semantics (Section
+  7.1)
 
 ## 4. Frame model
 
@@ -539,15 +607,36 @@ particular:
 - `MAX_DATA` payloads MUST contain exactly one canonical `varint62 max_offset`
 - `BLOCKED` payloads MUST contain exactly one canonical `varint62 blocked_at`
 
-Trailing garbage in those fixed-layout payloads is a session `PROTOCOL` error.
+Trailing bytes after that one value in those fixed-layout payloads are a
+session `PROTOCOL` error.
 
-Conversely, a payload that is too short to contain a frame's mandatory defined
-fields is invalid. Unless a frame-specific rule states otherwise, recommended
-handling for such structurally truncated payloads is a session `FRAME_SIZE`
-error.
+Conversely, a payload that cannot supply a frame's mandatory defined fields is
+malformed. This includes a missing mandatory field, a mandatory `varint62`
+that is truncated by the end of the payload, and a mandatory `varint62` that is
+not canonically encoded (Section 3.2). Unless a frame-specific rule states
+otherwise, such a malformed payload is a session `FRAME_SIZE` error. The same
+code applies to `PING` and `PONG` payloads shorter than `8` bytes (Sections 6.4
+and 6.5), to a `metadata_len` that overruns its `DATA` payload (Section 6.1),
+to container-structural TLV errors inside a frame payload, and to an invalid
+standardized `varint62` STREAM-METADATA-TLV value (Section 7.2). The `EXT`
+`ext_type` field is the frame-specific exception (Section 6.11).
 
-A violation of these rules is a session error and SHOULD be signaled with
-`CLOSE(FRAME_SIZE)` before the underlying transport is closed.
+Error codes for the rules in this section are therefore:
+
+| Condition | Session error |
+| --- | --- |
+| `frame_length < 2` | `FRAME_SIZE` |
+| `frame_length < 1 + encoded_length(stream_id)` | `FRAME_SIZE` |
+| derived payload length above the receiver's limit for that frame class | `FRAME_SIZE` |
+| missing, truncated, or non-canonical mandatory payload field | `FRAME_SIZE` |
+| container-structural TLV error inside a frame payload | `FRAME_SIZE` |
+| invalid `stream_priority` or `stream_group` value in an interpreted `OPEN_METADATA` block or `PRIORITY_UPDATE` payload | `FRAME_SIZE` |
+| trailing bytes after the one `MAX_DATA` / `BLOCKED` value | `PROTOCOL` |
+| `EXT` payload too short for its `ext_type`, or malformed `ext_type` | `PROTOCOL` (Section 6.11) |
+| non-canonical `frame_length` or `stream_id` encoding | `PROTOCOL` (Section 3.2) |
+
+Each of these is a session error and SHOULD be signaled with `CLOSE` carrying
+the listed code before the underlying transport is closed.
 
 ### 4.4 Flags and valid combinations
 
@@ -771,6 +860,9 @@ Additional rules:
   still process the `DATA` payload and stream-lifecycle effects of the frame
 - if `metadata_len` overruns the enclosing `DATA` payload, the frame is
   malformed and the session MUST fail with `CLOSE(FRAME_SIZE)`
+- a `stream_priority` or `stream_group` value in the metadata block that is not
+  exactly one canonical `varint62` likewise makes the frame malformed
+  (`CLOSE(FRAME_SIZE)`), with the ordering rule of Section 7.2
 
 The first `DATA` on a new locally owned stream ID is the default immediate
 stream-opening path in `zmux`.
@@ -872,6 +964,7 @@ bytes     opaque_echo_bytes
 ```
 
 In core `zmux v1`, the derived payload length for `PING` MUST be at least `8`.
+A shorter payload is a session `FRAME_SIZE` error (Section 4.3).
 
 When the endpoint has advertised a non-zero `ping_padding_key`, it MAY encode
 a padded PING by placing an 8-byte padding tag immediately after the 8-byte
@@ -937,6 +1030,7 @@ bytes     opaque_echo_bytes
 ```
 
 In core `zmux v1`, the derived payload length for `PONG` MUST be at least `8`.
+A shorter payload is a session `FRAME_SIZE` error (Section 4.3).
 
 Allowed flags:
 
@@ -1098,6 +1192,10 @@ Additional rules:
   stream with an ID greater than `last_accepted_uni_stream_id`
 - attempts to open such streams SHOULD be rejected with `ABORT(REFUSED_STREAM)`
   and MAY escalate to session close if abuse continues
+- frames that race such a refusal are handled as described in Section 3.1:
+  non-opening stream-scoped frames on a refused stream ID are ignored, refused
+  `DATA` is discarded with session budget release (Section 8), and at most one
+  `ABORT(REFUSED_STREAM)` is sent per refused stream ID
 - a sender MAY send more than one `GOAWAY`; if it does, the advertised
   `last_accepted_bidi_stream_id` values MUST be non-increasing and the
   advertised `last_accepted_uni_stream_id` values MUST be non-increasing
@@ -1165,7 +1263,11 @@ The length of `ext_payload` is implicitly:
 
 If `derived_payload_length` is smaller than `encoded_length(ext_type)`, that
 frame is physically impossible and MUST be treated as a session `PROTOCOL`
-error before attempting to derive `ext_payload`.
+error before attempting to derive `ext_payload`. This includes an empty `EXT`
+payload. An `ext_type` that is not canonically encoded is likewise a session
+`PROTOCOL` error. Unlike the mandatory fields of other frames (Section 4.3),
+any failure to decode `ext_type` is therefore signaled with `PROTOCOL`, not
+`FRAME_SIZE`.
 
 ## 7. TLV and optional metadata
 
@@ -1204,11 +1306,16 @@ SHOULD be omitted entirely rather than sent with invalid encoding.
 On receive, semantically invalid diagnostic metadata does not invalidate the
 enclosing control frame's mandatory fields. If `debug_text` is not valid
 UTF-8, the receiver MUST ignore that diagnostic value while preserving the
-enclosing frame's primary semantics. If a standardized singleton DIAG-TLV is
-repeated, the receiver MUST preserve the primary frame semantics and SHOULD
-ignore the duplicated diagnostic block for that frame. This tolerance applies
-only after the DIAG-TLV sequence is structurally parseable; truncated DIAG-TLV
-headers or values remain container-structural TLV errors.
+enclosing frame's primary semantics. Likewise, if the value of
+`retry_after_millis`, `offending_stream_id`, or `offending_frame_type` is not
+exactly one valid canonical `varint62` (Section 3.2), the receiver MUST ignore
+that diagnostic value while preserving the enclosing frame's primary
+semantics; it is not a session or stream error. If a standardized singleton
+DIAG-TLV is repeated, the receiver MUST preserve the primary frame semantics
+and SHOULD ignore the duplicated diagnostic block for that frame. This
+tolerance applies only after the DIAG-TLV sequence is structurally parseable;
+truncated DIAG-TLV headers or values remain container-structural TLV errors
+(Section 7.2).
 
 Examples of separate namespaces:
 
@@ -1225,24 +1332,34 @@ Examples of separate namespaces:
 2. container-structural TLV errors
 3. semantic TLV errors
 
-Frame-envelope errors are errors in the outer frame structure, such as:
+Frame-envelope errors are errors in the outer frame header, such as:
 
-- invalid outer `frame_length`
-- malformed outer `varint62`
-- payload overrun beyond the frame envelope
+- a non-canonical outer `frame_length` or `stream_id` encoding
+- an invalid frame `code`: an unknown core frame type (Section 11) or a
+  forbidden flag combination (Section 4.4)
 
 Frame-envelope errors are session `PROTOCOL` errors.
+
+Frame-size violations of the outer header are not frame-envelope errors in this
+sense: `frame_length < 2`, `frame_length < 1 + encoded_length(stream_id)`, and
+a derived payload length above the receiver's limit for that frame class are
+session `FRAME_SIZE` errors (Section 4.3). Likewise, a length field inside the
+payload that overruns the payload, such as `metadata_len` or a TLV length, makes
+the payload malformed (Sections 4.3 and 6.1); it is not an envelope error.
 
 Container-structural TLV errors are errors while parsing a TLV sequence inside
 an otherwise valid frame, such as:
 
 - truncated TLV type
 - truncated TLV length
+- TLV type or TLV length that is not canonically encoded
 - TLV value length that overruns the containing payload
 
 Unless a container definition explicitly says otherwise, container-structural
 TLV errors are treated the same way as a malformed instance of that enclosing
-frame.
+frame. For every TLV container carried in a `zmux v1` frame payload (DIAG-TLV
+sequences, `OPEN_METADATA` metadata blocks, and `PRIORITY_UPDATE` payloads),
+that is a session `FRAME_SIZE` error (Section 4.3).
 
 Semantic TLV errors occur after the TLV sequence is structurally valid, such as:
 
@@ -1253,6 +1370,28 @@ Semantic TLV errors occur after the TLV sequence is structurally valid, such as:
 Semantic TLV errors are handled according to the namespace or enclosing frame
 definition. Unknown TLV types remain skippable unless a stricter rule is
 defined by that namespace.
+
+A receiver that parses a TLV sequence MUST complete the structural walk of the
+whole sequence even after it has detected a semantic TLV error, such as a
+duplicate singleton, in that sequence. A container-structural error anywhere in
+the sequence takes precedence over any semantic tolerance for that container,
+so the result does not depend on whether a duplicate appears before or after
+the structural error.
+
+A standardized STREAM-METADATA-TLV whose value format is `varint62`
+(`stream_priority` or `stream_group`) MUST carry exactly one valid canonical
+`varint62` as its value (Section 3.2). When a receiver interprets an
+`OPEN_METADATA` block or a `PRIORITY_UPDATE` payload, such a value that is
+truncated, non-canonical, or followed by further bytes inside the same TLV
+value makes the enclosing payload malformed, which is a session `FRAME_SIZE`
+error. The receiver interprets standardized values in TLV order and stops
+interpreting them once a duplicate singleton has invalidated the block; an
+invalid value that appears after that point is dropped together with the
+block, while the structural walk above still completes. A receiver that does
+not interpret the block at all, such as for a refused opening `DATA` frame
+(Section 8), does not judge its values. The `varint62` values of standardized
+DIAG-TLVs are advisory diagnostic metadata instead: an invalid one is ignored
+as described in Section 7.1.
 
 ### 7.3 Standard priority semantics
 
@@ -1424,6 +1563,16 @@ SHOULD log or count such dropped advisory updates for diagnostics. Base
 `zmux v1` behavior does not abort the stream solely because one
 `PRIORITY_UPDATE` payload repeated a singleton advisory TLV.
 
+That tolerance covers only semantic TLV errors. When `priority_update` was
+negotiated, a container-structural TLV error in a `PRIORITY_UPDATE` payload (a
+truncated TLV type or length, a non-canonical TLV type or length, or a TLV
+value that overruns the payload) is a malformed `EXT` frame and therefore a
+session `FRAME_SIZE` error (Section 7.2), even if the same payload also repeats
+a singleton TLV. A `stream_priority` or `stream_group` value that is not exactly
+one canonical `varint62` is also a malformed `EXT` frame (session
+`FRAME_SIZE`), unless it follows a duplicate singleton that has already
+invalidated the payload (Section 7.2).
+
 If the target stream is previously unseen or already terminal, the receiver
 MUST ignore the update and MUST NOT create new stream state for it. Receivers
 MAY record diagnostics for such dropped updates.
@@ -1432,12 +1581,19 @@ This is intentionally asymmetric with unseen stream-scoped `MAX_DATA` and
 `BLOCKED`. `PRIORITY_UPDATE` is advisory-only metadata and does not affect
 stream lifecycle or flow-control credit, so an unseen target is safely
 ignorable. By contrast, unseen stream-scoped `MAX_DATA` and `BLOCKED` would
-change credit-bearing or lifecycle-adjacent state and therefore remain stream-
-state violations.
+change credit-bearing or lifecycle-adjacent state and are therefore session
+`PROTOCOL` errors (Sections 9.1 and 9.6).
 
 If `priority_update` was not negotiated, senders MUST NOT depend on this
 extension. Receivers MUST ignore such frames when the capability was not
-negotiated.
+negotiated, and MUST apply that rule before any other `PRIORITY_UPDATE`
+processing: the receiver decodes only `ext_type` and does not parse or validate
+`ext_payload`, enforce the `stream_id != 0` requirement above, or look up the
+target stream. A structurally malformed payload, a non-canonical
+`stream_priority` or `stream_group` value, `stream_id = 0`, and a previously
+unseen or terminal target are therefore all ignored like a well-formed update.
+An `ext_type` that cannot be decoded remains a session `PROTOCOL` error
+(Section 6.11).
 
 `PRIORITY_UPDATE` does not alter stream identity, flow control, or stream
 lifecycle semantics. It only updates advisory scheduling metadata.
@@ -1541,9 +1697,26 @@ the application, those bytes still count as released receive budget.
 
 This includes cases such as:
 
-- refusing a newly opened stream after some `DATA` has already arrived
+- refusing a newly opened stream after some `DATA` has already arrived,
+  including the application-data bytes carried by the refused opening `DATA`
+  frame itself, whatever the reason for the refusal (local `GOAWAY` watermark,
+  incoming-stream limit, or local accept backlog)
+- discarding `DATA` on a known-absent peer-owned stream ID above the local
+  `GOAWAY` watermark (Section 3.1)
+- rejecting a `DATA` frame with a stream-local `ABORT`, for example after peer
+  `FIN` (`STREAM_CLOSED`), on the wrong direction (`STREAM_STATE`), or for
+  exceeding the stream-scoped limit (`FLOW_CONTROL`)
 - resetting a stream with unread buffered data
 - dropping buffered stream data during local stream teardown
+
+Discarded bytes are still received bytes. They are checked against the
+currently effective session `MAX_DATA` limit and counted in the session-wide
+received byte count exactly like delivered bytes, so `DATA` that would exceed
+the session limit remains a session `FLOW_CONTROL` error even when its payload
+is discarded. For a refused opening `DATA` frame, only the trailing
+application-data bytes count (the `OPEN_METADATA` prefix does not), so the
+receiver needs to decode `metadata_len` but need not interpret the metadata
+TLVs; a malformed `metadata_len` is handled as in Section 6.1.
 
 In those cases, the receiver MUST promptly restore the released **session**
 receive budget unless the session is already terminating. If the currently
@@ -1568,6 +1741,16 @@ bytes.
 That bounded late-data exception applies only to already in-flight tail bytes
 or other bytes that were already unavoidable. It MUST NOT be used to re-enable
 ordinary standing stream-window growth after local read-side stop.
+
+A direction that the local endpoint has stopped reading, but that is still
+live, continues to enforce the stream-scoped limit it has advertised. That is
+normally the limit in effect when the stop committed, because a stopped
+direction advertises no further stream credit except under the bounded
+late-data policy above. Late `DATA` that would exceed that limit while the
+session-wide limit remains satisfied is a stream `FLOW_CONTROL` violation
+handled as above (`ABORT(FLOW_CONTROL)`); late `DATA` that would exceed the
+session-wide limit is a session `FLOW_CONTROL` error. Late bytes within the
+advertised stream limit are tolerated as described in Section 9.3.
 
 No further stream-scoped update is required once the affected stream is
 terminal or can no longer receive peer `DATA`.
@@ -1615,13 +1798,21 @@ Previously unseen valid peer-owned stream first-frame handling is therefore:
 | First frame | Effect in `zmux v1` |
 | --- | --- |
 | `DATA` | open stream |
-| `DATA|FIN` | open stream and half-close sender write side |
+| `DATA\|FIN` | open stream and half-close sender write side |
 | `ABORT` | record the stream ID as used and terminal |
 | `RESET` | session `PROTOCOL` error |
 | `STOP_SENDING` | session `PROTOCOL` error |
 | stream-scoped `MAX_DATA` | session `PROTOCOL` error |
 | stream-scoped `BLOCKED` | session `PROTOCOL` error |
 | stream-scoped `EXT` | ignored; does not open the stream |
+
+This table applies to every peer-owned stream ID except one above the current
+local `GOAWAY` watermark of its class; such a watermark exists only after the
+local endpoint has sent `GOAWAY` for that class, so before any local `GOAWAY`
+the table applies to every peer-owned ID. A peer-owned ID above that watermark
+is known-absent and refused (Section 3.1): non-opening frames on it are
+ignored rather than treated as session `PROTOCOL` errors, `DATA` on it is
+refused and discarded, and a peer `ABORT` on it creates no stream state.
 
 Senders MUST preserve this opening dependency even when local writer queues
 give control traffic higher priority. A sender MUST NOT emit a stream-scoped
@@ -1706,6 +1897,21 @@ An endpoint MUST tolerate a bounded amount of peer `DATA` that was already in
 flight before the peer processed `STOP_SENDING`. Such late-arriving bytes MAY
 be delivered locally or discarded according to local delivery policy.
 
+When the local stop takes effect, a compliant peer may already have in flight
+all of the stream-scoped credit that was still outstanding for that direction:
+the advertised stream-scoped `MAX_DATA` limit minus the bytes already received
+on that direction. Any local bound on tolerated late bytes for that direction
+therefore MUST NOT be smaller than that outstanding credit, and late in-flight
+`DATA` within it MUST NOT cause a session error. `DATA` beyond the advertised
+stream credit is not tolerated late data; it is a stream `FLOW_CONTROL`
+violation (Section 8).
+
+Implementations that also bound late data in aggregate across all stopped or
+aborted directions use that aggregate bound to limit retained bookkeeping, not
+to judge the peer. Exceeding an aggregate late-data bound MUST NOT by itself
+fail the session: further late bytes are discarded through the
+discard-and-budget-release path of Section 8.
+
 When an endpoint locally stops reading a still-open inbound direction, the
 protocol action is `STOP_SENDING` plus local discard of unread inbound data.
 
@@ -1730,7 +1936,7 @@ Sender conclusion summary after `STOP_SENDING`:
 | Local outbound state when stop becomes committed | Allowed outcome |
 | --- | --- |
 | no further application bytes have become unavoidable | prefer `RESET(CANCELLED)` |
-| only a negligible already-committed tail remains and graceful completion is immediate | allow `DATA|FIN` |
+| only a negligible already-committed tail remains and graceful completion is immediate | allow `DATA\|FIN` |
 | bounded graceful-drain attempt expires before conclusion | switch to `RESET(CANCELLED)` |
 | local whole-stream cancellation or stronger terminal action occurs | `ABORT(CANCELLED)` or another locally selected `ABORT` code |
 | outbound half was already terminal before `STOP_SENDING` became visible | no additional concluding frame required |
@@ -1758,7 +1964,8 @@ Discarded late payload bytes for such ignored late `DATA` MUST still follow the
 same discard-and-budget-release path used for other local discards so that the
 session receive window does not bleed permanently. Implementations SHOULD also
 enforce both a per-stream late-tail cap and an aggregate session-wide cap for
-late data absorbed after `RESET`.
+late data absorbed after `RESET`; the aggregate cap follows the rule of
+Section 9.3.
 
 ### 9.5 Abort
 
@@ -1789,7 +1996,13 @@ Discarded late payload bytes for such ignored late `DATA` MUST still follow the
 same discard-and-budget-release path used for other local discards so that the
 session receive window does not bleed permanently. Implementations SHOULD also
 enforce both a per-stream late-tail cap and an aggregate session-wide cap for
-late data absorbed after `ABORT`.
+late data absorbed after `ABORT`. After a local `ABORT`, the per-stream cap
+MUST NOT be smaller than the stream-scoped credit that was still outstanding
+for that stream's receive direction when the abort was committed, for the same
+reason as in Section 9.3, and the aggregate cap follows the rule of Section
+9.3. If that receive direction had already been stopped locally (Section 9.3)
+before the abort, the bound captured at the stop keeps applying to the late
+bytes counted since the stop: a later local `ABORT` MUST NOT reduce it.
 
 ### 9.6 Stream-state violations
 
@@ -1807,9 +2020,16 @@ first-frame `ABORT` from the local side.
 - if a new peer-initiated unidirectional stream exceeds
   `max_incoming_streams_uni`, reject it with `ABORT(REFUSED_STREAM)`
 - if a peer-owned new stream ID skips the next expected ID for its class, treat
-  it as a session `PROTOCOL` error
+  it as a session `PROTOCOL` error, unless the ID is above the current local
+  `GOAWAY` watermark of its class (Section 3.1), in which case it is a
+  known-absent refused ID handled as below
 - if peer `MAX_DATA`, `BLOCKED`, `STOP_SENDING`, or `RESET` arrives on a
-  previously unseen valid stream ID, treat it as a session `PROTOCOL` error
+  previously unseen valid stream ID, treat it as a session `PROTOCOL` error,
+  unless that ID is a known-absent refused peer-owned ID above the local
+  `GOAWAY` watermark of its class (Section 3.1), in which case ignore it
+- if peer `DATA` arrives on a known-absent refused peer-owned ID above the
+  local `GOAWAY` watermark, discard it through the discard-and-budget-release
+  path of Section 8 and send `ABORT(REFUSED_STREAM)` at most once for that ID
 - if peer `DATA` arrives on a locally send-only unidirectional stream, reject
   it with `ABORT(STREAM_STATE)` while stream-local signalling remains valid
 - if peer `BLOCKED` arrives on a locally send-only unidirectional stream,
@@ -1834,14 +2054,17 @@ Violation-handling summary:
 
 | Condition | Recommended handling scope |
 | --- | --- |
-| previously unseen peer-owned stream receives non-opening core stream frame | session `PROTOCOL` |
-| peer-owned stream ID skips the next expected ID of its class | session `PROTOCOL` |
+| previously unseen peer-owned stream receives non-opening core stream frame, unless the ID is above the current local `GOAWAY` watermark of its class (only after a local `GOAWAY` for that class) | session `PROTOCOL` |
+| known-absent refused peer-owned ID above the local `GOAWAY` watermark receives non-opening stream-scoped frame | ignore |
+| known-absent refused peer-owned ID above the local `GOAWAY` watermark receives `DATA` | discard with session budget release; `ABORT(REFUSED_STREAM)` at most once per ID |
+| peer-owned stream ID skips the next expected ID of its class, unless the ID is above the current local `GOAWAY` watermark of its class (only after a local `GOAWAY` for that class) | session `PROTOCOL` |
 | wrong-direction stream-scoped frame on an already opened stream where stream-local signalling remains valid | `ABORT(STREAM_STATE)` |
 | `DATA` exceeds only stream-local `MAX_DATA` | `ABORT(FLOW_CONTROL)` |
 | `DATA` exceeds session `MAX_DATA` | session `CLOSE(FLOW_CONTROL)` |
 | `DATA` arrives after peer `FIN` on that direction | `ABORT(STREAM_CLOSED)` |
 | late non-opening control on already terminal stream | ignore |
 | late in-flight `DATA` after peer `RESET` or `ABORT` | ignore payload, still follow discard-and-budget-release path |
+| late in-flight `DATA` after local `STOP_SENDING` or local `ABORT`, within the stream credit outstanding when that stop or abort was committed | tolerate (deliver or discard with budget release); never a session error |
 
 ## 10. Session lifecycle
 

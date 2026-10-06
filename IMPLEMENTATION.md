@@ -35,7 +35,9 @@ At the mux layer, `zmux` does not require an extra per-stream acknowledgement
 round trip:
 
 - both peers send the session preface immediately
-- a sender may transmit regular frames as soon as its own preface is sent
+- a sender may transmit regular frames as soon as the session is ready (peer
+  preface parsed and, for `role = auto`, roles resolved); no handshake
+  acknowledgement round trip is awaited
 - stream open does not require a per-stream acknowledgement
 - first `DATA` on a new stream is the fast path for first-byte latency
 
@@ -56,8 +58,8 @@ Implementations should:
   as a failed establishment attempt that must be retried only through a fresh
   session attempt
 
-Repository-default sender behavior follows the stricter core `zmux v1`
-session-ready rule:
+Sender behavior follows the core `zmux v1` session-ready rule (SPEC Section
+2.7):
 
 - do not create new streams or send application `DATA` before peer preface
   parsing completes
@@ -65,13 +67,31 @@ session-ready rule:
 - once the session is ready, send the first opening `DATA` immediately when
   local policy allows rather than adding any extra mux acknowledgement step
 
-Repository-default establishing-state outbound policy is:
+The establishing-state outbound policy restates that core rule (SPEC Section
+2.7 and [CONFORMANCE.md](./CONFORMANCE.md) Section 3.3); it is not local
+tuning:
 
 - before `session-ready`, send only the local preface and a fatal session
   `CLOSE` if establishment must fail
 - do not send new-stream `DATA`
 - do not send stream-scoped control
 - do not send ordinary session-scoped control or `EXT`
+
+Repository-default establishment timeout:
+
+- bound establishment (local preface write, peer preface read, and
+  negotiation) with a configurable establishment timeout; the repository
+  default is `10s`
+- a zero or unset value selects the default; bindings expose an explicit way
+  to disable the bound in their own configuration idiom
+- on expiry, fail establishment locally with `INTERNAL` and send
+  `CLOSE(INTERNAL)` (SPEC Section 2.4); that fatal establishment `CLOSE` stays
+  best-effort under its own short failure-path write bound (repository default
+  `250ms`) before the transport is closed
+- when the bound is implemented with platform socket timeouts, treat the
+  platform's timeout signal (some report it as a would-block result) as expiry
+  rather than as an unrelated transport error
+- the timeout is local policy, not a wire-visible parameter
 
 They should also avoid redoing work that the underlying transport or wrapper
 already does well.
@@ -237,7 +257,9 @@ Repository-default zero-window open handling is:
 
 - if the negotiated initial stream-scoped send allowance for a newly opened
   local stream is `0`, the implementation MUST NOT emit stream-scoped
-  `BLOCKED` before that stream has been opened on the wire
+  `BLOCKED` before that stream has been opened on the wire; `BLOCKED` is never
+  a stream's first frame on any send path, including a writer that runs out of
+  credit while the opener is still queued
 - it MUST NOT simply leave the stream permanently provisional while waiting
   for stream-local credit that the peer cannot know to advertise yet
 - repository-default behavior is to commit a zero-length opening `DATA` frame
@@ -406,6 +428,26 @@ That bypass also MUST NOT reorder already committed bytes within one stream.
 `DATA|FIN`, `RESET`, and `ABORT` may bypass other streams' bulk data, but they
 must remain behind any earlier `DATA` already committed to that same stream's
 local serialization order.
+
+Opening frames also keep their order across streams. Within one stream class,
+local stream IDs MUST reach the wire in the order they were assigned, so the
+peer never observes a gap (SPEC Section 3.1). Repository-default handling:
+
+- do not let a later stream of the same class commit or emit its opener while
+  an earlier committed opener has not yet entered the writer's final ordered
+  queue; alternatively, the writer holds a later opener back until the
+  earlier one is emitted or consumed
+- writer reordering stages (fair-queue selection, priority batches, urgent
+  promotion) never reorder opening frames of the same class across streams
+- if an earlier committed ID can no longer be emitted (timeout, cancellation,
+  or rollback), consume it with an opening-eligible `ABORT(CANCELLED)` before
+  any later opener of that class
+- a local `RESET` or `STOP_SENDING` for a stream whose opener is prepared or
+  queued but not yet written never reaches the wire before that opener: either
+  convert it to an opening-eligible `ABORT` and drop the opener, or keep the
+  opener (zero-length if needed) ahead of it
+- validate open metadata and `open_info` before committing a stream ID, so a
+  local validation error never consumes an ID
 
 Recommended send-path backpressure shape:
 
@@ -790,6 +832,21 @@ Session-level replenishment is never suppressed while the session remains
 open, even when individual stream replenishment is suppressed for terminal or
 stopped streams.
 
+Repository-default zero-window replenishment keeps zero initial windows from
+deadlocking:
+
+- when a receive scope (the session, or a stream whose receive direction is
+  open and has not been stopped locally) has `0` remaining advertised credit
+  and no replenishment is already pending, force a grant up to
+  `received + standing_target` when the peer sends `BLOCKED` for that scope,
+  or when a local blocking read or accept waits on that scope
+- a read-stopped stream direction is never such a scope: a peer `BLOCKED` for
+  it may at most flush pending session-scope credit and never re-enables
+  stream-window growth (SPEC Section 8)
+- the forced grant still respects memory-pressure checks
+- a `BLOCKED` that causes such a grant advances state; it is not no-op control
+  (Section 7)
+
 Repository-default standing targets are:
 
 - `session_window_target = max(initial_max_data, 4 * session_data_hwm)`
@@ -831,6 +888,42 @@ Repository-default policy:
   session-wide aggregate late tail cap
 - late tail after remote `RESET` or `ABORT` should also have both a per-stream
   cap and a session-wide aggregate cap
+- the per-direction cap for a direction stopped locally (read-side stop) or
+  ended by a local `ABORT` is captured when that stop or abort commits as
+  `max(late_data_floor, advertised_stream_limit - stream_received_at_commit)`
+  (see [API_SEMANTICS.md](./API_SEMANTICS.md) Section 5), so it always covers
+  the stream credit a compliant peer may still have in flight; the floor-only
+  cap is for late tail after remote `RESET` or `ABORT`
+- the cap is captured at the first local read-side stop or local `ABORT` of
+  that direction and never decreases: a local `ABORT` after a local read-side
+  stop keeps the larger value, and late bytes keep counting from the first
+  capture (recomputing the cap at the abort against bytes counted since the
+  stop would let a compliant peer exceed it)
+- exceeding the per-direction cap is possible only for a non-compliant peer;
+  on a live stopped direction the stream-credit check below fires first
+  (`ABORT(FLOW_CONTROL)`), and where stream-local signalling is no longer
+  available (after a local `ABORT`, or on a tombstone) the repository default
+  may fail the session with `PROTOCOL` or keep discarding with session budget
+  release
+- a stopped direction that is still live keeps enforcing its advertised stream
+  credit: late `DATA` beyond it is answered with `ABORT(FLOW_CONTROL)`, and
+  `DATA` beyond the session limit with `CLOSE(FLOW_CONTROL)`; late bytes within
+  it are discarded and released as session credit and never fail the session
+- the aggregate cap counts currently retained late-tail accounting, not a
+  lifetime total: subtract a stream's or tombstone's counted late bytes exactly
+  once, when it is reaped or forgotten or when its stopped direction's tail
+  completes through peer `RESET`, `DATA|FIN`, or `ABORT`; exceeding the
+  aggregate cap discards further late bytes (still releasing session credit)
+  and does not fail the session
+- bytes that are not late tail data are not charged to late-data caps, but
+  are still checked against the session window, counted as received, and
+  released as session credit:
+  - the application bytes of a refused opening `DATA` frame (local `GOAWAY`
+    watermark, incoming-stream limit, or accept backlog)
+  - `DATA` on a peer-owned stream ID refused under a local `GOAWAY` watermark
+  - `DATA` rejected with a stream-local `ABORT` on a live stream
+    (`STREAM_CLOSED` after peer `FIN`, `STREAM_STATE` on the wrong direction,
+    or stream `FLOW_CONTROL`)
 
 In active single-link `zmux v1`, hidden control-opened-only live state should
 normally remain absent. Repository-default implementations should expect hidden
@@ -842,12 +935,15 @@ Repository-default tombstone compaction policy:
 - once a stream is fully terminal and has no remaining local queued work or
   buffered receive data, convert it to a compact tombstone
 - tombstones retain only the stream ID used marker, terminal kind, and a
-  late-data handling action policy
+  late-data handling action policy, plus the per-direction late-data allowance
+  captured at local read-side stop or local `ABORT` when one applies
 - late-data action policies depend on the stream's terminal state:
   - send-only unidirectional streams (no local receive half): ignore late data
     silently
   - streams closed gracefully on the receive side (`recv_fin`): late `DATA`
-    triggers `ABORT(STREAM_CLOSED)`
+    triggers `ABORT(STREAM_CLOSED)`, whether or not a local read-side stop
+    preceded the peer `FIN`; live streams that already observed peer `FIN` but
+    are not yet compacted answer later `DATA` the same way
   - streams terminated abortively (`recv_reset`, `recv_aborted`): late `DATA`
     is ignored with discard-and-budget-release
 - payload bytes from late `DATA` dropped via tombstone handling MUST still be
@@ -856,6 +952,13 @@ Repository-default tombstone compaction policy:
 - implementations MAY use the `next_expected_stream_id` cursor plus the active
   stream map to infer dead-stream status for peer-opened streams without
   requiring one heap object per tombstone
+- peer-owned stream IDs refused under a local `GOAWAY` watermark need no
+  tombstone at all: any peer-owned ID above the current watermark of its class
+  with no existing state is known-absent (SPEC Section 3.1). Ignore
+  non-opening control on such IDs (charging it to the ignored or no-op control
+  budget), discard `DATA` on them with session discard-and-release, and keep
+  one "highest refused peer stream ID" per class so that
+  `ABORT(REFUSED_STREAM)` is sent at most once per refused ID
 
 ### 3.4 Terminal retention and tombstones
 
@@ -900,6 +1003,18 @@ other cases, range-compressed markers, compact bitmaps, or other low-overhead
 used-ID bookkeeping are acceptable as long as late-frame handling and no-reuse
 semantics remain correct. Repository-default behavior does not require one
 heap tombstone object per fully closed stream.
+
+Repository-default used-ID marker ranges:
+
+- keep range-compressed used-ID markers per stream class (`stream_id & 3`, or
+  keyed by class and `stream_id >> 2`), so merges, splits, and lookups never
+  mix classes and a lookup finds every range that covers the ID
+- bound the marker state; when the bound is reached, coarsen instead of
+  failing: collapse the oldest ranges of that class into one prefix range
+  whose disposition is the conservative one, "ignore late control and
+  discard late `DATA` with session budget release"
+- reaching the marker bound never fails the session (no `INTERNAL` close) and
+  never stalls writers on a memory cap
 
 ## 4. Ping and liveness
 
@@ -957,6 +1072,24 @@ Repository-default keepalive timeout behavior:
 - implementations that expose an explicit "disable keepalive timeout"
   capability MAY leave an outstanding `PING` pending indefinitely and simply
   wait one full `keepalive_interval` before re-evaluating
+- evaluate the keepalive timeout independently of the writer path, with its
+  own timer or a non-blocking `PING` enqueue, so that a transport write blocked
+  by a peer that stopped reading cannot postpone the check
+- on keepalive timeout, fail the session with `IDLE_TIMEOUT`, attempt
+  `CLOSE(IDLE_TIMEOUT)` only under a bounded write wait, and close or abort
+  the underlying transport so blocked readers and writers wake up
+- a locally requested ping with a deadline or cancellation honours it while
+  waiting for the writer, not only while waiting for the `PONG`
+
+Repository-default randomness:
+
+- seed the per-session pseudo-random state used for keepalive jitter and for
+  `PING` tokens and padding bytes from a cryptographically secure random
+  source, or from the binding's configured nonce source
+- never derive that state only from a process-global deterministic counter or
+  from preface nonces, which the peer sees
+
+Repository-default `PING` and control-piggyback behavior:
 
 - piggyback small control work when the added delay is tiny
 - keep at most one locally originated outstanding protocol `PING` per session
@@ -1059,9 +1192,18 @@ Repository-default no-op control accounting should treat ignored late terminal
 controls as no-op control traffic. In particular, `RESET`, `STOP_SENDING`, or
 `ABORT` that targets an already terminal/effectively terminal live stream and
 does not change stream state should count toward the same rolling no-op control
-budget as other ignored control frames. Conversely, a terminal control that
+budget as other ignored control frames. Non-opening control frames ignored on a
+known-absent peer-owned stream ID above the local `GOAWAY` watermark count the
+same way. Conversely, a terminal control that
 does materially change stream state should clear accumulated no-op control
 budget before any following ignored control frame is judged.
+
+Flow-control frames are charged by effect. A `MAX_DATA` that raises a limit,
+and a `BLOCKED` that triggers or coincides with a credit grant (Section 3.2),
+advance state and are not charged to the inbound control or mixed no-op
+budgets. A `MAX_DATA` that does not raise its limit, or a `BLOCKED` that causes
+no grant, counts as no-op control. Other control frames keep their usual
+accounting.
 
 Repository-default visible terminal churn detection is intentionally narrower
 than ordinary terminal-state accounting. It should count a peer-owned stream at
@@ -1121,6 +1263,31 @@ Repository-default graceful drain sequence is:
    done
 7. send `CLOSE` or close the underlying transport
 
+Repository-default close bounding:
+
+- local close and close-with-error never block indefinitely on a stalled
+  writer: after a bounded wait for the final `CLOSE` (and any remaining drain)
+  to be written, close the underlying transport
+- concurrent close calls emit at most one `CLOSE` frame; later callers observe
+  the same terminal outcome
+- every locally detected session-fatal error, including frame read, parse, and
+  validation errors in the established reader loop and keepalive timeout,
+  attempts `CLOSE(code)` best-effort under a bounded write wait before the
+  underlying transport is closed; only a transport that has already failed
+  makes that attempt a no-op
+
+Repository-default local stream-ID exhaustion (SPEC Section 3.1):
+
+- when the next local stream ID of a class would exceed the `varint62` range,
+  fail local opens of that class with a local error of the binding's
+  open-limited or session-draining kind, with a reason such as "local stream
+  ID space exhausted"; this is not a `PROTOCOL` error, because nothing invalid
+  reached the wire
+- on the first exhaustion, queue one `GOAWAY` that does not tighten the
+  current watermarks, so the peer sees the session draining while its own
+  streams continue
+- never wrap or reuse stream IDs
+
 ## 9. Implementer checklist
 
 This section is non-normative.
@@ -1152,7 +1319,8 @@ Primary inputs:
 
 - `fixtures/wire_valid.ndjson`
 - `fixtures/wire_invalid.ndjson`
-- `fixtures/case_sets.json` -> `codec_valid`, `codec_invalid`, `preface`
+- `fixtures/case_sets.json` -> `codec_valid`, `codec_invalid`, `preface`,
+  `frame_invalid`
 
 Phase 2. Core stream lifecycle
 
@@ -1180,9 +1348,10 @@ Exit criteria:
 
 Primary inputs:
 
-- `fixtures/state_cases.ndjson`
+- `fixtures/state_cases.ndjson`, starting with the `portable_state` subset
 - `fixtures/invalid_cases.ndjson`
-- `fixtures/case_sets.json` -> `stream_lifecycle`, `unidirectional`
+- `fixtures/case_sets.json` -> `stream_lifecycle`, `unidirectional`,
+  `portable_state`
 
 Phase 3. Flow control
 
@@ -1230,6 +1399,8 @@ Exit criteria:
 - `CLOSE` terminates the session and remaining streams
 - fatal inbound frame parse or validation failures observed by the established
   reader loop surface to callers as remote read-side session termination errors
+- every locally detected session-fatal error sends `CLOSE(code)` best-effort
+  under a bounded write wait before the transport is closed (Section 8)
 
 Primary inputs:
 
@@ -1297,7 +1468,11 @@ Core single-link gate
 Do not claim core interoperability until all of these are true:
 
 - parser/codec cases pass
-- state-machine cases pass
+- the portable state-machine cases (`portable_state`) pass; the other state
+  cases are reference-implementation regression scenarios whose event names
+  and expectations are implementation-specific or depend on state the case
+  does not state (see
+  [examples/fixture_mapping.md](./examples/fixture_mapping.md) Section 2)
 - flow-control invalid cases pass
 - `GOAWAY` monotonic behavior is correct
 - explicit-role and `role = auto` establishment behavior are correct

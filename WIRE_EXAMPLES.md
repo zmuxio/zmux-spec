@@ -9,6 +9,13 @@ field use canonical `varint62` encoding.
 
 Hex bytes are shown space-separated.
 
+`tools/validate_assets.py` decodes every hex block in this document: the
+single-frame and preface examples in Sections 1 and 2 must match a case in
+`assets/wire_corpus.json` or `assets/invalid_corpus.json` and agree with their
+`Fields` lists, each Section 2 example must state exactly the session error
+code of its corpus case, and the frames in the Section 3 traces must agree with
+their annotations.
+
 ## 1. Core valid examples
 
 ### 1.1 Minimal initiator preface
@@ -420,6 +427,29 @@ Bytes:
 Repository-default handling keeps the primary `ABORT(REFUSED_STREAM)`
 semantics and drops the duplicated standardized singleton DIAG block.
 
+### 1.22b `ABORT` with a non-canonical `retry_after_millis` DIAG value
+
+Fields:
+
+- `frame_length = 7`
+- `code = ABORT = 0x08`
+- `stream_id = 4`
+- `payload = varint62(4) = 04`
+- `diag_tlvs = DIAG-TLV(type=retry_after_millis=2, len=2, value=40 01)`
+
+Bytes:
+
+```text
+07 08 04 04 02 02 40 01
+```
+
+The TLV structure is valid, but `40 01` is a non-canonical encoding of `1`.
+A malformed standardized DIAG value is semantically invalid diagnostic
+metadata, not a session error: the receiver ignores that `retry_after_millis`
+value and keeps the primary `ABORT(REFUSED_STREAM)` semantics (SPEC Sections
+3.2 and 7.1). Compare 2.6e, where the same kind of value inside
+`PRIORITY_UPDATE` is a malformed payload.
+
 ### 1.23 Stream-scoped `MAX_DATA` value 8192 on stream 4
 
 Fields:
@@ -477,18 +507,20 @@ Fields:
 - `min_proto = 1`
 - `max_proto = 1`
 - `capabilities = 11` (open_metadata | priority_hints | priority_update = 0x0b)
-- `settings_len = 4`
-- `settings_tlv = TLV(type=max_frame_payload=7, len=2, value=varint62(32768) = 80 00)`
+- `settings_len = 6`
+- `settings_tlv = TLV(type=max_frame_payload=7, len=4, value=varint62(32768) = 80 00 80 00)`
 
 Bytes:
 
 ```text
-5a 4d 55 58 01 00 00 01 01 0b 04 07 02 80 00
+5a 4d 55 58 01 00 00 01 01 0b 06 07 04 80 00 80 00
 ```
 
 Note: `capabilities = 11` is encoded as `varint62(11) = 0b`. The setting
-`max_frame_payload = 32768` is encoded as a 2-byte varint62 `80 00` inside a
-TLV with type `7` and length `2`.
+`max_frame_payload = 32768` is encoded as the 4-byte varint62 `80 00 80 00`
+inside a TLV with type `7` and length `4`. A 2-byte varint62 carries at most
+`16383`, so every legal `max_frame_payload` value (at least `16384`) needs the
+4-byte form. Example 2.5b shows the truncated 2-byte mistake.
 
 ### 1.27 `EXT` with unknown subtype on stream 4 (forward-compatibility)
 
@@ -509,6 +541,82 @@ Bytes:
 A conforming receiver MUST ignore this unknown `EXT` subtype without failing
 the session.
 
+### 1.28 Initiator preface carrying ignored `preface_padding`
+
+Fields:
+
+- `magic = "ZMUX"`
+- `preface_ver = 1`
+- `role = initiator (0)`
+- `tie_breaker_nonce = 0`
+- `min_proto = 1`
+- `max_proto = 1`
+- `capabilities = 0`
+- `settings_len = 5`
+- `settings_tlv = TLV(type=preface_padding=12, len=3, value=ff c0 ff)`
+
+Bytes:
+
+```text
+5a 4d 55 58 01 00 00 01 01 00 05 0c 03 ff c0 ff
+```
+
+The padding value `ff c0 ff` is deliberately not a valid `varint62`: receivers
+MUST ignore `preface_padding` bytes without parsing them (SPEC Section 5.5).
+All other settings keep their defaults. The padding TLV still counts toward
+`settings_len` and the duplicate-setting rule (see example 2.5c). Re-encoding
+the parsed preface without the padding does not reproduce these bytes.
+
+### 1.28a Initiator preface carrying empty `preface_padding`
+
+Fields:
+
+- `magic = "ZMUX"`
+- `preface_ver = 1`
+- `role = initiator (0)`
+- `tie_breaker_nonce = 0`
+- `min_proto = 1`
+- `max_proto = 1`
+- `capabilities = 0`
+- `settings_len = 2`
+- `settings_tlv = TLV(type=preface_padding=12, len=0, value=(empty))`
+
+Bytes:
+
+```text
+5a 4d 55 58 01 00 00 01 01 00 02 0c 00
+```
+
+An empty `preface_padding` value is valid and ignored like any other padding.
+The 2-byte TLV still counts toward `settings_len`.
+
+### 1.29 Padded `PING` carrying a `ping_padding_tag`
+
+Fields:
+
+- `frame_length = 18`
+- `code = PING = 0x04`
+- `stream_id = 0`
+- `token = 01 02 03 04 05 06 07 08`
+- `ping_padding_tag = a7 be 6a b3 2f e5 28 6b`, derived from the sender's
+  `ping_padding_key = 0x0123456789abcdef` (SPEC Section 6.4)
+
+Bytes:
+
+```text
+12 04 00 01 02 03 04 05 06 07 08 a7 be 6a b3 2f e5 28 6b
+```
+
+More `ping_padding_tag(ping_padding_key, token)` known-answer values:
+
+- `ping_padding_tag(0x0000000000000001, 0x0102030405060708) = e7 19 66 fd 7f 0b 4f 86`
+- `ping_padding_tag(0x0000000000000001, 0x0000000000000002) = 60 40 e6 7e 23 9a 06 d9`
+
+A receiver that recognizes the tag MAY answer with a `PONG` that carries this
+whole payload followed by extra opaque bytes. A receiver that does not
+recognize it treats the tag as opaque echo bytes and answers with an exact
+`PONG` echo.
+
 ## 2. Core invalid examples
 
 ### 2.1 Invalid non-canonical varint example
@@ -525,8 +633,32 @@ The following longer form is invalid in `zmux v1`:
 40 04
 ```
 
-An implementation should reject such non-canonical encodings as protocol
-errors.
+A non-canonical `stream_id` or `frame_length` in the frame header is a session
+`PROTOCOL` error. For example:
+
+```text
+05 01 40 04 68 69
+```
+
+is `DATA("hi")` whose `stream_id = 4` is encoded as `40 04`.
+
+### 2.1a Invalid non-canonical mandatory payload field
+
+The same non-canonical encoding inside a frame payload's mandatory field makes
+the payload malformed instead (SPEC Sections 3.2 and 4.3):
+
+```text
+04 02 00 40 01
+```
+
+means:
+
+- `frame_length = 4`
+- `code = MAX_DATA`
+- `stream_id = 0`
+- `max_offset = 1`, encoded non-canonically as `40 01`
+
+The receiver should treat it as a `FRAME_SIZE` session error.
 
 ### 2.2 Invalid oversized frame example
 
@@ -550,6 +682,27 @@ means:
 That frame is invalid for that receiver even before reading the payload bytes.
 The receiver should treat it as a `FRAME_SIZE` session error.
 
+### 2.2a Invalid `frame_length` smaller than `2`
+
+```text
+01 01
+```
+
+means `frame_length = 1` followed only by `code = DATA`; there is no room for
+the mandatory `stream_id`. This is a session `FRAME_SIZE` error (SPEC Section
+4.3).
+
+### 2.2b Invalid `frame_length` too small for the encoded `stream_id`
+
+```text
+02 01 80 00 40 00
+```
+
+means `frame_length = 2` and `code = DATA`, but the first `stream_id` byte
+announces a 4-byte encoding (`stream_id = 16384`), so
+`frame_length < 1 + encoded_length(stream_id)`. This is a session `FRAME_SIZE`
+error (SPEC Section 4.3).
+
 ### 2.3 Invalid truncated `varint62` example
 
 In `zmux v1`, the high two bits of the first byte announce the total encoded
@@ -562,7 +715,21 @@ The following byte sequence is invalid because the first byte announces a
 80 00 01
 ```
 
-An implementation should reject this as a session `PROTOCOL` error.
+In a frame header or session preface field, an implementation should reject
+this as a session `PROTOCOL` error.
+
+### 2.3a Invalid truncated mandatory payload field
+
+When a mandatory `varint62` is cut short by the end of the frame payload, the
+payload is malformed (SPEC Sections 3.2 and 4.3):
+
+```text
+03 02 00 40
+```
+
+means `MAX_DATA` on stream `0` whose `max_offset` announces a 2-byte encoding
+but has only 1 byte of payload. The receiver should treat it as a `FRAME_SIZE`
+session error.
 
 ### 2.4 Invalid first `RESET` on a previously unused peer-owned stream
 
@@ -574,6 +741,10 @@ session `PROTOCOL` error in `zmux v1`:
 03 07 04 08
 ```
 
+This assumes stream 4 is not above a local `GOAWAY` watermark. A `RESET` on a
+peer-owned stream ID above the local watermark is ignored instead (SPEC Section
+3.1; see sequence 3.10).
+
 ### 2.5 Invalid `role = auto` preface with zero `tie_breaker_nonce`
 
 The following preface is structurally well-formed but invalid because
@@ -583,16 +754,50 @@ The following preface is structurally well-formed but invalid because
 5a 4d 55 58 01 02 00 01 01 00 00
 ```
 
+This is a session `PROTOCOL` error (SPEC Section 2.4).
+
 ### 2.5a Invalid equal-nonce `role = auto` collision across two prefaces
 
 The following pair of prefaces is individually well-formed, but together they
-cause `ROLE_CONFLICT` because both peers use `role = auto` with the same
-non-zero nonce:
+cause a session `ROLE_CONFLICT` error because both peers use `role = auto` with
+the same non-zero nonce:
 
 ```text
 5a 4d 55 58 01 02 05 01 01 00 00
 5a 4d 55 58 01 02 05 01 01 00 00
 ```
+
+### 2.5b Invalid preface with a truncated setting value
+
+```text
+5a 4d 55 58 01 00 00 01 01 0b 04 07 02 80 00
+```
+
+means an initiator preface with `capabilities = 11` and `settings_len = 4`,
+carrying `TLV(type=max_frame_payload=7, len=2, value=80 00)`. The first value
+byte `80` announces a 4-byte `varint62`, but the TLV holds only 2 bytes, so the
+setting value is truncated. This is a session `PROTOCOL` error (SPEC Section
+5.1). Example 1.26 shows the correct 4-byte encoding.
+
+### 2.5c Invalid preface repeating `preface_padding`
+
+```text
+5a 4d 55 58 01 00 00 01 01 00 06 0c 01 aa 0c 01 bb
+```
+
+means `settings_len = 6` with two `preface_padding` TLVs (type `12`). Padding
+values are ignored, but the setting ID still must not repeat, so this is a
+session `PROTOCOL` error (SPEC Sections 5.1 and 5.5).
+
+### 2.5d Invalid preface with `settings_len` above `4096`
+
+```text
+5a 4d 55 58 01 00 00 01 01 00 50 01
+```
+
+means `settings_len = 4097` (`varint62` `50 01`). The receiver rejects it from
+the length field alone, before reading the settings bytes. This is a session
+`FRAME_SIZE` error (SPEC Section 2.6).
 
 ### 2.6 Invalid truncated `STOP_SENDING` with no mandatory `error_code`
 
@@ -604,7 +809,7 @@ frame, but its payload is too short to carry the mandatory
 02 03 04
 ```
 
-Repository-default handling is a session `FRAME_SIZE` error.
+This is a session `FRAME_SIZE` error (SPEC Section 4.3).
 
 ### 2.6a Invalid `DATA|OPEN_METADATA` on an already-open stream
 
@@ -618,6 +823,48 @@ that stream:
 ```
 
 Repository-default handling is a session `PROTOCOL` error.
+
+### 2.6b Invalid `MAX_DATA` with a trailing byte
+
+```text
+04 02 00 05 01
+```
+
+means `MAX_DATA` on stream `0` with a canonical `max_offset = 5` followed by one
+extra byte. Trailing bytes after the one mandatory value are a session
+`PROTOCOL` error (SPEC Section 4.3).
+
+### 2.6c Invalid `PONG` shorter than `8` bytes
+
+```text
+09 05 00 01 02 03 04 05 06 07
+```
+
+means `PONG` on stream `0` with a 7-byte payload. This is a session
+`FRAME_SIZE` error (SPEC Sections 4.3 and 6.5).
+
+### 2.6d Invalid `EXT` with no room for `ext_type`
+
+```text
+02 0b 00
+```
+
+means `EXT` on stream `0` with an empty payload, so
+`derived_payload_length < encoded_length(ext_type)`. This is the
+frame-specific exception to the `FRAME_SIZE` default: it is a session
+`PROTOCOL` error (SPEC Section 6.11).
+
+### 2.6e Invalid non-canonical `stream_priority` value in `PRIORITY_UPDATE`
+
+```text
+07 0b 04 01 01 02 40 02
+```
+
+means `EXT` on open stream `4` with `ext_type = PRIORITY_UPDATE` and
+`TLV(type=stream_priority=1, len=2, value=40 02)`, where `40 02` is a
+non-canonical encoding of `2`. With `priority_update` negotiated, the TLV
+structure is valid but the standardized `varint62` value is not, so the payload
+is malformed. This is a session `FRAME_SIZE` error (SPEC Sections 3.2 and 7.2).
 
 ## 3. Pairwise interaction sequences
 
@@ -691,11 +938,12 @@ Sequence:
 ```text
 05 09 00 04 00 00 ; GOAWAY(last_accepted_bidi=4, last_accepted_uni=0, NO_ERROR)
 04 01 08 68 69    ; peer attempts new bidi stream 8 with DATA("hi")
-03 08 08 05       ; local ABORT(stream=8, code=REFUSED_STREAM)
+03 08 08 04       ; local ABORT(stream=8, code=REFUSED_STREAM)
 ```
 
 This illustrates the normal rejection path after a peer opens a stream beyond
-the accepted `GOAWAY` watermark.
+the accepted `GOAWAY` watermark. Sequence 3.10 shows how later frames on the
+refused stream are handled.
 
 ### 3.7 Zero-length `DATA|OPEN_METADATA` opener, then later payload
 
@@ -742,3 +990,24 @@ Fields:
 
 This opens stream 4 with both `stream_priority = 2` and `stream_group = 5`,
 followed by application data `"hi"`.
+
+### 3.10 Peer frames racing a `GOAWAY` refusal
+
+Sequence:
+
+```text
+05 09 00 04 00 00 ; local GOAWAY(last_accepted_bidi=4, last_accepted_uni=0, NO_ERROR)
+04 01 08 68 69    ; peer DATA(stream=8, "hi"), sent before it observed GOAWAY
+03 08 08 04       ; local ABORT(stream=8, code=REFUSED_STREAM)
+04 01 08 79 6f    ; peer DATA(stream=8, "yo"), sent before it observed the ABORT
+03 03 08 08       ; peer STOP_SENDING(stream=8, code=CANCELLED), also in flight
+03 07 08 08       ; peer RESET(stream=8, code=CANCELLED), also in flight
+```
+
+Stream `8` is above the local bidirectional watermark `4`, so it is
+known-absent and refused (SPEC Section 3.1). The receiver sends exactly one
+`ABORT(REFUSED_STREAM)` for it. The second `DATA` is discarded without another
+`ABORT`, and the application bytes of both `DATA` frames are counted in the
+session window and released, so the session budget is restored (SPEC Section
+8). The `STOP_SENDING` and `RESET` on stream `8` are ignored; they are not
+session `PROTOCOL` errors even though stream `8` never opened locally.

@@ -53,13 +53,21 @@ Previously unseen valid peer-owned stream first-frame outcomes:
 
 | First frame | Result |
 | --- | --- |
-| `DATA` / `DATA|FIN` | stream opens |
+| `DATA` / `DATA\|FIN` | stream opens |
 | `ABORT` | stream ID is recorded as used and terminal |
 | `RESET` | invalid |
 | `STOP_SENDING` | invalid |
 | stream-scoped `MAX_DATA` | invalid |
 | stream-scoped `BLOCKED` | invalid |
 | stream-scoped `EXT` | ignored; does not open the stream |
+
+These outcomes apply to every peer-owned stream ID except one above the current
+local `GOAWAY` watermark of its class; such a watermark exists only after the
+local endpoint has sent `GOAWAY` for that class. A peer-owned ID above that
+watermark that has no existing state is known-absent and refused (SPEC Section
+3.1): it stays `idle`, non-opening frames on it are ignored, `DATA` on it is
+discarded with session budget release and refused with at most one
+`ABORT(REFUSED_STREAM)`, and a peer `ABORT` on it records nothing.
 
 Opening eligibility is still constrained by stream kind and direction:
 
@@ -121,18 +129,18 @@ terminal outcome is secondary.
 
 | Current state | Event | Result |
 | --- | --- | --- |
-| `absent` | local `DATA`, `DATA|FIN`, `RESET` | invalid |
+| `absent` | local `DATA`, `DATA\|FIN`, `RESET` | invalid |
 | `absent` | local `ABORT` | `send_aborted` only when opening a new locally owned stream; otherwise invalid |
 | `send_open` | local `DATA` | `send_open` |
-| `send_open` | local `DATA|FIN` | `send_fin` |
+| `send_open` | local `DATA\|FIN` | `send_fin` |
 | `send_open` | local `RESET` | `send_reset` |
 | `send_open` | local `ABORT` | `send_aborted` |
 | `send_stop_seen` | local `DATA` | local error, no state change |
-| `send_stop_seen` | local `DATA|FIN` | `send_fin` |
+| `send_stop_seen` | local `DATA\|FIN` | `send_fin` |
 | `send_stop_seen` | local `RESET` | `send_reset` |
 | `send_stop_seen` | local `ABORT` | `send_aborted` |
 | `send_fin` / `send_reset` | local `ABORT` | `send_aborted` |
-| `send_fin` / `send_reset` / `send_aborted` | local `DATA`, `DATA|FIN`, `RESET` | local error, no state change |
+| `send_fin` / `send_reset` / `send_aborted` | local `DATA`, `DATA\|FIN`, `RESET` | local error, no state change |
 | `send_aborted` | local repeated `ABORT` | unchanged |
 
 On a locally opened stream, the first outbound `DATA`, `DATA|FIN`, or `ABORT`
@@ -162,14 +170,20 @@ unseen stream.
 
 | Current state | Event | Result |
 | --- | --- | --- |
-| `absent` | peer `DATA` / `DATA|FIN` / `RESET` | invalid |
+| `absent` | peer `DATA` / `DATA\|FIN` / `RESET` | invalid |
 | `absent` | peer `ABORT` | `recv_aborted` |
 | `recv_open` | peer `DATA` | `recv_open` |
-| `recv_open` | peer `DATA|FIN` | `recv_fin` after buffered data is drained |
+| `recv_open` | peer `DATA\|FIN` | `recv_fin` after buffered data is drained |
 | `recv_open` | peer `RESET` | `recv_reset` |
 | `recv_open` | peer `ABORT` | `recv_aborted` |
 | `recv_stop_sent` | peer late in-flight `DATA` | `recv_stop_sent` |
-| `recv_stop_sent` | peer `DATA|FIN` after in-flight drain | `recv_fin` |
+| `recv_stop_sent` | peer `DATA\|FIN` after in-flight drain | `recv_fin` |
+| `recv_stop_sent` | peer `RESET` | `recv_reset` |
+| `recv_stop_sent` | peer `ABORT` | `recv_aborted` |
+| `recv_fin` | peer `DATA` / `DATA\|FIN` | invalid |
+| `recv_reset` / `recv_aborted` | peer late in-flight `DATA` / `DATA\|FIN` | unchanged |
+| `recv_fin` / `recv_reset` | peer repeated `RESET` | unchanged |
+| `recv_aborted` | peer repeated `ABORT` | unchanged |
 
 The `recv_stop_sent` to `recv_fin` transition via peer `DATA|FIN` represents
 the case where the peer gracefully concludes its send half in response to (or
@@ -177,13 +191,6 @@ concurrent with) the local `STOP_SENDING`. This transition is valid because
 `recv_stop_sent` is not yet a terminal state — it indicates the local endpoint
 has requested the peer to stop, not that the peer has necessarily complied.
 The peer may still choose graceful completion over abortive reset.
-
-| `recv_stop_sent` | peer `RESET` | `recv_reset` |
-| `recv_stop_sent` | peer `ABORT` | `recv_aborted` |
-| `recv_fin` | peer `DATA` / `DATA|FIN` | invalid |
-| `recv_reset` / `recv_aborted` | peer late in-flight `DATA` / `DATA|FIN` | unchanged |
-| `recv_fin` / `recv_reset` | peer repeated `RESET` | unchanged |
-| `recv_aborted` | peer repeated `ABORT` | unchanged |
 
 ### 5.2 Local send half
 
@@ -282,7 +289,8 @@ Therefore:
 After a stream is fully terminal:
 
 - late non-opening control frames are ignored
-- late `DATA` after peer `FIN` is invalid
+- late `DATA` after peer `FIN` is invalid and is answered with
+  `ABORT(STREAM_CLOSED)`
 - late in-flight `DATA` after peer `RESET` or `ABORT` is ignored
 - local reads and writes should fail promptly with terminal errors
   rather than hang
@@ -295,9 +303,9 @@ Terminal late-frame handling summary:
 
 | Stream condition | Late frame class | Result |
 | --- | --- | --- |
-| after peer `FIN` on one direction | late `DATA` / `DATA|FIN` on that same direction | invalid |
-| after peer `RESET` on one direction | late in-flight `DATA` / `DATA|FIN` for that direction | ignore and apply discard-and-budget-release |
-| after peer `ABORT` or local/peer full terminal stream state | late in-flight `DATA` / `DATA|FIN` | ignore and apply discard-and-budget-release |
+| after peer `FIN` on one direction (whether or not the local side later stopped reading it, and whether or not the stream is otherwise fully terminal) | late `DATA` / `DATA\|FIN` on that same direction | invalid: `ABORT(STREAM_CLOSED)` (SPEC Section 9.6) |
+| after peer `RESET` on one direction | late in-flight `DATA` / `DATA\|FIN` for that direction | ignore and apply discard-and-budget-release |
+| after peer `ABORT`, or a fully terminal stream whose receive half did not end with peer `FIN` | late in-flight `DATA` / `DATA\|FIN` | ignore and apply discard-and-budget-release |
 | fully terminal stream | late non-opening control | ignore |
 
 ### 8.1 Compact terminal state
@@ -309,6 +317,12 @@ record. That compact record retains only:
 - the stream ID used marker (to prevent reuse)
 - the terminal kind (graceful, reset, or aborted)
 - the late-data handling policy for the receive direction
+- when the receive direction ended by local read-side stop or local `ABORT`,
+  the late-data allowance captured when the first of those committed, which is
+  never smaller than the stream credit then outstanding (SPEC Sections 9.3 and
+  9.5); a local `ABORT` after a local read-side stop keeps the larger value
+  and does not restart the count of late bytes, so the allowance never
+  decreases
 
 Late-data policies for compact terminal records are:
 
@@ -339,6 +353,13 @@ The following are always invalid:
 - treating a stream-scoped `EXT` as opening a previously unseen stream ID
 - peer `DATA` on a locally send-only unidirectional stream
 - forbidden non-zero frame flags
+
+For peer-owned stream IDs, the skipped-ID and "previously unused" rules above
+apply unless the ID is above the current local `GOAWAY` watermark of its class
+(such a watermark exists only after the local endpoint has sent `GOAWAY` for
+that class). A peer-owned ID above that watermark is known-absent and refused
+instead (SPEC Section 3.1): non-opening frames on it are ignored and `DATA` on
+it is refused and discarded.
 
 ## 10. Session lifecycle
 

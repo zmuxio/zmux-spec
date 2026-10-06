@@ -68,7 +68,7 @@
 "frame_flags":
   "32": "OPEN_METADATA"
   "64": "FIN"
-  "128": "reserved_type_specific"
+  "128": "reserved"
 "tlv_namespaces":
   "STREAM_METADATA_TLV":
     "1": "stream_priority"
@@ -97,12 +97,33 @@
 "ext_subtypes":
   "1": "PRIORITY_UPDATE"
 "reserved_ranges":
+  "capability_bits":
+    -
+      "from": 4
+      "to": 31
+      "kind": "reserved_for_future_standard_assignment"
+    -
+      "from": 32
+      "to": 47
+      "kind": "experimental"
+    -
+      "from": 48
+      "to": 61
+      "kind": "private_use"
   "frame_types":
+    -
+      "from": 0
+      "to": 0
+      "kind": "reserved"
     -
       "from": 12
       "to": 31
       "kind": "reserved"
   "setting_ids":
+    -
+      "from": 0
+      "to": 0
+      "kind": "reserved"
     -
       "from": 13
       "to": 255
@@ -121,6 +142,14 @@
       "kind": "private_use"
   "stream_metadata_tlv_types":
     -
+      "from": 0
+      "to": 0
+      "kind": "reserved"
+    -
+      "from": 4
+      "to": 255
+      "kind": "reserved_for_future_standard_assignment"
+    -
       "from": 256
       "to": 511
       "kind": "experimental"
@@ -134,6 +163,14 @@
       "kind": "private_use"
   "diag_tlv_types":
     -
+      "from": 0
+      "to": 0
+      "kind": "reserved"
+    -
+      "from": 5
+      "to": 255
+      "kind": "reserved_for_future_standard_assignment"
+    -
       "from": 256
       "to": 511
       "kind": "experimental"
@@ -146,6 +183,10 @@
       "to": null
       "kind": "private_use"
   "ext_subtype_ids":
+    -
+      "from": 0
+      "to": 0
+      "kind": "reserved"
     -
       "from": 2
       "to": 255
