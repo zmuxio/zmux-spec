@@ -20,6 +20,9 @@ jobs:
     name: Assets
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.14']
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -27,17 +30,18 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
 
       - name: Rebuild generated assets
-        run: python tools/rebuild_assets.py
+        run: python3 tools/rebuild_assets.py
 
       - name: Check generated assets are up to date
         run: |
-          if ! git diff --exit-code; then
+          if ! git diff --exit-code || [ -n "$(git status --porcelain --untracked-files=all)" ]; then
             echo "Generated assets are stale; run tools/rebuild_assets.py and commit the result." >&2
+            git status --short >&2
             exit 1
           fi
 
       - name: Validate assets
-        run: python tools/validate_assets.py
+        run: python3 tools/validate_assets.py

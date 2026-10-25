@@ -1,399 +1,280 @@
-# zmux Stream State Machine
-
-This document is a normative state-transition reference for
-[SPEC.md](./SPEC.md).
-
-Its purpose is to restate the core stream lifecycle as explicit half-direction
-state transitions so independent implementations do not invent incompatible
-local interpretations.
-
-It should be read as the stream-lifecycle companion to `zmux-v1`, including the
-opening and terminal rules used by the active same-version features defined by
-this document set.
-
-## 1. Model
-
-Each `zmux` stream has two independent byte-stream halves:
-
-- the **local send half**: bytes the local endpoint transmits toward the peer
-- the **local receive half**: bytes the local endpoint receives from the peer
-
-For a bidirectional stream, both halves exist.
-
-For a unidirectional stream:
-
-- on a locally opened unidirectional stream, the local send half exists and
-  the local receive half is absent
-- on a peer-opened unidirectional stream, the local receive half exists and
-  the local send half is absent
-
-`STOP_SENDING` acts on the peer's send half and therefore on the local receive
-half.
-
-`RESET` acts on the sender's own send half and therefore on the peer's receive
-half.
-
-`ABORT` terminates both halves at once.
-
-## 2. Opening rules
-
-- A stream leaves `idle` when the first opening-eligible stream-scoped core
-  frame is sent or received on a valid unused stream ID.
-- In `zmux v1`, the opening-eligible stream-scoped core frames are `DATA` and
-  `ABORT`.
-- `RESET` does not open a previously unseen stream in `zmux v1`.
-- `EXT` never opens a stream in `zmux v1`.
-- A first inbound `ABORT` on a valid peer-owned stream ID is allowed when that
-  frame is legal for the stream kind and direction.
-- A local first `ABORT` on an idle stream is valid only on a new locally owned
-  stream ID. A local endpoint cannot use `ABORT` as the first frame on a
-  previously unseen peer-owned stream ID.
-
-Previously unseen valid peer-owned stream first-frame outcomes:
-
-| First frame | Result |
-| --- | --- |
-| `DATA` / `DATA\|FIN` | stream opens |
-| `ABORT` | stream ID is recorded as used and terminal |
-| `RESET` | invalid |
-| `STOP_SENDING` | invalid |
-| stream-scoped `MAX_DATA` | invalid |
-| stream-scoped `BLOCKED` | invalid |
-| stream-scoped `EXT` | ignored; does not open the stream |
-
-These outcomes apply to every peer-owned stream ID except one above the current
-local `GOAWAY` watermark of its class; such a watermark exists only after the
-local endpoint has sent `GOAWAY` for that class. A peer-owned ID above that
-watermark that has no existing state is known-absent and refused (SPEC Section
-3.1): it stays `idle`, non-opening frames on it are ignored, `DATA` on it is
-discarded with session budget release and refused with at most one
-`ABORT(REFUSED_STREAM)`, and a peer `ABORT` on it records nothing.
-
-Opening eligibility is still constrained by stream kind and direction:
-
-- `DATA` is a sender-side frame and may only be sent by the side that may send
-  `DATA` on that stream
-- `RESET` may be sent only by a side that has a local send half on that stream
-- `ABORT` may be sent by either side
-
-When a stream leaves `idle`, its halves are initialized according to stream
-kind and opener before the triggering frame is applied as an event:
-
-- locally opened bidirectional: local send half = `send_open`, local receive
-  half = `recv_open`
-- locally opened unidirectional: local send half = `send_open`, local receive
-  half = `absent`
-- peer-opened bidirectional: local send half = `send_open`, local receive half
-  = `recv_open`
-- peer-opened unidirectional: local send half = `absent`, local receive half =
-  `recv_open`
-
-## 3. Half states
-
-`idle` is a stream-level pre-creation state rather than a half-state. The
-half-state tables below apply only after one opening-eligible frame has caused
-the stream to exist.
-
-### 3.1 Local send-half states
-
-- `absent`: this stream has no local send half
-- `send_open`: local outbound bytes may still be sent
-- `send_stop_seen`: peer `STOP_SENDING` has become locally visible; new
-  application writes are no longer allowed, though already committed tail bytes
-  may still drain before final conclusion
-- `send_fin`: local outbound direction has ended gracefully with `DATA|FIN`
-- `send_reset`: local outbound direction has ended abortively with `RESET`
-- `send_aborted`: the whole stream has been aborted
-
-### 3.2 Local receive-half states
-
-- `absent`: this stream has no local receive half
-- `recv_open`: peer outbound bytes may still arrive
-- `recv_fin`: peer outbound direction has ended gracefully
-- `recv_stop_sent`: local endpoint has sent `STOP_SENDING`; a bounded amount of
-  in-flight peer data may still arrive before terminal completion
-- `recv_reset`: peer outbound direction has ended abortively with `RESET`
-- `recv_aborted`: the whole stream has been aborted
-
-Recommended local read error resolution checks local read intent before
-protocol half-state. If the local endpoint has issued a read-side stop,
-subsequent local reads SHOULD fail with a local read-stopped error even if the
-protocol receive half has since transitioned to `recv_fin` or `recv_reset`
-through peer action. This preserves the local cancellation precedence: once
-the endpoint has expressed disinterest in further reads, the specific peer-side
-terminal outcome is secondary.
-
-## 4. Local action transitions
-
-### 4.1 Local send half
-
-| Current state | Event | Result |
-| --- | --- | --- |
-| `absent` | local `DATA`, `DATA\|FIN`, `RESET` | invalid |
-| `absent` | local `ABORT` | `send_aborted` only when opening a new locally owned stream; otherwise invalid |
-| `send_open` | local `DATA` | `send_open` |
-| `send_open` | local `DATA\|FIN` | `send_fin` |
-| `send_open` | local `RESET` | `send_reset` |
-| `send_open` | local `ABORT` | `send_aborted` |
-| `send_stop_seen` | local `DATA` | local error, no state change |
-| `send_stop_seen` | local `DATA\|FIN` | `send_fin` |
-| `send_stop_seen` | local `RESET` | `send_reset` |
-| `send_stop_seen` | local `ABORT` | `send_aborted` |
-| `send_fin` / `send_reset` | local `ABORT` | `send_aborted` |
-| `send_fin` / `send_reset` / `send_aborted` | local `DATA`, `DATA\|FIN`, `RESET` | local error, no state change |
-| `send_aborted` | local repeated `ABORT` | unchanged |
-
-On a locally opened stream, the first outbound `DATA`, `DATA|FIN`, or `ABORT`
-creates the stream if it was previously idle.
-
-### 4.2 Local receive half
-
-| Current state | Event | Result |
-| --- | --- | --- |
-| `absent` | local `STOP_SENDING` | invalid |
-| `absent` | local `ABORT` | `recv_aborted` |
-| `recv_open` | local `STOP_SENDING` | `recv_stop_sent` |
-| `recv_open` | local `ABORT` | `recv_aborted` |
-| `recv_fin` / `recv_reset` / `recv_stop_sent` | local `ABORT` | `recv_aborted` |
-| `recv_fin` / `recv_reset` / `recv_aborted` | local `STOP_SENDING` | local error or no-op |
-| `recv_stop_sent` | local repeated `STOP_SENDING` | unchanged |
-| `recv_aborted` | local repeated `ABORT` | unchanged |
-
-On a peer-opened stream, local `ABORT` is valid only after the stream already
-exists. A local endpoint cannot create a previously unseen peer-owned stream by
-sending first-frame `ABORT`. `STOP_SENDING` also does not open a previously
-unseen stream.
-
-## 5. Peer action transitions
-
-### 5.1 Local receive half
-
-| Current state | Event | Result |
-| --- | --- | --- |
-| `absent` | peer `DATA` / `DATA\|FIN` / `RESET` | invalid |
-| `absent` | peer `ABORT` | `recv_aborted` |
-| `recv_open` | peer `DATA` | `recv_open` |
-| `recv_open` | peer `DATA\|FIN` | `recv_fin` after buffered data is drained |
-| `recv_open` | peer `RESET` | `recv_reset` |
-| `recv_open` | peer `ABORT` | `recv_aborted` |
-| `recv_stop_sent` | peer late in-flight `DATA` | `recv_stop_sent` |
-| `recv_stop_sent` | peer `DATA\|FIN` after in-flight drain | `recv_fin` |
-| `recv_stop_sent` | peer `RESET` | `recv_reset` |
-| `recv_stop_sent` | peer `ABORT` | `recv_aborted` |
-| `recv_fin` | peer `DATA` / `DATA\|FIN` | invalid |
-| `recv_reset` / `recv_aborted` | peer late in-flight `DATA` / `DATA\|FIN` | unchanged |
-| `recv_fin` / `recv_reset` | peer repeated `RESET` | unchanged |
-| `recv_aborted` | peer repeated `ABORT` | unchanged |
-
-The `recv_stop_sent` to `recv_fin` transition via peer `DATA|FIN` represents
-the case where the peer gracefully concludes its send half in response to (or
-concurrent with) the local `STOP_SENDING`. This transition is valid because
-`recv_stop_sent` is not yet a terminal state — it indicates the local endpoint
-has requested the peer to stop, not that the peer has necessarily complied.
-The peer may still choose graceful completion over abortive reset.
-
-### 5.2 Local send half
-
-| Current state | Event | Result |
-| --- | --- | --- |
-| `absent` | peer `STOP_SENDING` | invalid |
-| `absent` | peer `ABORT` | `send_aborted` |
-| `send_open` | peer `STOP_SENDING` | `send_stop_seen` |
-| `send_stop_seen` | peer repeated `STOP_SENDING` | unchanged |
-| `send_open` | peer `ABORT` | `send_aborted` |
-| `send_stop_seen` | peer `ABORT` | `send_aborted` |
-| `send_fin` / `send_reset` | peer `STOP_SENDING` | unchanged |
-| `send_fin` / `send_reset` | peer `ABORT` | `send_aborted` |
-| `send_aborted` | peer `STOP_SENDING` / `ABORT` | unchanged |
-
-`send_stop_seen` is not yet terminal, but it is semantically different from
-`send_open`: the local application can no longer enqueue ordinary new writes.
-Only already committed tail bytes may still drain before the sender concludes
-that outbound half with `DATA|FIN`, `RESET`, or the stronger whole-stream
-`ABORT`.
-
-## 6. Graceful and abortive completion
-
-A stream is **gracefully complete** only when every existing half has reached a
-graceful terminal state:
-
-- local send half: `send_fin` or absent
-- local receive half: `recv_fin` or absent
-
-A stream is **abortively complete** when either side has processed `ABORT`.
-
-A stream is **partially abortive** when one outbound half has reached
-`send_reset` or one inbound half has reached `recv_reset` but the opposite
-direction is still alive.
-
-There is no dedicated graceful full-close frame. Graceful full close is the
-combination of graceful send completion plus eventual graceful peer completion.
-Local reader-side stop is separate:
-
-- `DATA|FIN` gracefully ends the local send half
-- `STOP_SENDING` is a local read-side stop or cancel signal, not a synonym for
-  peer-graceful EOF
-
-Abortive full close is `ABORT`.
-
-### 6.1 Terminal resolution and close visibility
-
-When multiple overlapping close conditions exist, implementations MUST resolve
-them locally in a consistent way.
-
-Recommended terminal resolution priority is, from strongest to weakest:
-
-1. `send_aborted` or `recv_aborted` — whole-stream abort error
-2. `send_reset` or `recv_reset` — direction-specific reset error
-3. `send_fin` — graceful write-side completion
-4. `recv_fin` — graceful read-side EOF
-
-`send_stop_seen` and `recv_stop_sent` are not terminal states. They are
-intermediate local-visibility conditions:
-
-- `send_stop_seen` closes ordinary new writes before later `send_fin`,
-  `send_reset`, or `send_aborted` becomes visible
-- `recv_stop_sent` closes ordinary further reads before later `recv_fin`,
-  `recv_reset`, or `recv_aborted` becomes visible
-
-Once a terminal condition becomes visible on that direction, it takes
-precedence over the earlier stop-only condition. When both an abort and a
-reset are present, the abort error takes precedence. When both send-side and
-receive-side terminal conditions exist at the same severity level, the
-send-side abort or reset takes precedence over the receive-side equivalent for
-combined error queries.
-
-## 7. Unidirectional constraints
-
-For a unidirectional stream:
-
-- only the opener may send `DATA`
-- only the opener may send `BLOCKED`
-- only the non-opener may send stream-scoped `MAX_DATA`
-- only the non-opener may send `STOP_SENDING`
-- only the opener may send `RESET`
-- either side may send `ABORT`
-
-Therefore:
-
-- peer `DATA` is always invalid on a locally send-only unidirectional stream
-- peer `BLOCKED` is always invalid on a locally send-only unidirectional
-  stream
-- local `MAX_DATA` is always invalid on a locally send-only unidirectional
-  stream
-- local `STOP_SENDING` is always invalid on a locally send-only
-  unidirectional stream
-
-## 8. Terminal handling
-
-After a stream is fully terminal:
-
-- late non-opening control frames are ignored
-- late `DATA` after peer `FIN` is invalid and is answered with
-  `ABORT(STREAM_CLOSED)`
-- late in-flight `DATA` after peer `RESET` or `ABORT` is ignored
-- local reads and writes should fail promptly with terminal errors
-  rather than hang
-
-After a local or peer `RESET`, only the affected half is terminal.
-
-After `ABORT`, both halves are terminal immediately.
-
-Terminal late-frame handling summary:
-
-| Stream condition | Late frame class | Result |
-| --- | --- | --- |
-| after peer `FIN` on one direction (whether or not the local side later stopped reading it, and whether or not the stream is otherwise fully terminal) | late `DATA` / `DATA\|FIN` on that same direction | invalid: `ABORT(STREAM_CLOSED)` (SPEC Section 9.6) |
-| after peer `RESET` on one direction | late in-flight `DATA` / `DATA\|FIN` for that direction | ignore and apply discard-and-budget-release |
-| after peer `ABORT`, or a fully terminal stream whose receive half did not end with peer `FIN` | late in-flight `DATA` / `DATA\|FIN` | ignore and apply discard-and-budget-release |
-| fully terminal stream | late non-opening control | ignore |
-
-### 8.1 Compact terminal state
-
-Once a stream is fully terminal and no local queued work or buffered data
-remains, implementations MAY compact the stream into a minimal terminal
-record. That compact record retains only:
-
-- the stream ID used marker (to prevent reuse)
-- the terminal kind (graceful, reset, or aborted)
-- the late-data handling policy for the receive direction
-- when the receive direction ended by local read-side stop or local `ABORT`,
-  the late-data allowance captured when the first of those committed, which is
-  never smaller than the stream credit then outstanding (SPEC Sections 9.3 and
-  9.5); a local `ABORT` after a local read-side stop keeps the larger value
-  and does not restart the count of late bytes, so the allowance never
-  decreases
-
-Late-data policies for compact terminal records are:
-
-| Stream condition at compaction | Late `DATA` action |
-| --- | --- |
-| stream had no local receive half (send-only unidirectional) | ignore silently |
-| receive half was `recv_fin` (graceful close) | reject with `ABORT(STREAM_CLOSED)` |
-| receive half was `recv_reset` or `recv_aborted` | ignore and apply discard-and-budget-release |
-
-Compact terminal records MUST NOT be reaped in a way that permits stream ID
-reuse or loss of the used-ID marker semantics for that session.
-Implementations MAY use range-compressed markers, bitmaps, or the
-`next_expected_stream_id` cursor instead of per-stream records when the
-resulting late-frame handling and no-reuse semantics remain correct.
-
-## 9. Invalid events
-
-The following are always invalid:
-
-- reusing a previously used stream ID for a new open
-- a peer-owned new stream ID that skips lower still-unused IDs of the same
-  class
-- `RESET` on a previously unused stream ID
-- `STOP_SENDING` on a previously unused stream ID
-- `MAX_DATA` on a previously unused stream ID
-- `BLOCKED` on a previously unused stream ID
-- local first `ABORT` on a previously unseen peer-owned stream ID
-- treating a stream-scoped `EXT` as opening a previously unseen stream ID
-- peer `DATA` on a locally send-only unidirectional stream
-- forbidden non-zero frame flags
-
-For peer-owned stream IDs, the skipped-ID and "previously unused" rules above
-apply unless the ID is above the current local `GOAWAY` watermark of its class
-(such a watermark exists only after the local endpoint has sent `GOAWAY` for
-that class). A peer-owned ID above that watermark is known-absent and refused
-instead (SPEC Section 3.1): non-opening frames on it are ignored and `DATA` on
-it is refused and discarded.
-
-## 10. Session lifecycle
-
-Session lifecycle states are:
-
-- `establishing`: prefaces not yet fully parsed or stream-ID ownership not yet
-  resolved
-- `ready`: session established and ordinary streams may be opened or accepted
-- `draining`: local or peer `GOAWAY` has stopped new opens in at least one
-  direction, while existing streams may still complete
-- `closing`: `CLOSE` has been sent or received, or a fatal local session error
-  has committed closing behavior
-- `closed`: orderly session shutdown is complete
-- `failed`: the underlying transport failed or session shutdown was not
-  orderly
-
-Transition guidance:
-
-- `establishing -> ready`: both prefaces parsed successfully and role
-  resolution complete
-- `establishing -> failed`: invalid preface, version conflict, role conflict,
-  or transport failure before session readiness
-- `ready -> draining`: local or peer `GOAWAY` narrows future stream admission
-- `ready -> closing`: local `CLOSE`, peer `CLOSE`, or another fatal
-  session-wide error
-- `draining -> closing`: local shutdown escalates to `CLOSE`, peer sends
-  `CLOSE`, or a fatal session-wide error occurs
-- `closing -> closed`: orderly shutdown work completes and the underlying
-  transport is closed or quiesced as intended
-- `ready` or `draining` -> `failed`: underlying transport fails without an
-  orderly `CLOSE` sequence
-
-Once the session is in `closing`, `closed`, or `failed`, implementations
-should fail new open attempts and wake blocked operations promptly with
-session-termination errors rather than leaving them queued indefinitely.
-
-Required handling remains defined by [SPEC.md](./SPEC.md).
+# zmux State Machines
+
+This document collects the rules of SPEC.md, MULTIPATH.md, RESUME.md and
+EXTENSIONS.md as state machines. Where a table here and a referenced section
+disagree, the referenced section wins.
+
+---
+
+## 1. Notation
+
+States are written in capitals. "On X" is an input event (a frame, an API
+action, a timer, a carrier event). "Do Y" is an action. Stream states use the
+names of RFC 9000 Section 3 unchanged.
+
+---
+
+## 2. Streams
+
+### 2.1 Base machines
+
+The sending-part and receiving-part machines of RFC 9000 Sections 3.1 and 3.2
+apply, with the bidirectional composition of RFC 9000 Section 3.4 and the
+solicited transitions of RFC 9000 Section 3.5:
+
+```text
+sending part:   Ready -> Send -> Data Sent -> Data Recvd
+                  |       |         |
+                  +-------+---------+--> Reset Sent -> Reset Recvd
+
+receiving part: Recv -> Size Known -> Data Recvd -> Data Read
+                  |         |             |
+                  +---------+-------------+--> Reset Recvd -> Reset Read
+```
+
+### 2.2 zmux deltas
+
+| # | Delta | Defined in |
+|---|---|---|
+| D1 | "Acknowledged" means "passed to the carrier" outside multipath, and "covered by PIPE_ACK" in multipath sessions. Outside multipath, Data Sent -> Data Recvd and Reset Sent -> Reset Recvd therefore happen as soon as the FIN or reset has been written. | SPEC 7.4 |
+| D2 | RESET_STREAM_AT moves the sending part to Data Sent (not Reset Sent) and the receiving part to Size Known, as reliable-stream-reset-11 Section 5.3 defines; Data Recvd is reached once all data below the smallest Reliable Size is acknowledged / received. | SPEC 7.5 |
+| D3 | When the stream preamble is in use, a peer-initiated stream has a pre-offer phase: it exists and counts against credit, but is not offered to the application until its preamble is complete. | EXTENSIONS 4.4 |
+| D4 | After both parts are terminal, the stream waits for the application's release before its state is discarded and its credit returns. | SPEC 7.6, 8.5 |
+| D5 | Once a sending part has received STOP_SENDING, it sends no new data and no FIN; it answers with RESET_STREAM or RESET_STREAM_AT. | SPEC 4.3 |
+| D6 | PRIORITY_UPDATE is permitted in every state of a part the receiver sends on and opens peer-initiated bidirectional streams. | EXTENSIONS 5.4 |
+| D7 | A peer stream at or above a GOAWAY watermark the endpoint sent, or a new peer stream arriving while the listener is under memory pressure, is rejected by the stack and never offered; a stream the application rejects was offered, but none of its data was read. Either way the endpoint sends RESET_STREAM(ZMUX_REJECTED) on its sending part (bidirectional streams), which moves that part to Reset Sent, and STOP_SENDING(ZMUX_REJECTED) on its receiving part, which then waits for the peer's reset or FIN. | EXTENSIONS 3.4, 7.2 |
+| D8 | In multipath sessions, every frame may be duplicated or reordered. A frame that does not advance a state is ignored. | MULTIPATH 7.6 |
+
+### 2.3 Life cycle of a stream record
+
+```text
+   (no state)
+       |  first frame sent (local) / first opening frame received or implied (peer)
+       v
+   OPEN ----------------------------------------------+
+       |  preamble complete (peer streams, preamble in use)
+       v                                              |
+   OFFERED (peer streams) / OWNED (local streams)     |  rejected (GOAWAY, application)
+       |  both parts terminal                         v
+       v                                          REJECTED (parts terminal, never offered)
+   TERMINAL                                           |
+       |  application released the stream             |  session closing or immediately
+       v                                              v
+   DISCARDED: state freed; MAX_STREAMS may grow by one for peer streams
+```
+
+- Local streams have no OFFERED step: the application owns them from the
+  first API call. Their identifier is allocated at the first emitted frame
+  (SPEC 7.2).
+- A peer stream that becomes TERMINAL before it is offered is still offered
+  (with its preamble, data and final status) and must be released by the
+  application before it is discarded (SPEC 8.5).
+- A stream rejected by the stack (REJECTED above) was never offered, so no
+  application release is needed; it is discarded as soon as both parts are
+  terminal (SPEC 7.6). A stream the application rejects is an ordinary
+  OFFERED stream and is discarded when it is released.
+
+### 2.4 Frames by state
+
+RFC 9000 Section 3.3 lists the frames permitted in each state. In addition:
+
+| Frame | Sending part states | Receiving part states |
+|---|---|---|
+| RESET_STREAM_AT | sent from Send or Data Sent | received in any state; transitions as D2 |
+| PRIORITY_UPDATE | received in any state (applies to the sending part) | sent in any state (requests a priority for the peer's sending part) |
+| DATAGRAM with a flow prefix | n/a | associated with a stream that is not discarded; otherwise dropped (EXTENSIONS 6.4) |
+
+Frames for a DISCARDED stream are ignored (SPEC 7.6).
+
+### 2.5 Application-visible outcomes
+
+These outcomes are normative for traces (TRACES.md) and for the errors an
+implementation reports to its application. "Remote" means the peer caused it.
+
+| Situation | Read returns | Write returns |
+|---|---|---|
+| peer sent FIN, all data read | end of stream | (unaffected) |
+| peer RESET_STREAM(c) / RESET_STREAM_AT(c) after reliable data read | stream reset, code c, remote, even if all data and a FIN arrived, unless the end of stream was already read (SPEC 7.5) | (unaffected) |
+| peer STOP_SENDING(c) | (unaffected) | stream stopped, code c, remote; for every write, including one already in progress |
+| local stop(c) | closed by local stop, code c | (unaffected) |
+| local reset(c) | (unaffected) | closed by local reset, code c |
+| ZMUX_REJECTED from peer | stream rejected (retryable) | stream rejected (retryable) |
+| stream index at or above a received GOAWAY watermark | stream rejected (retryable) | stream rejected (retryable) |
+| stream opened locally, neither emitted nor pinned, when a GOAWAY arrives, and every open call after it (EXTENSIONS 3.5 rule 2) | going away (retryable) | going away (retryable) |
+| session closed by peer CONNECTION_CLOSE | session error with the peer's code | same |
+| session closed locally or by timeout | session error with the local reason | same |
+
+A stream-level outcome never closes the session (SPEC 9.3). When several
+apply, the first one that happened wins, except that a session error replaces
+an in-progress blocking wait of any kind: a blocked writer or reader is woken
+with the session error as soon as the session ends.
+
+---
+
+## 3. Pipes
+
+### 3.1 Outbound pipe (the local endpoint writes)
+
+```text
+                    join sent or handed off
+   (none) ---------------------------------> JOINING ---------------------------+
+                                               |   \  stall                      | carrier error,
+              first PIPE_ACK > 0 (up) or       |    +----------------+           | join not confirmed
+              first record received (down)     v                     v           v within the handshake timeout
+   session established (pipe 0) ---------> ACTIVE <------------> SUSPECT ----------> FAILED
+   acceptor verified a down/bidi join -------^   stall /              |  lasting stall,  ^  ^
+                                                 ack advances and     |  error, abrupt   |  |
+                                                 writes resume        |  removal         |  |
+                                   graceful     |                     |                  |  |
+                                   removal      v    graceful removal |                  |  |
+                                             DRAINING <---------------+------------------+  |
+                                                |  \ drain not complete in time,           |
+                                                |   +- carrier error, abrupt removal -------+
+                                                |  PIPE_ABANDON exchange complete and
+                                                |  all stream data sent on it acknowledged
+                                                v
+                                             CLOSED (write side shut down)
+
+   FAILED or CLOSED, after own PIPE_ABANDON acknowledged, and either the
+   peer's PIPE_ABANDON received or unilateral retirement, and inbound side
+   ended -> RETIRED; FAILED -> RETIRED also by local retirement at the cap
+   while suspended (MULTIPATH 5.4 step 9). ACTIVE, SUSPECT and DRAINING ->
+   FAILED also on a carrier error or an abrupt removal.
+```
+
+A "stall" is the lack of acknowledgement or write progress from which the
+endpoint concludes that a pipe may be dead (MULTIPATH 7.1). A DRAINING pipe
+never returns to ACTIVE or SUSPECT: a stall only marks it suspect, which
+moves it to the end of the pipe choice of MULTIPATH 6.5 and reinjects its
+unacknowledged information. A pipe whose join was never confirmed fails
+only on a carrier error or the handshake timeout.
+
+| From | Event | To | Actions |
+|---|---|---|---|
+| (none) | session established: pipe 0 (both bootstrap carriers) | ACTIVE | |
+| (none) | joiner allocates pipe ID and sends or hands off PIPE_JOIN | JOINING | carries control frames; not usable until ACTIVE, so it never holds back failover to a standby pipe; new stream data only while no outbound pipe is usable (MULTIPATH 5.7, 9, 11 rule S1) |
+| (none) | acceptor verified a join with a down or bidi direction | ACTIVE | acceptor writes a record carrying a complete PIPE_ACK snapshot (when it has an entry), PIPE_PING and its PIPE_STATUS request, if any, within max_ack_delay (MULTIPATH 5.4 step 8) |
+| JOINING | PIPE_ACK acknowledges position > 0 (up), or a record arrives on the down direction | ACTIVE | |
+| JOINING | stall (acknowledgement stalls only while the endpoint has a live inbound pipe) | SUSPECT | stop new stream data; reinject; PIPE_PING (MULTIPATH 7.2) |
+| JOINING | graceful removal (local) or PIPE_ABANDON(NO_ERROR) received | DRAINING | stop new stream data; PIPE_ABANDON(NO_ERROR) if not yet sent |
+| JOINING, SUSPECT (never confirmed) | carrier error, or not confirmed within the handshake timeout | FAILED | reinject; PIPE_ABANDON(ZMUX_PIPE_FAILED) |
+| ACTIVE | stall (acknowledgement stalls only while the endpoint has a live inbound pipe) | SUSPECT | stop new stream data; reinject; PIPE_PING |
+| SUSPECT | acknowledged position advances and the carrier accepts writes | ACTIVE | drop reinjections now acknowledged |
+| SUSPECT (confirmed) | lasting stall (acknowledgement stalls only while the endpoint has a live inbound pipe) | FAILED | close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED) |
+| SUSPECT | carrier error, abrupt removal, PIPE_ABANDON(error) received | FAILED | close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED) if not yet sent |
+| ACTIVE | carrier error, abrupt removal, PIPE_ABANDON(error) received | FAILED | reinject; close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED), or ZMUX_PIPE_RESOURCE_LIMIT for a removal for a local resource limit or a loop (MULTIPATH 8.3) |
+| ACTIVE, SUSPECT | graceful removal (local) or PIPE_ABANDON(NO_ERROR) received | DRAINING | stop new stream data; PIPE_ABANDON(NO_ERROR) if not yet sent |
+| DRAINING | stall | DRAINING (marked suspect) | last choice for control frames; reinject the unacknowledged information, stream data included, once |
+| DRAINING | PIPE_ABANDON exchange complete (own sent, peer's received) and all stream data sent on the pipe acknowledged, checked when the own PIPE_ABANDON is sent, the peer's arrives or an acknowledgement arrives (MULTIPATH 8.2) | CLOSED | graceful write shutdown; reinject the information of unacknowledged control frames |
+| DRAINING | drain not complete in time; carrier error; abrupt removal; PIPE_ABANDON(error) received | FAILED | reinject what was not yet reinjected; close carrier; no second PIPE_ABANDON |
+| FAILED, CLOSED | own PIPE_ABANDON acknowledged, peer's PIPE_ABANDON received or unilateral retirement (max(2 s, 3 x PTO) after that acknowledgement), inbound side ended; at the first moment all hold, including the moment the failure or the drain itself completes them (MULTIPATH 8.4) | RETIRED | free state; for an attachment the peer joined, its pipe ID's bit stays set in the replay window until it slides out (MULTIPATH 4.3, 8.4) |
+| FAILED | the endpoint is SUSPENDED, at its cap of unretired attachments, a rejoin needs the room, and this is the oldest failed attachment whose own PIPE_ABANDON is unacknowledged (MULTIPATH 5.4 step 9) | RETIRED | free state, including the pending PIPE_ABANDON |
+| JOINING, ACTIVE, SUSPECT, DRAINING | the endpoint is SUSPENDED, at its cap of unretired attachments with none failed, a join that provides a direction it lacks needs the room, and this attachment has the oldest last progress (MULTIPATH 5.4 step 9) | RETIRED | reinject; close carrier; free state; no PIPE_ABANDON |
+
+Modifiers: the effective **priority** and **standby** flag of the outbound
+direction (local setting, else the peer's PIPE_STATUS request, else priority
+0 and available) and the **suspect mark** of a DRAINING pipe restrict
+sending (MULTIPATH 6.5, 8.2, 9) without being states.
+
+New stream data may be sent only in ACTIVE, and in JOINING, reinjected
+information first, while no outbound pipe is usable; control frames may use
+SUSPECT and DRAINING pipes as a last resort (MULTIPATH 11 rule S1). An
+outbound pipe is **live** in JOINING, ACTIVE, SUSPECT and DRAINING.
+
+### 3.2 Inbound pipe (the local endpoint reads)
+
+| From | Event | To | Actions |
+|---|---|---|---|
+| (none) | bootstrap, or acceptor verified a join (up or bidi) | OPEN | count positions; acknowledge |
+| (none) | joiner sent or handed off a join with direction down or bidi | JOINING | not listed in PIPE_ACK yet; a QX_TRANSPORT_PARAMETERS record leading it is discarded (MULTIPATH 5.7 step 3) |
+| JOINING | first complete record arrives | OPEN | the attachment becomes ACTIVE (MULTIPATH 5.7) |
+| JOINING | carrier error, or not OPEN within the handshake timeout | ENDED (failed) | as for OPEN below |
+| OPEN | graceful end at a record boundary after PIPE_ABANDON or CONNECTION_CLOSE was received, or after the endpoint sent PIPE_ABANDON(NO_ERROR) for the attachment | ENDED (graceful) | final position in next PIPE_ACK |
+| OPEN | linger timeout after the PIPE_ABANDON exchange completed | ENDED (graceful) | close carrier |
+| OPEN | carrier error, reset, end inside a record, or unexpected end | ENDED (failed) | discard incomplete record; fail own outbound direction of a pair; PIPE_ABANDON(ZMUX_PIPE_FAILED) (MULTIPATH 7.3) |
+| OPEN, attachment without a local outbound direction | judged dead after no complete record for at least the minimum of MULTIPATH 7.3 | ENDED (failed) | as above; close carrier |
+| OPEN | local abrupt removal | ENDED (failed) | close carrier |
+| ENDED | attachment retired (MULTIPATH 8.4; at once when the end of this direction completes the conditions) | RETIRED | stop listing in PIPE_ACK |
+
+An inbound pipe is **live** while JOINING or OPEN. Only OPEN inbound pipes
+count for leaving SUSPENDED (RESUME 4.4).
+
+### 3.3 Lanes
+
+A pipe with lanes (MULTIPATH 2.5) has the states above as a whole; its
+lanes have none of their own. A lane exists from its PIPE_LANE until the
+pipe ends: "acknowledged position advances" and every stall in the tables
+above are taken at the pipe's cumulative acknowledgement point (MULTIPATH
+2.5, 7.1); "carrier error", "reset", "end inside a record" and "unexpected
+end" apply to any lane and fail the whole pipe; a graceful end is the
+graceful end of every lane at a record boundary (MULTIPATH 7.3, 8.2); and
+"count positions; acknowledge" counts each lane's position (MULTIPATH 6.1).
+A lane that names no live pipe is closed without any transition, and a
+writer's lane that ends before it is confirmed (a PIPE_ACK position above 0
+on it, within the handshake timeout) is refused, also without any
+transition (MULTIPATH 5.8); only confirmed lanes fail their pipe, and on
+the reader's side an inbound lane that ends before its second record is no
+event.
+
+| Pipe state (outbound) | Lanes the writer may open |
+|---|---|
+| JOINING | none (lane 0 not yet acknowledged) |
+| ACTIVE, SUSPECT | new lanes once a position greater than 0 on lane 0 is acknowledged, none after a refused one; a lane carries only its PIPE_LANE until confirmed; SUSPECT pipes take only what rule S1 of MULTIPATH 11 allows, on any confirmed lane |
+| DRAINING, FAILED, CLOSED, RETIRED | none |
+
+### 3.4 Attachments without multipath
+
+Outside multipath sessions there is one attachment, pipe 0, with no
+JOINING, SUSPECT or DRAINING states: the failure of either direction, on any
+of its lanes, ends the session (SPEC 6.6).
+
+---
+
+## 4. Session
+
+### 4.1 States
+
+| State | Meaning | Timers |
+|---|---|---|
+| ESTABLISHING | own parameters sent, peer's not yet processed; streams opened now send only early data (SPEC 6.1.2) | handshake timeout |
+| ACTIVE | normal operation | idle timeout, keep-alive |
+| DRAINING | GOAWAY sent or received; no new streams; existing streams continue | idle timeout, keep-alive, GOAWAY fence |
+| SUSPENDED | resume in use and no live outbound or no live inbound pipe | resume grace |
+| CLOSING | CONNECTION_CLOSE sent or received, or idle timeout expired; write sides shut down; reading until end or linger timeout | linger timeout |
+| CLOSED | all state released | none |
+
+QUIC's "closing" and "draining" states (RFC 9000 Section 10.2) both map to
+zmux CLOSING. zmux DRAINING is the GOAWAY phase.
+
+### 4.2 Transitions
+
+| From | Event | To | Actions |
+|---|---|---|---|
+| ESTABLISHING | peer parameters processed, valid | ACTIVE | fix roles, features, session secret |
+| ESTABLISHING | peer parameters processed after early data was sent, and the peer cannot take it (no PIPE_ACK in use, or `initial_max_streams_bidi` 0) | CLOSING | CONNECTION_CLOSE(NO_ERROR); report early data rejected; the early streams fail with it (SPEC 6.1.2) |
+| ESTABLISHING | invalid parameters or first frame | CLOSING | CONNECTION_CLOSE(transport error) |
+| ESTABLISHING | handshake timeout | CLOSED | close carriers without frames |
+| ESTABLISHING | first bytes rejected (SPEC 6.2) | CLOSING | QX_TRANSPORT_PARAMETERS, then CONNECTION_CLOSE(PROTOCOL_VIOLATION) |
+| ACTIVE | GOAWAY sent or received | DRAINING | EXTENSIONS 3.3, 3.5 |
+| ACTIVE, DRAINING | no live outbound or inbound pipe, resume in use | SUSPENDED | RESUME 4.1 |
+| ACTIVE, DRAINING | no live outbound or inbound pipe, resume not in use (multipath) | CLOSING or CLOSED | CONNECTION_CLOSE(NO_VIABLE_PATH) if an outbound pipe is live; report pipes lost (MULTIPATH 8.5) |
+| ACTIVE, DRAINING | bootstrap pipe failure, not a multipath session | CLOSED | report carrier failure (SPEC 6.6) |
+| ACTIVE, DRAINING | graceful end of the inbound bootstrap pipe without CONNECTION_CLOSE, session without acknowledgement (plain QMux peer) | CLOSING | shut down writes without frames; report the peer's idle close (SPEC 6.4) |
+| ACTIVE, DRAINING | graceful end of the inbound bootstrap pipe (every lane) without CONNECTION_CLOSE, pipe acknowledgement in use | CLOSED | a pipe failure: report pipes lost (SPEC 6.4, 6.6) |
+| SUSPENDED | an ACTIVE outbound pipe and an OPEN inbound pipe exist | DRAINING if it was DRAINING or a GOAWAY was sent or received while suspended, otherwise ACTIVE | stop grace timer; send queued frames (RESUME 4.4); the first records of the new pipes already carried complete PIPE_ACK snapshots (RESUME 5) |
+| SUSPENDED | local protocol error detected (for example on an inbound pipe of a partially suspended endpoint) | CLOSING, or CLOSED without a live outbound pipe | CONNECTION_CLOSE on every live outbound pipe (SPEC 6.5) |
+| SUSPENDED | grace timer expired | CLOSED (or CLOSING if an outbound pipe is live) | ZMUX_RESUME_TIMEOUT (RESUME 8) |
+| SUSPENDED | the listener's limits on suspended sessions would be exceeded (RESUME 9) | CLOSED (or CLOSING if an outbound pipe is live) | ZMUX_RESUME_TIMEOUT |
+| SUSPENDED | application closes | CLOSED (or CLOSING if an outbound pipe is live) | CONNECTION_CLOSE on any live outbound pipe (RESUME 11) |
+| any but CLOSED | fail-closed resume condition | CLOSING or CLOSED | ZMUX_RESUME_FAILED (RESUME 7) |
+| ACTIVE, DRAINING | local close or local protocol error | CLOSING | CONNECTION_CLOSE on every live outbound pipe, then shut down writes (SPEC 6.5) |
+| ACTIVE, DRAINING, SUSPENDED | CONNECTION_CLOSE received | CLOSING | report peer error; at most one CONNECTION_CLOSE per outbound pipe; shut down writes |
+| ACTIVE, DRAINING | idle timeout | CLOSING | shut down writes without frames; in sessions with acknowledgement (multipath or pipe acknowledgement) CONNECTION_CLOSE(ZMUX_IDLE_TIMEOUT) first (SPEC 6.4) |
+| DRAINING | all streams done and application closes | CLOSING | application CONNECTION_CLOSE(NO_ERROR) |
+| CLOSING | every inbound pipe ended, or linger timeout | CLOSED | close carriers; abortive close only now |
+
+### 4.3 Error precedence
+
+The session error is the first of: a processed peer CONNECTION_CLOSE, a local
+close or detected violation, a timeout, a carrier failure or the loss of
+every pipe in a direction ("pipes lost") (SPEC 6.5).

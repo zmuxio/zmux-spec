@@ -1,523 +1,309 @@
-# zmux Conformance Guidance
+# zmux Conformance
 
-This document is implementation-language-neutral.
+This document defines what a claim of zmux conformance means. A claim names the
+specification revision (the commit of this repository) it was tested
+against.
 
-Its purpose is to define the protocol behavior that independent
-implementations should validate before claiming `zmux` interoperability.
+---
 
-This document describes protocol behavior, not local operation names or
-non-wire interface shapes. Non-wire interfaces may vary as long as the claimed
-protocol behavior is preserved.
+## 1. Scope
 
-## 1. Wire interoperability
+A **zmux implementation** implements the whole core protocol (SPEC.md,
+MULTIPATH.md, RESUME.md) and every negotiated feature of EXTENSIONS.md,
+apart from the optional features of requirement C-10. Multipath and resume
+are core: an implementation cannot claim conformance without them, even
+though sessions use them only when configured (SPEC.md Section 2.4).
 
-At minimum, a conforming implementation should interoperate on the base wire
-contract:
+Conformance is about what an endpoint puts on the wire and how it reacts to
+what it receives. How an implementation schedules frames across pipes,
+sizes its windows and buffers, and presents its API is its own choice
+within the rules of the normative documents; the test-mode sender of
+TRACES.md Section 3.4 exists only so that traces can predict pipe choices.
 
-- session preface parsing and emission
-- `proto_ver` negotiation
-- explicit `initiator` / `responder` role negotiation
-- `role = auto` with non-zero `tie_breaker_nonce`
-- explicit-role versus `auto` role resolution
-- equal-`tie_breaker_nonce` collision handling
-- the unified frame header
-- stream open with the opening-eligible stream-scoped core frames
-- half-close with `DATA|FIN`
-- `MAX_DATA`
-- `PING` / `PONG`
-- `STOP_SENDING`
-- `BLOCKED`
-- `RESET`
-- `ABORT`
-- `GOAWAY`
-- `CLOSE`
+Endpoints that implement only part of zmux do not claim conformance; the
+protocol stays interoperable with them through the feature negotiation of
+SPEC.md Section 5.5 and the plain-QMux invariant of SPEC.md Section 13.
 
-Base-wire conformance includes parsing, validation, and receiver-side handling of
-`BLOCKED`. Proactive emission of `BLOCKED` remains an implementation policy
-choice rather than a wire-compatibility requirement.
+---
 
-If an implementation claims `priority_update` support, it should also
-interoperate on:
+## 2. Implementation requirements
 
-- negotiation of the `priority_update` capability
-- not treating `priority_hints` or `stream_groups` as an independent update
-  path without `priority_update`
-- `PRIORITY_UPDATE` carrying `stream_priority`
-- `PRIORITY_UPDATE` carrying `stream_group`
-- `PRIORITY_UPDATE` with `stream_group = 0` clearing the explicit group while
-  preserving omitted fields
-- ignoring `open_info` inside `PRIORITY_UPDATE`
-- ignoring unknown TLVs inside a `PRIORITY_UPDATE` payload
-- leaving omitted fields unchanged
-- ignoring a `PRIORITY_UPDATE` payload with duplicate singleton advisory TLVs
-  as one dropped advisory update rather than treating it as stream-fatal
-- ignoring `PRIORITY_UPDATE` when `priority_update` was not negotiated,
-  before parsing its payload or checking its `stream_id`, so a malformed
-  payload or `stream_id = 0` does not fail the session (only an undecodable
-  `ext_type` is still `PROTOCOL`; SPEC Section 7.6)
-- ignoring unnegotiated `stream_priority` or `stream_group` fields in both
-  `OPEN_METADATA` and `PRIORITY_UPDATE`
+| # | Requirement | Reference |
+|---|---|---|
+| C-1 | Implement every MUST of SPEC.md, MULTIPATH.md, RESUME.md and EXTENSIONS.md. | all |
+| C-2 | Pass every trace in `fixtures/traces/` with a trace runner (Section 3). | TRACES.md |
+| C-3 | Accept every entry of `fixtures/wire/valid.ndjson` and reject every entry of `fixtures/wire/invalid.ndjson` with the listed error (Section 5). | |
+| C-4 | Enforce the no-effect budget with exactly the parameters of SPEC.md Section 9.4.2 (the protocol allows more lenient values; conforming implementations use the reference values so that traces test the boundary). | SPEC 9.4 |
+| C-5 | Unless the application overrides them, use the recommended values and follow the SHOULDs that traces check: the acknowledgement rules of MULTIPATH.md Sections 6.3 and 6.5, the PIPE_PING in the join record (MULTIPATH.md Section 5.2) and in the first record of an accepted down or bidi join (MULTIPATH.md Section 5.4 step 8), the refusal backoff of MULTIPATH.md Section 5.7 step 1, the PIPE_STATUS requests of MULTIPATH.md Section 9, the credit rules of SPEC.md Section 8.3, the BLOCKED frame for a preamble that does not fit in the remaining credit (SPEC.md Section 8.4), staged unidirectional credit (SPEC.md Section 8.5 rule 4) and the linger timeout of SPEC.md Section 6.5. | |
+| C-6 | Provide the test hooks of TRACES.md Section 3.3 and the test-mode sender of TRACES.md Section 3.4, unreachable from production configuration. | TRACES 3.3, 3.4 |
+| C-7 | Never place a transport error code in a stream frame and never let an application choose one. | SPEC 10.1 |
+| C-8 | Report session errors with the precedence of SPEC.md Section 6.5 and stream outcomes as STATE_MACHINE.md Section 2.5 lists. | |
+| C-9 | Reset with code 0 when an unfinished sending part is dropped; never report a reset stream as complete. | EXTENSIONS 7.4; SPEC 7.5 |
+| C-10 | Optional features: split bootstrap (SPEC.md Section 6.1.1) MAY be omitted; an implementation that offers it passes the traces whose identifiers start with `multipath.bootstrap.split_`, and one that does not skips them and states so in its claim. Streams as carriers (EXTENSIONS.md Section 10.2) MAY be omitted as well. Nothing on the wire depends on either choice. | SPEC 6.1.1, EXTENSIONS 10.2 |
 
-If an implementation claims `open_metadata` support, it should also interoperate
-on:
+---
 
-- negotiation of the `open_metadata` capability
-- `DATA|OPEN_METADATA` carrying `stream_priority` on the first opening frame
-- `DATA|OPEN_METADATA` carrying `stream_group` on the first opening frame
-- `DATA|OPEN_METADATA` with `stream_group = 0` leaving the stream without an
-  explicit group
-- `DATA|OPEN_METADATA` carrying `open_info` on the first opening frame
-- skipping unknown metadata TLVs inside `OPEN_METADATA`
-- ignoring duplicate singleton metadata TLVs inside one `OPEN_METADATA` block while
-  still processing the opening `DATA`
+## 3. Executable traces
 
-## 2. Invalid-input handling
+A trace drives the implementation under test against a scripted peer, with a
+virtual clock; TRACES.md defines the format and the runner's obligations.
+`fixtures/traces/index.json` lists every trace with its title, the sections
+it checks, its profile and its step count; `assets/manifest.json` holds the
+current counts and checksums. Groups:
 
-An implementation should reject or handle correctly:
+| Group | Covers |
+|---|---|
+| `core.handshake` | first frame, parameter rules, GREASE, identification of foreign peers, handshake timeout, early data (sending within the floor behind the PIPE_ACK fence, receiving, rejection by a peer that cannot take it) |
+| `core.records` | record framing, frame-type rules, prohibited and unknown frames, incremental parsing, message framing |
+| `core.streams` | opening, ordering, stream states, STOP_SENDING, resets, identifier allocation, release semantics |
+| `core.flow` | stream and session credit, zero-window liveness, session accounting, stream-count credit after release, Rapid Reset |
+| `core.robustness` | QX_PING rules, bounded response state, the no-effect budget and its compliant floor |
+| `core.close` | close procedure, linger, error precedence, idle timeout, keep-alive |
+| `core.reset_stream_at` | RESET_STREAM_AT rules |
+| `core.pipe_ack` | pipe acknowledgement without multipath (MULTIPATH.md Section 3.5), and the idle timeout of a session with acknowledgement (SPEC.md Section 6.4) |
+| `core.lanes` | lanes without multipath: PIPE_LANE, positions and PIPE_ACK entries per lane, head-of-line blocking on one lane, opening only after lane 0 is acknowledged, invalid lanes and entries, a lane's failure |
+| `ext.*` | role negotiation, GOAWAY, preamble, PRIORITY_UPDATE, datagrams and flows |
+| `compat.qmux` | behaviour towards a plain QMux peer |
+| `multipath.*` | negotiation, bootstrap, joins (in band, out of band, replay, refusal, backoff), listener limits, spread reordering, acknowledgement, PIPE_PING, carrier failures and reinjection, credit after lost pipes, streams across pipes, pipe removal, pipe status and priority requests, close, idle, budget, lanes |
+| `resume.*` | suspension, positions after a rejoin, fail-closed conditions, grace expiry, the attachment cap while suspended |
+| `regression` | stream races and credit accounting: STOP_SENDING crossing a finish, credit not refunded on reset, a reset with code 0 |
 
-- invalid magic bytes
-- unsupported `preface_ver`
-- invalid explicit `role` values
-- same-role conflict when both peers explicitly demand the same role
-- unsupported protocol-version overlap
-- non-canonical varint encodings
-- truncated or otherwise invalid `varint62` encodings
-- truncated TLV headers inside a valid TLV-bearing frame
-- TLV value lengths that overrun the enclosing payload
-- duplicate setting IDs in one preface settings block
-- standard varint settings whose TLV value is malformed, non-canonical,
-  truncated, or followed by trailing bytes
-- `preface_padding` being accepted as ignored settings payload while still
-  participating in the preface settings length and duplicate-setting rules
-- `max_frame_payload < 16384`
-- `max_control_payload_bytes < 4096`
-- `max_extension_payload_bytes < 4096`
-- `frame_length = 0` or `frame_length = 1`
-- `frame_length < 1 + encoded_length(stream_id)` after the encoded `stream_id`
-  has been parsed
-- frame payloads larger than receiver limits
-- `EXT` where `derived_payload_length < encoded_length(ext_type)`
-- `MAX_DATA` with trailing bytes beyond its one canonical `max_offset`
-- `BLOCKED` with trailing bytes beyond its one canonical `blocked_at`
-- `RESET`, `STOP_SENDING`, `ABORT`, or `CLOSE` payloads without one canonical
-  mandatory `error_code`
-- `GOAWAY` payloads without canonical mandatory bidirectional watermark,
-  unidirectional watermark, and `error_code` fields
-- `PING` with derived payload length `< 8`
-- `PONG` with derived payload length `< 8`
-- `DATA`, `STOP_SENDING`, `RESET`, or `ABORT` on `stream_id = 0`
-- `PING`, `PONG`, `GOAWAY`, or `CLOSE` on a non-zero `stream_id`
-- `PRIORITY_UPDATE` on `stream_id = 0` when `priority_update` was negotiated
-- non-zero `GOAWAY` watermarks that do not match the advertised stream class
-  or the stream-ID ownership of the peer receiving the `GOAWAY`
-- outbound `GOAWAY`, `CLOSE`, `RESET`, `STOP_SENDING`, and `ABORT`
-  diagnostics being capped to the peer-advertised control-payload limit while
-  preserving mandatory frame fields
-- `DATA|OPEN_METADATA` without negotiated `open_metadata`
-- `DATA|OPEN_METADATA` on an already opened stream
-- `DATA|OPEN_METADATA` with a missing or malformed `metadata_len`, or with
-  `metadata_len` overrunning the enclosing `DATA` payload
-- forbidden non-zero flag combinations on frames other than the valid `DATA`,
-  `DATA|OPEN_METADATA`, `DATA|FIN`, and `DATA|OPEN_METADATA|FIN` combinations
-- duplicate singleton TLVs inside one `PRIORITY_UPDATE` payload
-- a non-canonical or truncated `stream_priority` value inside a
-  `PRIORITY_UPDATE` payload or an `OPEN_METADATA` block
-- duplicate standardized singleton DIAG-TLVs inside one enclosing control frame
-  while preserving that frame's primary semantics
-- invalid UTF-8 `debug_text` inside a DIAG-TLV being ignored while preserving
-  that frame's primary semantics
-- a non-canonical `retry_after_millis` value inside a DIAG-TLV being ignored
-  while preserving that frame's primary semantics
-- `PRIORITY_UPDATE` targeting a previously unseen stream being ignored without
-  creating stream state
-- `PRIORITY_UPDATE` targeting a terminal stream being ignored without reviving
-  stream state
-- `DATA` received on a direction already closed by peer `FIN`
-- `DATA` exceeding current stream `MAX_DATA` and producing stream-local
-  `FLOW_CONTROL`
-- `DATA` exceeding current session `MAX_DATA` and producing session-wide
-  `FLOW_CONTROL`
-- stream-scoped `MAX_DATA` on a previously unused stream ID causing a session
-  `PROTOCOL` error
-- stream-scoped `BLOCKED` on a previously unused stream ID causing a session
-  `PROTOCOL` error
-- `STOP_SENDING` on a previously unused stream ID causing a session
-  `PROTOCOL` error
-- `BLOCKED` from the non-sending side of a unidirectional stream
-- `MAX_DATA` from the sending side of a unidirectional stream
-- `STOP_SENDING` from the sending side of a unidirectional stream
-- `RESET` from the non-sending side of a unidirectional stream
-- sender-side local `ABORT` attempted first on a previously unseen peer-owned
-  stream ID being treated as invalid
-- illegal stream ID ownership bits
-- stream ID reuse
-- peer-created stream IDs skipping the next expected ID of their class (when
-  the ID is not above a local `GOAWAY` watermark of that class)
-- unknown core frame types
-- `role = auto` with `tie_breaker_nonce = 0`
-- equal `tie_breaker_nonce` when both peers use `role = auto`
+Regenerate and check every asset with:
 
-Expected session error codes for the structural cases above follow SPEC
-Sections 3.2, 4.3, 6.11, and 7.2:
+```sh
+python3 tools/rebuild_assets.py && python3 tools/validate_assets.py
+```
 
-- `FRAME_SIZE`: `frame_length = 0` or `frame_length = 1`;
-  `frame_length < 1 + encoded_length(stream_id)`; frame payloads larger than
-  receiver limits; missing, truncated, or non-canonical mandatory payload
-  fields (the `MAX_DATA`, `BLOCKED`, `STOP_SENDING`, `RESET`, `ABORT`, `CLOSE`,
-  and `GOAWAY` fields and `metadata_len`); `PING` or `PONG` payloads shorter
-  than `8` bytes; container-structural TLV errors inside DIAG-TLV sequences,
-  `OPEN_METADATA` blocks, and `PRIORITY_UPDATE` payloads (the latter only when
-  `priority_update` was negotiated; SPEC Section 7.6), including when the same
-  block also repeats a singleton TLV; and a truncated, non-canonical, or over-long
-  `stream_priority` or `stream_group` value in an interpreted `OPEN_METADATA`
-  block or `PRIORITY_UPDATE` payload that precedes any duplicate singleton
-  (SPEC Section 7.2)
-- `PROTOCOL`: non-canonical `frame_length` or `stream_id` encodings; trailing
-  bytes after the one `MAX_DATA` or `BLOCKED` value; an `EXT` payload too short
-  for its `ext_type`, or with a non-canonical `ext_type`; invalid preface fields
-  and setting values; and the frame-scope, flag, and unknown-frame-type cases
-  above
+The tools need Python 3.12 or later and nothing beyond the standard library.
+`tools/zmuxwire` is a complete reference codec (records, frames, transport
+parameters, preamble, join tokens) that a runner may use to decode what the
+implementation writes.
 
-Expected establishment `CLOSE` codes follow SPEC Sections 2.4 and 2.6:
-`PROTOCOL` for invalid magic, an invalid `role`, a zero `role = auto` nonce,
-an invalid preface integer, a malformed settings block, or a payload limit
-below its minimum; `UNSUPPORTED_VERSION` for an unsupported `preface_ver` or
-no overlapping protocol version; `ROLE_CONFLICT` for the same explicit role or
-equal `role = auto` nonces; `FRAME_SIZE` for `settings_len` above `4096`;
-and `INTERNAL` for a local failure such as an establishment timeout.
+---
 
-A non-canonical, truncated, or over-long `varint62` value of a standardized
-DIAG-TLV (`retry_after_millis`, `offending_stream_id`, `offending_frame_type`)
-is not an error: the receiver ignores that diagnostic value and keeps the
-enclosing frame's primary semantics (SPEC Section 7.1).
+## 4. Tests beyond traces
 
-## 3. Extension-tolerance behavior
+The tests of this section are RECOMMENDED before a release; they are not
+part of a conformance claim.
 
-An implementation should demonstrate that it:
+### 4.1 Decoding
 
-- ignores unknown capability bits
-- ignores unknown setting IDs
-- treats unknown advisory `scheduler_hints` values as
-  `unspecified_or_balanced` without failing session establishment
-- skips unknown TLVs in known namespaces
-- ignores unknown `EXT` subtypes unless a stricter extension document says
-  otherwise
-- does not treat any stream-scoped `EXT` as implicitly opening a stream in
-  core `zmux v1`
+The record and frame decoder, the transport-parameter decoder and the
+preamble parser SHOULD be fuzzed with the wire corpus as seed. A crash, a
+hang, unbounded memory or a decode whose re-encoding is not **semantically
+equal** is a failure. Inputs need not be minimally encoded: RFC 9000
+Section 16 allows variable-length integers in more bytes than necessary
+(frame types excepted, RFC 9000 Section 12.4), and SPEC.md Section 13.2
+requires accepting anything a correct QMux peer may send, so byte-for-byte
+equality is not required. For every input that decodes, encoding the
+decoded value with the implementation's own encoder:
 
-This is essential for forward evolution.
+1. produces no more bytes than the input, counting every variable-length
+   integer that the encoder writes in a reserved fixed width (a Size or
+   Length filled in afterwards, as RFC 9000 allows) at its shortest length;
+2. decodes to a value equal to the first decode;
+3. is stable: decoding and encoding it again yields the same bytes.
 
-### 3.1 Protocol claims
+### 4.2 Compliant-floor stress test
 
-Protocol conformance claims should be made separately for:
+Two endpoints with default configuration, connected over one pipe and,
+separately, over two pipes:
 
-- `zmux-wire-v1`
-- `zmux-open_metadata`
-- `zmux-priority_update`
+1. run at least 3000 bidirectional streams in under 5 s, each doing open,
+   write 20 KB, finish, and closing the receive side without reading the
+   response (STOP_SENDING crossing the response FIN);
+2. run the same with both sides cancelling half of the streams at random
+   points;
+3. in the two-pipe case, kill one pipe every 500 ms and re-add it.
 
-### 3.2 Protocol compatibility profile
+No session may close (SPEC.md Section 9.4.3). Then a flood of chargeable
+frames (for example records of PADDING only, or, on the single pipe,
+MAX_DATA frames that do not raise the limit) must still close the session
+with ZMUX_EXCESSIVE_LOAD.
 
-Protocol compatibility profile:
+In the two-pipe case, a peer then fragments on purpose: on as many streams
+as the session window allows, it sends one byte at every other offset up
+to each stream's window, in 1-byte STREAM frames alternating between the
+pipes, once in records of those frames alone and once with each frame in
+its own record padded to 64 KiB. No session may close, and the receiver's
+memory for received stream data stays within 2.5 x the session's
+flow-control consumption (SPEC.md Section 8.2) plus 4 KiB per stream plus
+the read buffer each pipe or lane is being read into (SPEC.md Section 9.8).
+Filling the holes afterwards delivers every stream complete.
 
-- `zmux-v1`: the currently standardized `zmux v1` protocol feature set,
-  including the base wire contract, forward extension tolerance,
-  `open_metadata`, `priority_update`, and the correct negotiated handling of
-  `priority_hints` and `stream_groups`
+### 4.3 Invariants
 
-Separate protocol claims remain useful for incremental bring-up, targeted
-testing, and internal release gates. Public protocol compatibility claims
-should use `zmux-v1`.
+Checked after every step of fuzzing and of any randomized session test:
 
-### 3.3 Compatibility rule
+- delivered stream bytes are exactly the bytes written, in order, without
+  duplication, for every stream that ended with FIN;
+- a stream that was reset is never reported as complete;
+- received data never exceeds advertised limits; session accounting equals
+  the sum of max(offset, final size);
+- retained (unacknowledged) bytes never exceed the peer's limits or the
+  sender's bound (MULTIPATH.md Section 11 rule S4);
+- pending response state stays within SPEC.md Section 9.2;
+- no retained data exist in sessions without multipath, and no PIPE_ACK
+  unless pipe acknowledgement is in use (MULTIPATH.md Section 3.5).
 
-Compatibility rule:
+---
 
-- `zmux-v1` implementations MUST interoperate cleanly with each other by
-  negotiating and using only the capabilities both sides share on the wire
-- a release that intentionally lacks one of the currently standardized
-  same-version protocol features defined by this document set SHOULD NOT claim
-  public `zmux-v1` compatibility
-- before `session-ready`, an implementation emits only the local preface and a
-  fatal establishment `CLOSE`, and emits none of: new-stream `DATA`,
-  stream-scoped control, ordinary session-scoped control, or `EXT`
+## 5. Invalid input
 
-### 3.4 Claim checklist
+Every condition below MUST be detected and MUST produce the listed result. The
+corpus entries in `fixtures/wire/invalid.ndjson` and the traces cover each
+row.
 
-The table below summarizes the readiness checklist for each protocol claim. It
-does not replace the detailed scenario lists later in this document; it is a
-compact gate summary for implementation planning and release review.
+Each corpus line is a JSON object with `id`, `kind`, `gates` (the features
+and announcements in use, by transport-parameter name), `note`, and for
+invalid entries `error` (the transport error). An entry may also give
+`limits`, sized gates such as `{"max_datagram_frame_size": 12}` (the value
+the receiver advertised). Valid entries are minimally encoded and re-encode
+to the same bytes, except those marked `"non_minimal": true`, which must be
+accepted and re-encode under the semantic equality of Section 4.1 to the
+minimal encoding of their `frame`:
 
-| Claim or profile | Minimum acceptance checklist |
-| --- | --- |
-| `zmux-wire-v1` | pass core wire interoperability; pass invalid-input handling; pass extension-tolerance behavior |
-| `zmux-open_metadata` | satisfy `zmux-wire-v1`; negotiate `open_metadata`; accept valid `DATA\|OPEN_METADATA` on first opening `DATA`; reject unnegotiated or misplaced `OPEN_METADATA`; ignore unknown metadata TLVs; drop duplicate singleton metadata while preserving the enclosing `DATA` |
-| `zmux-priority_update` | satisfy `zmux-wire-v1`; negotiate `priority_update`; process `stream_priority` and `stream_group`; ignore `open_info` inside `PRIORITY_UPDATE`; ignore unknown advisory TLVs; ignore duplicate singleton advisory updates as one dropped update |
-| `zmux-v1` | satisfy `zmux-wire-v1`; interoperate on explicit-role and `role = auto` establishment; pass stream-lifecycle scenarios; pass flow-control scenarios; pass session-lifecycle scenarios; satisfy every currently active same-version optional protocol feature defined by this document set, currently `zmux-open_metadata`, `zmux-priority_update`, and the correct negotiated handling of `priority_hints` and `stream_groups` |
+- `frame`: `hex` is one frame, and valid entries give it as `frame` (a
+  frame object of TRACES.md Section 6);
+- `record`: `hex` is a byte stream of records that are not the first record
+  of a bootstrap pipe;
+- `messages`: `messages` is a list of messages of a message-framed carrier
+  (SPEC.md Section 3.4), each one record's Frames field; valid entries also
+  give `positions`, the bytes each message counts for in pipe positions.
 
-## 4. Stream-lifecycle scenarios
+The receiver's own `max_record_size` is 65535 unless an entry gives
+`max_record_size`. A carrier that ends inside a record is a pipe failure,
+not a corpus error; traces cover it.
 
-At minimum, test these stream-level cases:
+### 5.1 Records and frames
 
-- first `DATA` followed by more `DATA`
-- first `RESET` on a valid unused peer-owned stream ID causing a session
-  `PROTOCOL` error
-- first `ABORT` on a valid unused peer-owned stream ID
-- first `STOP_SENDING` on a valid unused peer-owned stream ID causing a session
-  `PROTOCOL` error
-- valid next-expected peer-owned stream IDs being recorded as used and
-  advancing the expected cursor even when the stream is immediately refused or
-  becomes terminal in the same processing step
-- zero-length `DATA` opening a stream before later payload
-- first `DATA|FIN` one-shot request stream
-- first `DATA` with payload followed by peer `ABORT(REFUSED_STREAM)`
-- unidirectional stream creation and peer rejection of wrong-direction `DATA`
-- unidirectional stream rejection of wrong-direction `BLOCKED`
-- unidirectional stream rejection of wrong-side `MAX_DATA`
-- unidirectional stream rejection of wrong-side `STOP_SENDING`
-- unidirectional stream rejection of wrong-side `RESET`
-- peer opening attempts above an advertised local `GOAWAY` watermark being
-  rejected with `ABORT(REFUSED_STREAM)` without consuming that stream ID or
-  requiring optional `OPEN_METADATA` parsing
-- after a restrictive local `GOAWAY`, peer `RESET`, `STOP_SENDING`,
-  stream-scoped `BLOCKED`, stream-scoped `MAX_DATA`, or stream-scoped `EXT` on
-  a refused peer-owned stream ID above the watermark (sent before the peer
-  observed the refusal) being ignored without a session `PROTOCOL` error,
-  further `DATA` on that ID being discarded without another
-  `ABORT(REFUSED_STREAM)`, and the session staying in draining with its
-  accepted streams intact
-- independent enforcement of bidirectional and unidirectional incoming-stream
-  limits
-- `STOP_SENDING` causing the peer to stop future `DATA` on one direction while
-  the opposite direction remains usable
-- half-close in one direction while the reverse direction remains active
-- EOF reached only after buffered data is drained following peer `FIN`
-- local `DATA|FIN` preventing further local `DATA` on that direction while the
-  reverse direction remains usable
-- local read-side stop being represented on the wire by `STOP_SENDING`
-- late `DATA` after peer `FIN`
-- duplicate `RESET`
-- peer `DATA|FIN` on a bidirectional stream not releasing the incoming-stream
-  concurrency slot while the local send half for that stream still remains
-  live
-- first frame for a valid peer-owned stream ID being `RESET` causing a session
-  `PROTOCOL` error
-- `RESET` on a stream with unread buffered data
-- `RESET` surfacing terminal error on the affected read half while the
-  opposite write half may remain usable
-- `ABORT` surfacing terminal errors on both read and write halves
-- `STOP_SENDING` causing the sender to conclude that outbound half with either
-  `RESET` or `DATA|FIN`
-- `STOP_SENDING` moving the sender-side state into a no-new-writes substate
-  before final conclusion
-- `ABORT` preserving the numeric error code while carrying optional DIAG-TLV
-  `debug_text`
-- `STOP_SENDING` received after that outbound half is already terminal and
-  therefore not requiring any additional concluding frame
-- stream-scoped `MAX_DATA`, `BLOCKED`, and `PRIORITY_UPDATE` not overtaking the
-  first opening frame for the same locally opened stream
-- `DATA|FIN`, `RESET`, and `ABORT` not overtaking already committed earlier
-  `DATA` on that same stream
-- late non-opening control frames on a terminal stream being ignored
-- late in-flight `DATA` after peer `RESET` being ignored rather than treated
-  as a new stream-state violation
-- late in-flight `DATA` after peer `ABORT` being ignored rather than treated
-  as a new stream-state violation
-- late in-flight `DATA` discarded after peer `RESET` / `ABORT` still restoring
-  the released session receive budget
-- `MAX_DATA` on a previously unused valid stream ID causing a session
-  `PROTOCOL` error
-- `BLOCKED` on a previously unused valid stream ID causing a session
-  `PROTOCOL` error
-- stream ID exhaustion handling without wraparound or ID reuse
-- late-data classification: late `DATA` arriving after peer `FIN` producing
-  `ABORT(STREAM_CLOSED)`, while late in-flight `DATA` after peer `RESET` or
-  peer `ABORT` is ignored with budget release
-- local read-side stop followed by bounded late peer `DATA` being discarded
-  and restoring session budget without restoring stream-scoped budget
-- local read-side stop, or local `ABORT`, while the peer still has its full
-  outstanding stream credit in flight (for example four maximum-size `DATA`
-  frames under the default `64 KiB` initial stream window) not failing the
-  session: the late bytes are discarded with session budget release and no
-  stream-scoped `MAX_DATA` is advertised for the stopped direction
-- on a live read-stopped direction (local read-side stop, no local `ABORT`),
-  one byte beyond the advertised stream credit producing `ABORT(FLOW_CONTROL)`
-  rather than a session error, provided the session limit still holds; after
-  a local `ABORT`, exceeding the captured late-data allowance is possible only
-  for a non-compliant peer, and the implementation may then either fail the
-  session with `PROTOCOL` (the peer sent beyond the stream credit it was
-  granted) or keep discarding the bytes with session budget release
-  (API_SEMANTICS Section 3)
-- local read-side stop followed by a local `ABORT` of the same stream while
-  late `DATA` is still arriving: the allowance captured at the stop keeps
-  applying, so late bytes within the stream credit outstanding at the stop
-  never fail the session even when they exceed the credit outstanding at the
-  abort
-- late `DATA` after peer `FIN` producing `ABORT(STREAM_CLOSED)` even when the
-  local endpoint had already stopped reading that direction
-- `OPEN_METADATA` bytes not consuming stream or session flow-control windows
-  even on a zero-credit opening frame
+| Condition | Result |
+|---|---|
+| record Size 0 (not the first record of a bootstrap pipe, see 5.2) | FRAME_ENCODING_ERROR |
+| record Size above the local `max_record_size` (detected from the Size field alone; not the first record) | FRAME_ENCODING_ERROR |
+| last frame truncated at the record end; any truncated field; a length field larger than the remaining record | FRAME_ENCODING_ERROR |
+| a pipe ends inside a record, even gracefully | single pipe: session ends (pipes lost); multipath: the record is discarded and the pipe fails |
+| message-framed carrier: message longer than `max_record_size` | FRAME_ENCODING_ERROR (corpus `message-oversize`; trace `core.records.message_oversize`) |
+| message-framed carrier: empty message | accepted as a no-op, charged as a PADDING-only record (corpus `message-empty-no-op`, valid; trace `core.records.message_empty`) |
+| frame type encoded in more bytes than necessary | PROTOCOL_VIOLATION |
+| unknown frame type | FRAME_ENCODING_ERROR |
+| PING, ACK, CRYPTO, NEW_TOKEN, NEW_CONNECTION_ID, RETIRE_CONNECTION_ID, PATH_CHALLENGE, PATH_RESPONSE, HANDSHAKE_DONE | FRAME_ENCODING_ERROR |
+| a zmux frame whose feature is not in use; RESET_STREAM_AT without having advertised it | FRAME_ENCODING_ERROR |
+| DATAGRAM without having advertised `max_datagram_frame_size`, or a well-formed DATAGRAM larger than advertised (corpus `datagram-above-limit`) | PROTOCOL_VIOLATION |
+| DATAGRAM whose Length runs past the record, even when it also exceeds `max_datagram_frame_size` (corpus `datagram-overrun-above-limit`: decode errors take precedence, SPEC.md Section 10.3) | FRAME_ENCODING_ERROR |
+| variable-length integer fields (not frame types) encoded in more bytes than necessary | accepted (corpus `max-stream-data-non-minimal`) |
+| STREAM offset plus length above 2^62 - 1 | FRAME_ENCODING_ERROR |
+| MAX_STREAMS, STREAMS_BLOCKED, GOAWAY value above 2^60 (stream counts: a stream ID has 62 bits, two of them for the type) | FRAME_ENCODING_ERROR |
+| RESET_STREAM_AT Reliable Size above Final Size | FRAME_ENCODING_ERROR |
+| PRIORITY_UPDATE reserved bits set | FRAME_ENCODING_ERROR |
+| PIPE_JOIN that does not decode (locator length 0 or above 16, direction 3, reserved flag 0x10 to 0x80 set, a missing Priority field) on a pipe that belongs to the session | FRAME_ENCODING_ERROR (a first PIPE_JOIN processed by a listener only closes the carrier, 5.5) |
+| PIPE_ACK with no entry; PIPE_ACK whose entries are not in strictly increasing (Pipe ID, Lane) order (including a repeated entry) | FRAME_ENCODING_ERROR |
+| PIPE_STATUS Status other than 0 or 1, or a frame without the Priority field (every Priority value is valid; corpus `pipe-status-priority-max`) | FRAME_ENCODING_ERROR (corpus `pipe-status-invalid`, `pipe-status-missing-priority`) |
 
-## 5. Flow-control scenarios
+### 5.2 Establishment and parameters
 
-At minimum, test:
+| Condition | Result |
+|---|---|
+| first bytes that cannot begin a QX_TRANSPORT_PARAMETERS record (legacy zmux format, HTTP, TLS on a plain socket; a first record whose Size is below 9 or above the local `max_record_size`) | PROTOCOL_VIOLATION as soon as the mismatching byte arrives, after the local QX_TRANSPORT_PARAMETERS |
+| QX_TRANSPORT_PARAMETERS anywhere but first, or on a joined pipe | PROTOCOL_VIOLATION; TRANSPORT_PARAMETER_ERROR when its parameter block is also not valid, whether malformed or containing a duplicate, prohibited or out-of-range parameter (corpus `record-misplaced-tp-malformed`, `record-misplaced-tp-duplicate`; decode errors first, SPEC.md Section 10.3) |
+| duplicate parameter; prohibited QUIC parameter; malformed value | TRANSPORT_PARAMETER_ERROR |
+| `max_record_size` below 16382; `initial_max_streams_*` above 2^60 | TRANSPORT_PARAMETER_ERROR |
+| `reset_stream_at`, `zmux_goaway`, `zmux_priority`, `zmux_datagram_flows`, `zmux_pipe_ack` with a non-empty value | TRANSPORT_PARAMETER_ERROR |
+| `zmux_role` with an invalid role, a missing or extra nonce | TRANSPORT_PARAMETER_ERROR |
+| `zmux_preamble` without `reset_stream_at`, below 1, above `max_record_size` - 32 or above the sender's stream windows | TRANSPORT_PARAMETER_ERROR |
+| `zmux_multipath` malformed or with a locator above 16 bytes | TRANSPORT_PARAMETER_ERROR |
+| a companion parameter (`zmux_ack_threshold`, `zmux_max_ack_delay`, `zmux_max_lanes`) without `zmux_multipath` or `zmux_pipe_ack`; companion values out of range, `zmux_max_lanes` 0 included | TRANSPORT_PARAMETER_ERROR |
+| role conflict | ZMUX_ROLE_CONFLICT |
 
-- normal stream-window consumption and `MAX_DATA` advancement
-- normal session-window consumption and `MAX_DATA` advancement
-- sender blocking when stream `MAX_DATA` is exhausted
-- sender blocking when session `MAX_DATA` is exhausted
-- sender opening a stream under zero initial stream credit by first emitting a
-  zero-length `DATA` opener before any stream-scoped `BLOCKED`
-- large transfers split across multiple `DATA` frames
-- large writes fragmented to fit the currently available stream and session
-  flow-control windows instead of waiting for a larger fixed chunk size to fit
-- aggregated `MAX_DATA` updates
-- flow-control accounting for `DATA|OPEN_METADATA` charging only the trailing
-  application-data bytes, not the metadata prefix and TLV block
-- sender opening a stream under zero initial stream credit while carrying
-  `OPEN_METADATA` on the opening `DATA`
-- session `MAX_DATA` advanced when unread buffered data is discarded during
-  reset or refusal, including the application bytes of the refused opening
-  `DATA` frame itself whether the refusal comes from a local `GOAWAY`
-  watermark, an incoming-stream limit, or the accept backlog
-- `DATA` rejected with a stream-local `ABORT` (`STREAM_CLOSED`, `STREAM_STATE`,
-  or stream `FLOW_CONTROL`) still being checked against, counted in, and
-  released to the session window
-- session `MAX_DATA` advanced when late `DATA` for already closed streams is
-  dropped through used-ID terminal bookkeeping
-- local read-side stop discarding unread data while restoring session receive
-  budget without advertising fresh stream credit for that stopped direction
-- late-data absorption after stop, reset, or abort being bounded per direction
-  and in aggregate so ignored payloads cannot consume unbounded memory, with
-  an aggregate overflow only discarding further late bytes rather than failing
-  the session
-- a long-lived session in which many sequential streams each absorb a small
-  late tail after local read-side stop staying usable: aggregate late-data
-  accounting tracks currently retained state, not a lifetime total
-- overflow protection on malicious or corrupted `MAX_DATA` values
-- `BLOCKED` deduplication: only the most recent limiting offset for each scope
-  is retained when multiple `BLOCKED` updates are pending
-- `MAX_DATA` coalescing: only the largest pending value for each scope is
-  emitted when multiple `MAX_DATA` updates are pending
-- stream-scoped `MAX_DATA` replenishment suppressed after local read-side stop
-  on that direction while session-level replenishment continues
-- session `MAX_DATA` replenishment triggered immediately when remaining
-  advertised session space falls below two negotiated frame payloads
+### 5.3 Streams and flow control
 
-## 6. Session-lifecycle scenarios
+| Condition | Result |
+|---|---|
+| stream opened at or above the advertised limit (by any frame) | STREAM_LIMIT_ERROR |
+| frame for an unopened local stream; frame in the wrong direction | STREAM_STATE_ERROR |
+| changed error code in a repeated reset | STREAM_STATE_ERROR |
+| changed final size; data beyond the final size | FINAL_SIZE_ERROR |
+| stream or session data beyond the advertised limit, including through a final size | FLOW_CONTROL_ERROR |
+| out-of-order or repeated STREAM data outside multipath | PROTOCOL_VIOLATION |
+| BLOCKED frame above any limit ever advertised | PROTOCOL_VIOLATION |
+| QX_PING request not above the previous (outside multipath); response above the largest request sent | PROTOCOL_VIOLATION |
+| no-effect budget exhausted | ZMUX_EXCESSIVE_LOAD |
 
-At minimum, test:
+### 5.4 Negotiated features
 
-- normal session startup with parallel preface exchange
-- no frame other than the local preface, and a fatal establishment `CLOSE` on
-  failure, being emitted before the peer preface is parsed: capture outbound
-  bytes while withholding the peer preface and check that no `PING`, `PONG`,
-  `MAX_DATA`, `BLOCKED`, `GOAWAY`, `EXT`, or stream frame appears
-- immediate post-preface first `DATA` on a new stream
-- no extra mux acknowledgement being required once session establishment is
-  complete and stream-ID ownership is resolved
-- variable-length `PING` echoed byte-for-byte by `PONG` when no recognized
-  padding tag is present
-- padded `PING` with a valid `ping_padding_key` tag accepting either exact
-  `PONG` echo or `PONG` echo plus additional opaque suffix bytes
-- locally originated `PING` payload length bounded by the smaller of local and
-  peer control-payload limits
-- unmatched `PONG` not completing any outstanding local `PING` and being
-  ignored or counted only as no-op control traffic
-- repeated `GOAWAY` with non-increasing bidirectional and unidirectional
-  acceptance watermarks
-- peer `GOAWAY` causing later local open attempts beyond the allowed
-  watermark to fail synchronously
-- peer `GOAWAY` causing never-peer-visible local streams beyond the allowed
-  watermark to be reclaimed locally without waiting for explicit peer
-  `ABORT(REFUSED_STREAM)`
-- `CLOSE` terminating all active streams
-- underlying transport closing without a prior `CLOSE`
-- `PING` payload length bounded by `min(local, peer)` control-payload limits,
-  not solely by the peer's advertised limit
-- `GOAWAY` watermark monotonicity: a subsequent peer `GOAWAY` with a higher
-  watermark than a previous one being treated as a protocol error
-- session close propagating terminal errors to all remaining open streams
-  and waking all blocked operations promptly
-- duplicate terminal `CLOSE` frames received after session termination being
-  ignored without replacing the original terminal cause
+| Condition | Result |
+|---|---|
+| preamble split across frames, above the limit, malformed TLV, repeated OPEN_INFO, PRIORITY or PIPE_CARRIER, bad PRIORITY or PIPE_CARRIER TLV | PROTOCOL_VIOLATION |
+| opener's stream with final size 0, plain RESET_STREAM, or Reliable Size below the preamble, without a local STOP_SENDING | PROTOCOL_VIOLATION |
+| PRIORITY_UPDATE for an unopened local stream or for the sender's own unidirectional stream | STREAM_STATE_ERROR |
+| datagram flow naming a unidirectional stream, an unopened local stream or a stream beyond the limit; truncated flow prefix | PROTOCOL_VIOLATION |
+| GOAWAY that raises a watermark; PRIORITY_UPDATE with an old sequence number | ignored (chargeable outside multipath sessions) |
 
-## 7. Quality behaviors to observe
+### 5.5 Multipath and resume
 
-These are not strict wire-level pass/fail requirements, but they should be
-part of interoperability quality validation:
+| Condition | Result |
+|---|---|
+| unauthenticated join: malformed, unknown locator, bad token, pending-join and per-source limits, no first record within the first-record timeout | carrier closed without any response; session unaffected; a bad token is reported locally as a join authentication failure |
+| authenticated join whose pipe ID has attachment state, has its replay bit set or is stale (MULTIPATH.md Section 4.3) | carrier closed, counted as a replay; session unaffected |
+| authenticated join with the wrong parity | PROTOCOL_VIOLATION |
+| authenticated join beyond the cap of unretired attachments, outside suspension | carrier closed, PIPE_ABANDON(ZMUX_PIPE_RESOURCE_LIMIT); session unaffected |
+| PIPE_ACK, PIPE_ABANDON or PIPE_STATUS for a pipe ID of the receiver's own parity that it has not taken | PROTOCOL_VIOLATION |
+| PIPE_ACK position above the bytes sent, including any position above 0 for a pipe the receiver does not send on | PROTOCOL_VIOLATION; ZMUX_RESUME_FAILED with resume in use |
+| PIPE_JOIN not first on its pipe | PROTOCOL_VIOLATION |
+| PIPE_ACK entries whose (Pipe ID, Lane) do not increase strictly | FRAME_ENCODING_ERROR |
+| PIPE_ACK position above 0 on a lane the receiver has not opened | PROTOCOL_VIOLATION |
+| new carrier streams of a multi-stream connection beyond the pending-carrier or per-source bounds (MULTIPATH.md Sections 5.5 and 5.6): on a connection that carries no OPEN inbound pipe of the endpoint; beyond one stream awaiting its first record per OPEN inbound pipe on the connection; or classified as a join or a new session | each takes a slot: refused or evicting as any unauthenticated carrier; only streams admitted for a lane stay outside the bounds, with the first-record timeout |
+| a new carrier stream whose PIPE_LANE carries an unknown Lane Key, or names a pipe without a live inbound direction whose lane 0 is on the same connection | the stream closed; session unaffected |
+| PIPE_LANE with Lane 0 or at least the receiver's `zmux_max_lanes`, a lane number already opened on the pipe, PIPE_LANE on lane 0 or not first on its lane | PROTOCOL_VIOLATION (FRAME_ENCODING_ERROR when lanes are not available toward the receiver or the frame does not decode) |
+| a lane's first record holding a frame other than PIPE_LANE and PADDING | PROTOCOL_VIOLATION |
+| an inbound lane that, after its second record, ends inside a record, is reset or fails | the pipe fails (outside multipath, the session ends, SPEC.md Section 6.6); before its second record: no event |
+| the writer's own lane closed or reset before it is confirmed | refused: no failure, nothing reinjected, no further lane on that pipe |
+| QX_TRANSPORT_PARAMETERS leading the joiner's inbound direction of a new attachment | discarded, not counted in the position |
+| outdated PIPE_ACK, entries with Position 0, duplicate STREAM data, outdated limits, PIPE_STATUS with an old sequence number or for a pipe ID of the peer's parity without attachment state, PIPE_ABANDON for such an ID outside the replay window or with its bit set | ignored, never chargeable |
 
-- stream open should not incur an extra mux round trip
-- `RESET` and `CLOSE` should not be indefinitely delayed behind bulk data
-- `MAX_DATA` should be advanced promptly enough to avoid unnecessary stalls
-- `BLOCKED` should not be indefinitely delayed behind bulk data when the sender
-  is window-limited
-- urgent control handling should remain bounded through hard caps and
-  coalescing rather than becoming an unbounded secondary memory sink
-- small interactive streams should remain usable while large transfers are
-  active
-- implementations should limit individual `DATA` fragment serialization
-  occupancy through bounded local fragment caps rather than relying solely on
-  the negotiated `max_frame_payload`; this matters most on very slow links
-- on very slow links, implementations should also avoid repetitive `BLOCKED`,
-  keepalive, or similar small-control chatter when no meaningful limiting
-  offset or liveness state has changed
-- senders not emitting early application `DATA` or creating new streams before
-  peer preface parsing completes
-- local stream-ID reservation before `opening-frame-committed` preserving the
-  peer-visible no-gap rule
-- provisional-open cancellation consuming an earlier cancelled stream ID on the
-  wire when a later same-class ID has already reached
-  `opening-frame-committed`, rather than creating a skipped-ID gap
-- `DATA|FIN`, `STOP_SENDING`, `RESET`, and `ABORT` remaining distinct protocol
-  actions instead of being collapsed into one ambiguous close behavior
-- implementations detecting and shedding abusive empty-frame or tiny-control
-  floods rather than allowing unbounded CPU or queue churn
-- implementations detecting and bounding repeated unmatched `PONG` traffic
-- implementations continuing to read and parse underlying bytes so control
-  frames can make progress even when `DATA` admission is blocked by local
-  memory or flow-control policy
-- implementations detecting and bounding rapid open-then-abort or
-  open-then-reset churn rather than relying only on concurrent stream limits
-- `debug_text` in error frames being valid UTF-8 and truncated at code-point
-  boundaries when payload limits are tight
-- `PONG` payloads being verbatim byte-for-byte copies of the triggering
-  `PING` payload unless local PING padding policy appends an opaque suffix for
-  a recognized padded `PING`
-- frame bytes being serialized contiguously onto the underlying byte stream so
-  frame contents from different streams cannot interleave
+---
 
-## 8. Shared wire examples
+## 6. Interoperability with QMux implementations
 
-Implementations should share at least:
+This test plan is RECOMMENDED; it is not part of a conformance claim.
 
-- valid preface examples
-- valid preface examples carrying ignored `preface_padding`
-- valid stream-open examples
-- valid `MAX_DATA` examples
-- valid `PING` / `PONG` examples
-- valid `GOAWAY` and `CLOSE` examples
-- valid `DATA|OPEN_METADATA|FIN` and zero-application-byte
-  `DATA|OPEN_METADATA` examples with a valid `metadata_len` prefix
-- valid `ABORT` or `CLOSE` examples carrying `debug_text`
-- tolerance examples where duplicate singleton metadata invalidates only the
-  metadata block while preserving the enclosing `DATA`
-- invalid frame-scope examples for session-scoped frames on non-zero
-  `stream_id`, stream-scoped frames on `stream_id = 0`, and
-  `PRIORITY_UPDATE` on `stream_id = 0`
-- invalid establishment examples such as `role = auto` with a zero
-  `tie_breaker_nonce`, a truncated setting value, a repeated
-  `preface_padding`, and `settings_len` above `4096`
-- known-answer `ping_padding_tag` values and a padded `PING` carrying one
-- valid `BLOCKED` examples
-- valid `STOP_SENDING` examples
-- valid `PRIORITY_UPDATE` examples when that extension is implemented
-- invalid non-canonical varint examples, both in the frame header
-  (`PROTOCOL`) and in a mandatory payload field (`FRAME_SIZE`)
-- non-canonical standardized TLV values: a `stream_priority` value in
-  `PRIORITY_UPDATE` (`FRAME_SIZE`) and a `retry_after_millis` DIAG value that
-  is ignored
-- invalid oversized-frame examples
-- invalid frame-size and malformed-payload examples that pin the `FRAME_SIZE`
-  versus `PROTOCOL` split of SPEC Section 4.3
+Plain-QMux interoperability is a hard invariant (SPEC.md Section 13). An
+implementation is tested against the available QMux-02 implementations,
+with zmux as client and as server, over TCP and over TLS (ALPN `qmux-02`,
+and `qmux-01` or `h3qx-01` where the other side uses draft-01
+identifiers). Test drivers configure `max_incoming_uni_streams` explicitly:
+with the default staged credit (SPEC.md Section 8.5 rule 4) a peer can open
+only 16 unidirectional streams before the zmux side accepts one. Reset tests
+that rely on RESET_STREAM_AT delivering data below the Reliable Size are
+skipped against implementations that treat it as a plain reset (SPEC.md
+Section 13.2, "Known peer behaviour").
 
-See [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md) for a starting point.
+1. establishment: both QX_TRANSPORT_PARAMETERS frames, GREASE and zmux
+   parameters ignored by the other side, no zmux feature in use;
+2. bidirectional and unidirectional streams opened by either side, FIN,
+   half-close, large transfers with window growth;
+3. RESET_STREAM, STOP_SENDING and, where supported, RESET_STREAM_AT, with
+   error codes above 2^32 where the other side allows them;
+4. flow control at zero window, stream-count credit exhaustion and recovery;
+5. QX_PING keep-alive and the other side's RTT pings;
+6. DATAGRAM, where supported, at the largest size each side allows;
+7. CONNECTION_CLOSE with transport and application codes in both
+   directions, including the other side's own error codes;
+8. idle timeout with both values;
+9. WebSocket carriers with the message framing of SPEC.md Section 3.4, with
+   both subprotocol forms (SPEC.md Section 6.2) and empty messages from the
+   other side accepted as no-ops;
+10. the `application_protocols` parameter on carriers without TLS, where
+    the other side uses it (SPEC.md Section 13.3);
+11. zmux as client wrongly declaring the other side a zmux endpoint for
+    early data (SPEC.md Section 6.1.2): the other side closes at the
+    PIPE_ACK fence with FRAME_ENCODING_ERROR, its application sees no
+    stream, and the zmux side reports early data rejected. This is the only
+    test in which the other side receives a zmux frame.
+
+Pass criteria (test 11 aside, whose pass condition is its own): no
+protocol error on either side, every byte delivered, the
+zmux side's no-effect budget never below 4000 tokens under the other side's
+traffic, and a capture of the zmux side shows no zmux frame type, no
+PIPE_ACK and no out-of-order STREAM data (SPEC.md Section 13.2), except the
+fence of test 11.
