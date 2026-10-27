@@ -89,7 +89,9 @@ version with new ALPN identifiers (REGISTRY.md Section 2.6).
 
 ## Implementations
 
-- [zmux-rs](https://github.com/zmuxio/zmux-rs)
+- [zmux-go](https://github.com/zmuxio/zmux-go) (Go)
+- [zmux-rs](https://github.com/zmuxio/zmux-rs) (Rust)
+- [zmux-python](https://github.com/zmuxio/zmux-python) (Python, bindings to zmux-rs)
 
 [draft-ietf-quic-qmux-02]: https://datatracker.ietf.org/doc/draft-ietf-quic-qmux/02/
 [RFC 9000]: https://www.rfc-editor.org/rfc/rfc9000
