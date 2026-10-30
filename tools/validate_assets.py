@@ -14,7 +14,6 @@ Checks:
 Exit status 0 when everything passes.
 """
 
-import base64
 import hashlib
 import json
 import re
@@ -273,14 +272,15 @@ def check_examples():
             okm.hex() != ("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
                           "34007208d5b887185865"):
         fail("examples: HKDF does not match RFC 5869 test case 1")
-    # join token in the HTTP header decodes to the example frame
-    hdr = rows.get("HTTP header", "")
-    if ": " in hdr:
-        val = hdr.split(": ", 1)[1]
-        raw = base64.urlsafe_b64decode(val + "=" * (-len(val) % 4))
+    # the out-of-band frame decodes to a join whose token verifies
+    oob = rows.get("PIPE_JOIN frame, out-of-band form", "")
+    if not oob:
+        fail("examples: out-of-band PIPE_JOIN frame missing")
+    else:
+        raw = bytes.fromhex(oob)
         f, _ = F.decode_frame(raw, 0, len(raw))
         if not C.verify_join(secret, "initiator", f):
-            fail("examples: HTTP header join token does not verify")
+            fail("examples: out-of-band join token does not verify")
 
 
 # =============================================================================

@@ -20,7 +20,7 @@ the source agree, and that every zmux value obeys Section 2.
 | transport error codes | variable-length integer | QUIC transport error codes (IANA) | 6.1 |
 | application error-code conventions | variable-length integer | the application's own space | 6.2 |
 | PIPE_JOIN flags, multipath secret flags, PIPE_STATUS values, zmux_role values | fixed | none | 8 |
-| labels (TLS exporter, HKDF, HTTP header) | ASCII strings | none | 9 |
+| labels (TLS exporter, HKDF) | ASCII strings | none | 9 |
 
 ---
 
@@ -338,8 +338,6 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 | hkdf_salt_prefix | `zmux session` |
 | hkdf_join_initiator | `zmux join i` |
 | hkdf_join_responder | `zmux join r` |
-| http_join_header | `Zmux-Pipe-Join` |
-| http_pair_header | `Zmux-Pipe-Pair` |
 | max_join_frame_bytes | 64 |
 | max_locator_bytes | 16 |
 | join_token_bytes | 16 |

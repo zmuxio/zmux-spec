@@ -437,12 +437,9 @@ joiner hands the PIPE_JOIN frame (Type through Join Token) to its carrier,
 which delivers it to the acceptor outside the pipe. The pipe's record stream
 then starts directly with ordinary records.
 
-On HTTP carriers the frame is sent in the request header `Zmux-Pipe-Join`,
-whose value is the frame encoded with base64url without padding ([RFC4648]
-Section 5), at most 86 characters. Where intermediaries strip unknown
-headers, a carrier MAY carry exactly the same bytes in another request
-element by convention between the two ends. The join information MUST NOT
-be placed in a URL query string.
+The adapters of both ends agree on how the frame travels and how it is
+encoded; it carries exactly the bytes from Type through Join Token, and it is
+never placed where intermediaries commonly log it, such as a URL.
 
 ### 5.4 Acceptor processing
 

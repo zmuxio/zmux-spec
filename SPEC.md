@@ -761,11 +761,9 @@ When the only carriers available are unidirectional (for example an HTTP POST
 request body for the uplink and an HTTP GET response body for the downlink),
 the two carriers that form pipe pair 0 are paired with a **pairing token**:
 
-1. The initiator chooses 16 random bytes, the pairing token, and sends it out
-   of band with both carriers. On HTTP carriers it is the request header
-   `Zmux-Pipe-Pair` whose value is the token in base64url without padding;
-   other adapters define an equivalent field. The token MUST NOT appear in a
-   URL.
+1. The initiator chooses 16 random bytes, the pairing token, and its carrier
+   adapter sends it out of band with both carriers, in a field the two
+   adapters agree on, never where intermediaries commonly log it.
 2. The initiator writes its first record (QX_TRANSPORT_PARAMETERS) on the
    uplink as soon as it is writable.
 3. The responder's listener holds the first carrier of a pair, with at most
@@ -991,15 +989,9 @@ same application.
   | `h3qx-02` | `h3qx-01` | `h3qx-00`, `h3qx` |
   | `myapp-02` | `myapp-01` | `myapp-1` |
   | `myapp` | none | `myapp-01` |
-- **WebSocket subprotocols.** Over WebSocket the identifier travels as the
-  subprotocol (`Sec-WebSocket-Protocol`, offered by the client and selected
-  by the server in the same way). Two naming forms are in use: the
-  `qmux-02.<application>` form above, and the application's own ALPN
-  identifier used directly, as in the QMux mapping to WebSocket [QMUX-WS]
-  (for example `myproto-18`), where the application protocol's definition
-  fixes the QMux version. A zmux endpoint accepts either form as a
-  configured identifier; the alias rule above applies to both unchanged (an
-  application identifier that does not end in `-02` has no alias).
+- Carriers that negotiate the application protocol by other means than ALPN
+  use the same identifiers and the same alias rule; how the identifier
+  travels is defined by the carrier adapter.
 - The TLS client MUST abort the handshake when no protocol is negotiated,
   with a no_application_protocol alert (QMux-02 Section 8.1) where its TLS
   library can send one. A library that learns the outcome only after the

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Generate WIRE_EXAMPLES.md and the wire corpus (fixtures/wire/*.ndjson)."""
 
-import base64
 import json
 import sys
 from pathlib import Path
@@ -163,10 +162,8 @@ def examples():
     add("4", "pipe-join-priority", "PIPE_JOIN with a priority request",
         "The initiator joins downlink pipe 4 and states its initial request for the acceptor's "
         "outbound direction of it (MULTIPATH.md Sections 5.1 and 9): standby (flag 0x08), "
-        "priority 10. Sent out of band, the frame alone (Type through Join Token) is the "
-        "value of the `Zmux-Pipe-Join` header, " + str(len(base64.urlsafe_b64encode(
-            F.encode_frame(jp)).rstrip(b"="))) + " characters; it is shown here in a record "
-        "like the other examples.", [jp])
+        "priority 10. Sent out of band, the frame alone (Type through Join Token) is "
+        "what the adapter carries; it is shown here in a record like the other examples.", [jp])
     add("5", "rejoin-record", "First record of a rejoined pipe",
         "After a suspension the initiator joins bidirectional pipe 6. Its first record "
         "carries, after the PIPE_JOIN, a complete PIPE_ACK snapshot (MULTIPATH.md Section "
@@ -193,8 +190,7 @@ def key_vectors():
         ("join_key_r", C.join_key(secret, "responder").hex()),
         ("PIPE_JOIN for pipe 2 up, bytes before the token", prefix.hex()),
         ("Join Token (no carrier binding)", j["token"].hex()),
-        ("HTTP header", R.LABELS["http_join_header"] + ": "
-         + base64.urlsafe_b64encode(F.encode_frame(j)).rstrip(b"=").decode()),
+        ("PIPE_JOIN frame, out-of-band form", F.encode_frame(j).hex()),
     ]
 
 

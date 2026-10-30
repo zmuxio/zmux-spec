@@ -285,8 +285,6 @@ LABELS = {
     "hkdf_salt_prefix": "zmux session",
     "hkdf_join_initiator": "zmux join i",
     "hkdf_join_responder": "zmux join r",
-    "http_join_header": "Zmux-Pipe-Join",
-    "http_pair_header": "Zmux-Pipe-Pair",
 }
 
 LIMITS = {

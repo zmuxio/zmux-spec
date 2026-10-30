@@ -625,7 +625,7 @@ Probe; ask the peer to use its outbound direction of pipe 3 as a less-preferred 
 
 ### 4.5 PIPE_JOIN with a priority request
 
-The initiator joins downlink pipe 4 and states its initial request for the acceptor's outbound direction of it (MULTIPATH.md Sections 5.1 and 9): standby (flag 0x08), priority 10. Sent out of band, the frame alone (Type through Join Token) is the value of the `Zmux-Pipe-Join` header, 40 characters; it is shown here in a record like the other examples.
+The initiator joins downlink pipe 4 and states its initial request for the acceptor's outbound direction of it (MULTIPATH.md Sections 5.1 and 9): standby (flag 0x08), priority 10. Sent out of band, the frame alone (Type through Join Token) is what the adapter carries; it is shown here in a record like the other examples.
 
 <!-- zmux-example pipe-join-priority -->
 ```json
@@ -704,7 +704,7 @@ Inputs and outputs of MULTIPATH.md Section 10 for the example of Section 4.1 and
 | join_key_r | `a6fce1b45791add43e7a70919c4231730fbe2396f2f89fc03fcda2a602e3de72` |
 | PIPE_JOIN for pipe 2 up, bytes before the token | `9a24de36054c4f43414c02000000` |
 | Join Token (no carrier binding) | `aded106775c33141fb8864f9877f2c22` |
-| HTTP header | `Zmux-Pipe-Join: miTeNgVMT0NBTAIAAACt7RBndcMxQfuIZPmHfywi` |
+| PIPE_JOIN frame, out-of-band form | `9a24de36054c4f43414c02000000aded106775c33141fb8864f9877f2c22` |
 
 ## 7. First bytes of foreign protocols
 
