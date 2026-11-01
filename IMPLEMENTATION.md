@@ -684,7 +684,30 @@ Section 9.2 (idle session, quiet sessions); the rules:
   `GatheringByteChannel.write(ByteBuffer[])` and
   `SSLEngine.wrap(ByteBuffer[], ...)` over the pooled chunks; the Python
   binding takes `bytes` by reference and other buffers through the buffer
-  protocol, with one copy.
+  protocol, with one copy. A Go half that is neither a `net.Conn` nor a
+  `BuffersWriter` (a carrier transform) gets each batch flattened into one
+  `Write`, and a message-framed `MessageBatchWriter` one `WriteMessages`
+  per batch, so that a transform maps a batch to one write below.
+- **First flight held (Go `EarlyData.HoldFirstFlight`).** Until the
+  release, pipe 0 produces no record (the streams' writes queue within the
+  early-data credit, the handshake timer does not run); the first assembly
+  after the release starts with QX_TRANSPORT_PARAMETERS and fills the
+  batch with the queued stream frames, so that one write carries the
+  parameters and the first streams. The release is the host's call or the
+  handshake timeout, from which the handshake timer then runs.
+- **Carrier early data under the floor.** A client with `zmux_peer` whose
+  bootstrap carrier reports an early-data verdict keeps its early sends
+  provisional exactly as under remembered parameters (SPEC.md Section
+  6.1.2): accepted, they are final; rejected before the peer's parameters,
+  the pipe's writer is stopped, the restart hook is called and the pipe
+  restarts with the parameters first and the streams from offset 0; a
+  rejection after the peer's parameters arrived closes the session with
+  INTERNAL_ERROR.
+- **Exporter read late.** The exporter of `pipe_auth` is read once, outside
+  the session lock, by the bootstrap pipe's reader before it delivers the
+  carrier's first bytes (which carry the peer's parameters, so the
+  carrier's handshake has completed); the core takes the value when it
+  processes those parameters.
 - **Batch and write call.** The batch amortises core calls and the core
   lock, and a write call may hand the carrier a whole batch, except while
   latency-sensitive work is waiting, when a write call holds at most
