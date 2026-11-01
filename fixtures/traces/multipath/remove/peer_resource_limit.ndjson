@@ -6,7 +6,7 @@
 {"step": 5, "op": "set_writable", "pipe": 0, "writable": false}
 {"step": 6, "op": "api", "call": "add_pipe", "args": {"pipe": 1, "dir": "out", "fate_group": 0}, "expect": {"ok": true}}
 {"step": 7, "op": "expect_frames", "pipe": 1, "match": "first", "frames": [{"type": "PIPE_JOIN", "locator": "50454552", "pipe": 1, "direction": "up", "carrier_bound": false, "standby": false, "fate_group": 0, "priority": 0, "token": "fad6d42725910d5ea920f6e16aa987b0"}]}
-{"step": 8, "op": "note", "text": "The peer acknowledges the join, so pipe 1 is ACTIVE (and, as the test-mode sender has no probation, usable): stream data may go there while pipe 0 is not writable. A JOINING pipe would not take it, since pipe 0 is usable (MULTIPATH.md Section 11 rule S1)."}
+{"step": 8, "op": "note", "text": "The peer acknowledges the join, so pipe 1 is ACTIVE (and, with probation off in this profile, usable): stream data may go there while pipe 0 is not writable. A JOINING pipe would not take it, since pipe 0 is usable (MULTIPATH.md 11.1 S1)."}
 {"step": 9, "op": "peer_send", "pipe": 0, "records": [[{"type": "PIPE_ACK", "entries": [{"pipe": 1, "lane": 0, "position": {"$sent": 1}, "delay": 0}]}]]}
 {"step": 10, "op": "expect_state", "pipe": 1, "dir": "out", "state": "ACTIVE"}
 {"step": 11, "op": "api", "call": "open_bidi", "args": {}, "bind": "a", "expect": {"ok": true}}

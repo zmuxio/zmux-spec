@@ -1,13 +1,14 @@
 # zmux Protocol Specification
 
-This document, [MULTIPATH.md](./MULTIPATH.md) and [RESUME.md](./RESUME.md)
-define the zmux core protocol; [EXTENSIONS.md](./EXTENSIONS.md) defines
-negotiated features, and [REGISTRY.md](./REGISTRY.md) lists every
-codepoint.
+Status: normative. This document, [MULTIPATH.md](./MULTIPATH.md) and
+[RESUME.md](./RESUME.md) together define the zmux core protocol.
+[EXTENSIONS.md](./EXTENSIONS.md) defines negotiated features. Codepoints are
+listed in [REGISTRY.md](./REGISTRY.md).
 
 This specification replaces the earlier zmux wire format, whose first bytes
-are the ASCII magic `ZMUX` (the "legacy format"). There is no version
-negotiation and no dual stack: a legacy endpoint and an endpoint of this
+are the ASCII magic `ZMUX` (the "legacy format"). It keeps the zmux name and
+version line; there is no version negotiation and no dual stack. The two
+formats do not interoperate: a legacy endpoint and an endpoint of this
 specification fail at the first bytes they exchange (Section 6.2).
 
 ---
@@ -48,10 +49,10 @@ to a plain QMux endpoint behaves as a correct QMux-02 endpoint** (Section 13).
 Between two zmux endpoints, zmux rules take precedence over QMux rules where
 they differ; every such difference is gated on a transport parameter that a
 plain QMux endpoint never sends. The one difference that precedes the peer's
-parameters, early data under the zmux floor (Section 6.1.2), is sent only
-toward a peer the application declares to be a zmux endpoint and is fenced
-so that a plain QMux peer processes none of it; early data under remembered
-parameters is QMux-02's own 0-RTT. zmux defines no second, "native" codec.
+parameters, early data under the zmux floor (Section 6.1.2), is gated on
+the application's declaration that the peer is a zmux endpoint, and is
+fenced so that a plain QMux peer processes none of it; early data under
+remembered parameters is QMux-02's own 0-RTT. zmux defines no second, "native" codec.
 
 ### 1.3 Conventions
 
@@ -79,8 +80,7 @@ mention of "packet acknowledgement" according to Section 7.4.
 SRTT, where a session-level rule uses it (Sections 4.5 and 6.5, EXTENSIONS.md
 Section 3.3), is the largest smoothed RTT among the
 session's live outbound pipes (JOINING, ACTIVE, SUSPECT or DRAINING;
-MULTIPATH.md Section 8.5), each estimated as RFC 9002 Section 5.3 does;
-failed pipes do not count. Outside multipath
+SCHEDULER.md Section 2.1); failed pipes do not count. Outside multipath
 sessions, where zmux takes no RTT samples of its own, it is an estimate from
 QX_PING or the carrier when the implementation has one. When no estimate
 exists it is 333 ms (RFC 9002 Section 6.2.2).
@@ -104,9 +104,7 @@ exists it is 333 ms (RFC 9002 Section 6.2.2).
 - **Outbound / inbound pipe**: a pipe the local endpoint writes to / reads
   from.
 - **Fate group**: a set of pipes that are expected to fail together, for
-  example two HTTP streams on one HTTP/2 connection (MULTIPATH.md Section 2.2).
-- **Carrier adapter**: the part of an implementation that connects a
-  carrier to a session and reports its events (MULTIPATH.md Section 2.4).
+  example two HTTP streams on one HTTP/2 connection (MULTIPATH.md Section 2).
 - **Bootstrap pipes**: the pipe or pipe pair over which the session is
   established. Their pipe ID is 0.
 - **Record**: the unit of framing on a pipe (Section 3).
@@ -124,27 +122,21 @@ exists it is 333 ms (RFC 9002 Section 6.2.2).
   events for that stream to the application (Section 7.6).
 - **Compliant peer**: a peer that follows every sender requirement of the zmux
   documents.
-- **Control frame**: any frame other than STREAM, DATAGRAM and PADDING.
-- **Memory budget**: a local bound on the memory that all sessions of a
-  listener (or a session without a listener) may commit to buffers and
-  window growth; it is policy of the endpoint, not a protocol value.
 
 ### 1.5 Document map
 
 | Document | Content | Status |
 |---|---|---|
 | SPEC.md (this document) | records, frames, transport parameters, session, streams, flow control, robustness rules, errors, QMux compatibility | normative, core |
-| MULTIPATH.md | pipes, lanes, joining, acknowledgement, failure detection, reinjection, pipe removal, sender rules, join security | normative, core |
+| MULTIPATH.md | pipes, joining, acknowledgement, failure detection, reinjection, pipe removal, scheduling rules, join security | normative, core |
+| SCHEDULER.md | the multipath sender's estimators, scheduling policies, tiers, probation and budgets: local policy, invisible on the wire | normative for zmux implementations, not part of the protocol |
 | RESUME.md | suspension and resumption after all pipes in a direction are lost | normative, core |
 | EXTENSIONS.md | role negotiation, GOAWAY, stream preamble, PRIORITY_UPDATE, datagram flows, application error-code conventions, nested sessions and relays, duplicate sessions | normative, negotiated features and conventions |
 | STATE_MACHINE.md | stream, pipe and session state machines | normative summary |
 | REGISTRY.md, assets/registry.json | every codepoint and registration policy | normative |
 | CONFORMANCE.md, TRACES.md, fixtures/ | conformance requirements, invalid inputs, executable traces | normative for conformance claims |
 | WIRE_EXAMPLES.md | byte-exact examples | informative, machine-checked |
-
-How an implementation schedules frames across pipes, sizes its windows and
-buffers, and presents its API is local and outside these documents, within
-the sender rules they state.
+| IMPLEMENTATION.md, API.md | implementation and API guidance | informative |
 
 ---
 
@@ -204,17 +196,25 @@ by two endpoints, plus the set of pipes currently attached to it. Records on
 different pipes are processed independently; frames carry all the information
 needed to apply them in any order (Section 4.1).
 
-**Priority governs sending only.** Stream priorities and pipe priorities
-decide what an endpoint sends, on which pipe and lane, and whether it is
+**Priority governs sending only.** Stream priorities (urgency and
+incremental), pipe tiers and every scheduling rule decide what an endpoint
+*sends*: which data goes first, on which pipe and lane, and whether it is
 copied. A receiver applies what arrives as soon as it arrives and never
-reorders or delays received data by priority; a priority signalled by the
-peer (the PRIORITY TLV, PRIORITY_UPDATE) is a request about the receiver's
-own sending part (EXTENSIONS.md Section 5). The acknowledgements and credit
-frames a receiver returns are sending and follow the sender's rules
-(MULTIPATH.md Section 6.5). Received data waits only for the stream's own
-byte order, for the stream's own preamble when the
-preamble is in use (Section 7.2, EXTENSIONS.md Section 4.4), and for
-nothing else; flow control limits memory, not the order of processing.
+reorders or delays received data by priority. A priority signalled by the
+peer (the PRIORITY TLV, PRIORITY_UPDATE) is a request about the receiver's own
+sending part (EXTENSIONS.md Section 5). Received data waits only for:
+
+1. the stream's own byte order: data is delivered to the application in
+   offset order within that stream, so later bytes that arrive first are
+   buffered until the gap before them is filled;
+2. the stream's own preamble, when the preamble is in use: a stream is
+   offered once its preamble has arrived, never waiting for other streams
+   (Section 7.2, EXTENSIONS.md Section 4.4);
+3. flow control: the receiver's windows bound what the peer may send; they
+   limit memory, not the order of processing.
+
+The acknowledgements and credit frames a receiver returns are sending, and
+follow the sender's rules (MULTIPATH.md Section 6.5).
 
 ### 2.4 Operating modes
 
@@ -288,14 +288,15 @@ TRANSPORT_PARAMETER_ERROR.
 
 zmux endpoints advertise a `max_record_size` of 65535 and SHOULD NOT advertise
 more: a larger limit increases the memory an endpoint commits to partially
-received records (QMux-02 Section 12.2) and brings no throughput gain. Senders still build smaller records where Section 3.3 says so.
+received records (QMux-02 Section 12.2) and brings no measurable throughput
+gain. Senders still build smaller records where Section 3.3 says so.
 
 ### 3.3 Record boundaries
 
 Senders choose record boundaries freely within the size limit. Over TLS, a
 sender SHOULD build records of at most 16382 bytes of frames so that each
 record, with a 2-byte Size, fills one TLS record, and SHOULD write several
-records with a single carrier write.
+records with a single carrier write (IMPLEMENTATION.md Section 4).
 
 ### 3.4 Message-framed carriers
 
@@ -305,21 +306,21 @@ use the **message framing**, each message carries exactly one record's
 Frames field and the Size field is omitted: the message length is the Size.
 This is the mapping that existing QMux implementations use for WebSocket.
 Both ends of a carrier MUST agree on the framing out of band (it is a
-property of the carrier); a carrier that does not
+property of the carrier adapter, API.md Section 4.1); a carrier that does not
 preserve message boundaries uses the byte-stream form of Section 3.1.
 
 With message framing:
 
 - an empty message is a record without frames: the receiver accepts it as
-  a no-op and charges it like a record that consists only of PADDING frames
-  (Section 9.4.1, NE-1); a sender counts it among those records (Section
-  9.4.3 rule 1). The QMux mapping to WebSocket [QMUX-WS] allows it; its only
-  effect is that of a received record: it restarts the idle timer where a
+  a no-op, and like a record that consists only of PADDING frames it is not
+  chargeable (Section 9.4); towards a plain QMux peer a sender counts it
+  among those records (Section 13.2). The QMux mapping to WebSocket [QMUX-WS] allows it, and its
+  only effect is that of a received record: it restarts the idle timer where a
   received record does (Section 6.4). zmux endpoints do not send it. On a
   byte-stream carrier a record with Size 0 remains a FRAME_ENCODING_ERROR
   (Section 3.2);
 - a message longer than the receiver's `max_record_size` is a record above
-  the limit (FRAME_ENCODING_ERROR), and a message of a kind the carrier does
+  the limit (FRAME_ENCODING_ERROR), and a message of a kind the adapter does
   not carry (for example a WebSocket text message) is a pipe failure;
 - the check of Section 6.2 applies to the first message, with the message
   length as the Size (an empty first message is below 9:
@@ -330,8 +331,8 @@ With message framing:
   number of bytes its record would occupy in the byte-stream form with the
   shortest Size encoding: the length of the message plus the length of the
   variable-length integer encoding of that length (1 for an empty message).
-  Sender and receiver count
-  the same way, so positions agree whatever the framing.
+  Sender and receiver count the same way, so positions agree whatever the
+  framing.
 
 ---
 
@@ -407,9 +408,9 @@ The semantics of RFC 9000 apply to every core frame. This section lists only
 the zmux additions.
 
 **PADDING.** Has no semantics. A record that contains only PADDING frames is
-chargeable (Section 9.4). Senders SHOULD NOT send records consisting only of
-PADDING frames except as keep-alive or traffic shaping within the limits of
-Section 9.4.3.
+not chargeable (Section 9.4); like any record, it is bounded by the carrier's
+rate, by `max_record_size` and by the memory limits of Section 9.8. Towards a
+plain QMux peer the sender limits such records (Section 13.2).
 
 **STREAM.** Sections 7.3 and 7.5. A sender MUST NOT send a STREAM frame that
 carries no data and no FIN bit, except to open a stream when the stream
@@ -492,8 +493,8 @@ the frame type is the frame's own Frame Type field. For example
 The whole phrase stays within the 1024 bytes above. This is a use of the
 Reason Phrase that RFC 9000 Section 19.19 leaves free, so any QMux endpoint
 may receive it. A receiver MUST NOT change its behaviour because of the
-phrase; it MAY parse the pairs for logs and error reports, MUST ignore
-unknown keys, and treats a phrase whose last line does not
+phrase; it MAY parse the pairs for logs and error reports (API.md Section
+5.3), MUST ignore unknown keys, and treats a phrase whose last line does not
 parse as plain text. An application close (0x1d) carries what the
 application gave.
 
@@ -547,12 +548,14 @@ the two will be superseded without an answer; a request is answered once its
 response has been produced for a carrier (handed to it, or committed to a
 pipe). A request that is answered has an effect and costs its sender a
 record per response, so it is neutral. Responses are chargeable only when
-they are outdated (NE-8). A peer that probes its RTT at a fixed cadence,
-whatever its number of requests outstanding, is therefore charged only when
-two of its requests arrive before the first is answered; a flood of
-requests within one read is charged for all but one, and a receiver whose
-writing is blocked for long (the peer reads nothing) charges every such
-request and may close the session.
+they are outdated (NE-8). A plain QMux peer that measures its RTT with a
+request every 20 ms, whatever its number of requests outstanding, is charged
+only when two of its requests arrive before the first is answered: rarely,
+after a delay on the path, far less often than the refill of Section 9.4.2,
+as long as the receiver can write its responses within the request
+interval. A receiver whose writing is blocked for minutes (the peer reads
+nothing) charges every such request and may close the session; a flood of
+requests within one read is charged for all but one.
 
 ---
 
@@ -574,7 +577,8 @@ QX_TRANSPORT_PARAMETERS Frame {
 The 8-byte encoding of the type is `ff 51 53 30 0d 0a 0d 0a`.
 QMux-02 renders these bytes as "\xffQMX\r\n\r\n"; that rendering is wrong (the
 second to fourth bytes are ASCII "QS0"), and the numeric value
-0x3f5153300d0a0d0a is the normative one.
+0x3f5153300d0a0d0a is the normative one. It is what the Rust `qmux` crate
+0.6.2 sends.
 
 Rules:
 
@@ -637,22 +641,28 @@ Rules:
 | max_record_size | 0x0571c59429cd0845 | 16382 | 65535 | Section 3.2 |
 
 The "zmux endpoints send" column gives the RECOMMENDED values of a
-general-purpose implementation; applications may configure others, at or
-above the early-data floor of Section 6.1.2. The
-flow-control values are starting points that receivers may grow as data
-flows. A zmux endpoint MUST send the initial flow-control and stream-limit
-parameters explicitly, because their absent value is 0.
+general-purpose implementation; applications may configure others (API.md
+Section 6), at or above the early-data floor of Section 6.1.2. The
+flow-control values are starting points for receive-window
+auto-tuning (IMPLEMENTATION.md Section 6). A zmux endpoint MUST send the
+initial flow-control and stream-limit parameters explicitly, because their
+absent value is 0.
 
 #### 5.3.1 Why 256 concurrent streams
 
-Credit is returned only when the application releases a stream (Section
-8.5), so `initial_max_streams_bidi` is a hard cap on the number of streams
-the peer can have open at once; a cap of 100 (the HTTP/2 minimum) would
-make sessions with several hundred concurrent streams wait for credit under
-normal load. Receive buffers are bounded by the buffer cap of Section 8.3
-rule 4 rather than by the stream count, and Rapid-Reset-style attacks are
-not made easier by a larger cap, because credit returns only after the
-application releases a stream. Unidirectional credit starts at 16 by default (Section 8.5 rule 4).
+`initial_max_streams_bidi` and the unidirectional concurrency default to 256,
+not the 100 used by quic-go and the HTTP/2 minimum. Unidirectional credit
+starts at 16 by default (Section 8.5 rule 4), so the 256 apply only once the
+application accepts unidirectional streams. Credit is returned only when
+the application releases a stream (Section 8.5), so the value is a hard cap on
+the number of streams the peer can have open at once. zmux's main deployments
+(tunnel gateways) carry several hundred concurrent tunnel streams per
+session, and a cap of 100 would make them wait for credit under normal load.
+The cost is bounded: an idle stream costs about 1 KiB of state for both ends
+together (IMPLEMENTATION.md Section 9.2 bounds it at 1.5 KiB), and receive buffers are bounded by the session buffer cap of Section
+8.3 rule 4 and the listener's memory budget rather than by the stream count. Rapid-reset style attacks are not made easier
+by a larger cap, because credit returns only after the application releases a
+stream (Section 8.5).
 
 ### 5.4 zmux parameters
 
@@ -666,10 +676,11 @@ ignore them (QMux-02 Section 5.1).
 | zmux_preamble | 0x0439e07a | EXTENSIONS.md 4 |
 | zmux_priority | 0x31e7139d | EXTENSIONS.md 5 |
 | zmux_datagram_flows | 0x0af391ed | EXTENSIONS.md 6 |
+| zmux_carrier_datagrams | 0x3d274c5f | EXTENSIONS.md 6.8 |
 | zmux_multipath | 0x30dc2978 | MULTIPATH.md 3 |
-| zmux_ack_threshold | 0x2762c7e5 | MULTIPATH.md 3.2 |
+| zmux_ack_threshold | 0x2762c7e5 | MULTIPATH.md 3 |
 | zmux_pipe_ack | 0x34b47621 | MULTIPATH.md 3.5 |
-| zmux_max_ack_delay | 0x17fa1ed6 | MULTIPATH.md 3.2 |
+| zmux_max_ack_delay | 0x17fa1ed6 | MULTIPATH.md 3 |
 | zmux_max_lanes | 0x27856ef0 | MULTIPATH.md 3.6 |
 | zmux_resume | 0x0d5778ce | RESUME.md 3 |
 
@@ -751,7 +762,7 @@ carrier (Section 13.2 rule 7).
 
 #### 6.1.1 Pairing a split bootstrap
 
-Split bootstrap is an optional feature (CONFORMANCE.md Section 2, C-10). It
+Split bootstrap is an optional feature (CONFORMANCE.md Section 2, C-14). It
 serves only deployments that have no bidirectional carrier at all; an
 implementation that does not offer it accepts only a bidirectional bootstrap
 carrier, and its listener closes a carrier that arrives with a pairing token.
@@ -776,20 +787,25 @@ the two carriers that form pipe pair 0 are paired with a **pairing token**:
    is closed.
 4. The responder then writes its QX_TRANSPORT_PARAMETERS on the downlink.
 
-The pairing token is a bearer secret until the session is established:
-anyone who learns it before the responder pairs the carriers can take the
-place of either carrier. Carriers that use a split bootstrap MUST therefore
-be confidential end to end (TLS that terminates at the responder), and an
-initiator that has any bidirectional carrier SHOULD bootstrap on it and add
-unidirectional pipes with authenticated joins (MULTIPATH.md Section 5)
-instead. The session secret derived after establishment (MULTIPATH.md
-Section 10) protects every later join, but not the bootstrap pair itself.
+The pairing token is a bearer secret until the session is established: anyone
+who learns it before the responder pairs the carriers can take the place of
+either carrier. Carriers that use a split bootstrap MUST therefore be
+confidential (TLS that terminates at the responder, or at an intermediary that
+the deployment already entrusts with the carriers' contents, such as a
+TLS-terminating reverse proxy or CDN in front of the responder, whose hop to
+the responder is confidential or local), and an initiator that has any
+bidirectional carrier SHOULD bootstrap on it and add unidirectional pipes with
+authenticated joins (MULTIPATH.md Section 5) instead. The session secret
+derived after establishment (MULTIPATH.md Section 10) protects every later
+join, but not the bootstrap pair itself.
 
 #### 6.1.2 Early data
 
 An endpoint may send stream data before it has processed the peer's
-transport parameters: its **early data**, which saves the round trip the
-first stream byte would otherwise wait for. Early data is sent under an
+transport parameters: its **early data**. Without it, the first stream byte
+waits for the peer's parameters, one round trip on plain TCP, on WebSocket,
+and over TLS 1.3 with a server that cannot send its parameters in its
+Finished flight (IMPLEMENTATION.md Section 2.3). Early data is sent under an
 **assumed parameter set**, which stands for the peer's parameters until the
 real ones have been processed, as RFC 9000 Section 7.4.1 lets remembered
 parameters stand for them. There are two such sets, and an endpoint uses at
@@ -800,22 +816,33 @@ most one of them in a session:
    0-RTT for a pipe on a QUIC stream), a client MAY send its first records
    as carrier early data, under the server's parameters remembered from the
    session that issued the ticket, exactly as RFC 9000 Section 7.4.1
-   describes. A client that cannot store data with a ticket MAY instead
-   remember the parameters of the most recent session with the same server
-   identity (the name it verified) and use them with any ticket of that
-   identity; this relies on the server keeping its parameters stable
-   (Replay, below). Without a verified server name there is no such
-   identity and no such memory. Toward a plain QMux peer this is QMux-02's
-   own 0-RTT and nothing more. Remembered values are never used outside carrier early
-   data.
+   describes. A client whose TLS library cannot store data with a ticket
+   MAY instead remember the parameters of the most recent session with the
+   same server identity (the name it verified) and use them with any
+   ticket of that identity, in place of RFC 9000 Section 7.4.1's values of
+   the ticket's session; this relies on the server keeping its parameters
+   stable (Replay, below). Without a verified server name there is no such
+   identity and no such memory. Toward a plain QMux peer this is QMux-02's own 0-RTT and
+   nothing more. Remembered values are never used outside carrier early
+   data: a carrier without early data of its own (plain TCP, WebSocket, a
+   full TLS handshake) cannot reject data sent on values that have changed
+   since.
 2. **The zmux floor**: when the endpoint uses no remembered parameters and
    its application declares the peer to be a zmux endpoint, it MAY send
    early data under the floor below, which every zmux endpoint advertises
-   at least. Nothing on the wire tells an endpoint beforehand that the peer
-   is a zmux endpoint (ALPN identifiers do not distinguish zmux, Section
-   6.2), so the declaration is the application's. A declaration that may be
-   wrong (for example one inferred from an earlier session with the same
-   peer) fails, when it is wrong, as the Outcome below describes.
+   at least. This is first contact over plain TCP, WebSocket or a full TLS
+   handshake. Nothing on the wire tells an endpoint beforehand that the
+   peer is a zmux endpoint: ALPN identifiers do not distinguish zmux
+   (Section 6.2), and the decision of Section 13.1 is still made from the
+   peer's parameters. The declaration is the application's (API.md Section
+   6, `early_data`): the deployment runs zmux at both ends, the negotiated
+   ALPN identifier is one the application uses only between zmux endpoints,
+   or, with the application's consent, an earlier session with the same
+   peer identity showed zmux parameters. The last is a guess that can be
+   wrong (for example behind a load balancer whose fleet mixes zmux and
+   plain QMux servers); it then fails as a wrong declaration does, and an
+   implementation forgets the guess for that peer identity on "early data
+   rejected".
 
 **The floor.** Every zmux endpoint, that is every endpoint that sends a
 parameter of Section 5.4, MUST send `zmux_preamble`, `zmux_pipe_ack` and
@@ -828,25 +855,37 @@ parameter of Section 5.4, MUST send `zmux_preamble`, `zmux_pipe_ack` and
 | `initial_max_stream_data_bidi_remote` | 4096, unless `initial_max_streams_bidi` is 0 |
 | `zmux_preamble` (Maximum Preamble Size) | 1024 |
 
-Under the floor an endpoint sends data on at most the first four
-bidirectional streams it opens, at most 4096 bytes of each, preamble
-included, and at most 16384 in total; `max_record_size` is 16382 (Section
-3.2). Early data commits no more memory than the parameters already do.
-Accepting it never obliges an endpoint to keep a session: a listener may
-close the session (CONNECTION_REFUSED, or ZMUX_EXCESSIVE_LOAD for abuse),
-but never discards early data while keeping the session open. Receivers do
-not check the floor, except an endpoint that sent early data (Outcome,
-below).
+The floor plays the part of a remembered parameter set that the protocol
+guarantees, and the duty to advertise at least it is the duty of RFC 9000
+Section 7.4.1 not to reduce remembered limits. Under the floor an endpoint
+sends data on at most the first four bidirectional streams it opens, at
+most 4096 bytes of each, preamble included, and at most 16384 in total;
+`max_record_size` is 16382 (Section 3.2). The floor is deliberately small:
+enough for the first request of a few streams (a proxied open, a request
+header), with the rest following once the parameters arrive. It commits no
+more memory than the parameters already do, because a peer that has read
+them may send as much at once, and its bytes are receive buffer like any
+other: charged to the session's and the listener's memory budget (Section
+8.3 rule 4, API.md Section 4.4). Accepting it never obliges an endpoint to
+keep a session: under memory pressure or a per-source limit a listener
+closes the session (CONNECTION_REFUSED, or ZMUX_EXCESSIVE_LOAD for abuse),
+and it never discards early data while keeping the session open, so a
+sender sees either its data accepted or the session closed, never a silent
+loss. The carriers are connection-oriented, so early data cannot be
+reflected toward a spoofed address: a peer receives replies only after it
+has completed the carrier's own handshake. Receivers do not check the
+floor, except an endpoint that sent early data (Outcome, below).
 
 **Remembered zmux parameters.** RFC 9000 Section 7.4.1 requires every
-transport parameter to say whether it is stored for 0-RTT:
+transport parameter to say whether it is stored for 0-RTT. For the zmux
+parameters and the QMux and extension parameters zmux uses:
 
 | Parameter | Stored for 0-RTT | A server that accepts carrier early data |
 |---|---|---|
 | `max_record_size`, `zmux_preamble` | mandatory | sends a value at least the remembered one |
 | `zmux_pipe_ack`, `reset_stream_at` | mandatory | sends it when it was remembered |
 | `max_datagram_frame_size`, `zmux_datagram_flows`, `zmux_goaway`, `zmux_priority`, `max_idle_timeout` | optional; early data does not use them | no constraint |
-| `zmux_role`, `zmux_multipath`, `zmux_ack_threshold`, `zmux_max_ack_delay`, `zmux_max_lanes`, `zmux_resume` | prohibited: their values belong to one session or are taken fresh from the handshake | no constraint |
+| `zmux_role`, `zmux_multipath`, `zmux_ack_threshold`, `zmux_max_ack_delay`, `zmux_max_lanes`, `zmux_resume` | prohibited: their values belong to one session (nonces, keys, locators) or, like QUIC's `max_ack_delay` (RFC 9000 Section 7.4.1), are taken fresh from the handshake | no constraint |
 
 **Sending.** Early data, under either set, obeys all of the following:
 
@@ -868,62 +907,78 @@ transport parameter to say whether it is stored for 0-RTT:
    frame on the pipe, normally directly after QX_TRANSPORT_PARAMETERS in the
    same record. Under a remembered set without zmux parameters (a plain
    QMux peer) there is no PIPE_ACK and no preamble.
-4. It is sent on the bootstrap pipe (lane 0) only; joins carry none, and a
-   carrier-bound join is never carrier early data (MULTIPATH.md Section
-   10.5).
+4. It is sent on the bootstrap pipe (lane 0) only; joins carry none
+   (MULTIPATH.md Section 5; a carrier-bound join is never carrier early
+   data, MULTIPATH.md Section 10.5).
 
 The PIPE_ACK is a **fence**. A peer for which PIPE_ACK is in use (pipe
-acknowledgement or multipath; every zmux peer, Section 5.5) ignores an
-entry with Position 0 (MULTIPATH.md Section 6.2). Any other peer, every
-plain QMux peer included, cannot know the frame's length and closes the
-session with FRAME_ENCODING_ERROR at it (RFC 9000 Section 12.4, which
-QMux-02 Section 4 inherits; Section 4.1 rule 3 for a zmux receiver), so it
-processes no frame after it and never delivers a preamble as stream data.
+acknowledgement or multipath, MULTIPATH.md Section 3.5; every zmux peer,
+Section 5.5) ignores an entry with Position 0 (MULTIPATH.md Section 6.2).
+Any other peer, every plain QMux peer included, cannot know the frame's
+length and closes the session with FRAME_ENCODING_ERROR at it (RFC 9000
+Section 12.4, which QMux-02 Section 4 inherits; Section 4.1 rule 3 for a zmux
+receiver); since it cannot find where the next frame begins, it cannot
+process any frame after it. A peer that cannot take zmux early data therefore
+processes none of it and never delivers a preamble as stream data. Under
+remembered zmux parameters the PIPE_ACK is a frame whose use the remembered
+`zmux_pipe_ack` permits, as QMux-02 Section 4.2 allows; the fence matters
+only if the server has stopped being a zmux endpoint since.
 
 **Receiving.** A receiver applies no rule of its own to early data that
 arrives after the carrier handshake: the sender's parameters lead its first
 record and are processed first, and its data is checked against the limits
-the receiver advertised, which cover the floor. A zmux endpoint that
+the receiver advertised, which cover the floor. A receiver cannot tell such
+early data from data sent later and does not try. A zmux endpoint that
 advertises `initial_max_streams_bidi` 0 closes the session with
-STREAM_LIMIT_ERROR at the first early STREAM frame sent under the floor,
-before it delivers anything.
+STREAM_LIMIT_ERROR at the first early STREAM frame sent under the floor
+(which opens a bidirectional stream), before it delivers anything. Under
+remembered parameters such a reduction is a violation of RFC 9000 Section
+7.4.1 by the server (Outcome rule 2).
 
 **Outcome.** When it processes the peer's parameters, an endpoint that sent
 early data:
 
 1. if the assumed set contained zmux parameters and PIPE_ACK is not in use
-   toward the peer, or if the early data was sent under the floor and the
-   peer's `initial_max_streams_bidi` is 0, knows that the peer processed
-   none of its early data and closed, or will close, the session. It closes
-   the session with NO_ERROR and reports "early data rejected" to its
-   application; every stream it opened fails with that error, and may be
-   opened again on a new session, the peer having processed none of them;
+   toward the peer (neither pipe acknowledgement nor multipath, for example
+   with a plain QMux peer), or if the early data was sent under the floor
+   and the peer's `initial_max_streams_bidi` is 0, knows that the peer
+   processed none of its early data and closed, or will close, the session
+   at the fence or at the first early STREAM frame. It closes the session
+   with NO_ERROR and reports "early data rejected" to the application (API.md
+   Section 5.3). Every stream it opened fails with that error; the
+   application may open them again on a new session without early data,
+   knowing that the peer processed none of them;
 2. otherwise, if the peer's parameters are below the assumed set (below the
    floor, or below remembered values that the table above or RFC 9000
    Section 7.4.1 says the server must not reduce), closes the session with
    TRANSPORT_PARAMETER_ERROR; the peer may have processed part of the early
-   data;
+   data, as with any session error;
 3. otherwise continues: the early data counts against the peer's limits like
-   data sent after them, and no credit is ever taken back. From then on the
-   peer's parameters apply, except that bytes still sent as carrier early
-   data stay within the remembered values.
+   data sent after them. Those limits are at least the assumed ones, so
+   nothing it sent exceeds them, and no credit is ever taken back. From
+   then on the peer's parameters apply (RFC 9000 Section 7.4.1), except
+   that bytes still sent as carrier early data stay within the remembered
+   values; the peer's values apply from the first byte after the carrier's
+   early data ends.
 
 Until it knows that its early data stands (the peer's parameters are
 processed, and carrier early data was accepted), an endpoint keeps the
-early frames' content. If the carrier rejects its early data (TLS 1.3 early
-data or QUIC 0-RTT not accepted), none of it reached the peer: the endpoint
-treats everything it sent as early data, stream data, FIN bits and stream
-resets alike, as never sent, writes
+early frames' content. If the carrier rejects its early data (TLS 1.3
+early data or QUIC 0-RTT not accepted), none of it reached the peer: the
+endpoint treats everything it sent as early data, stream data, FIN bits
+and stream resets alike, as never sent, writes
 QX_TRANSPORT_PARAMETERS again as the first record once the handshake is
 complete, and sends the early streams' data again from offset 0 only after
-it has processed the peer's parameters; the streams do not fail. The same
-holds for everything sent between the rejection and that point: nothing is
-final until it has been sent again after the peer's parameters. An
-endpoint that sent `zmux_multipath` keeps its early frames as
+it has processed the peer's parameters (no floor: they arrive with the
+handshake); the streams do not fail. The same holds for everything sent
+between the rejection and that point: nothing is final until it has been
+sent again after the peer's parameters (API.md Section 4.1).
+An endpoint that sent `zmux_multipath` keeps its early frames as
 unacknowledged information until the peer's parameters are processed, and
 discards them then unless multipath is in use (Section 9.6). Establishment
-that fails for any other reason fails the early streams with the session
-error, with no guarantee about what the peer processed.
+that fails for any other reason (a handshake timeout, a role conflict,
+invalid parameters) fails the early streams with the session error, with no
+guarantee about what the peer processed.
 
 **Replay.** Carrier early data can be replayed by an attacker (RFC 8446
 Section 8): a replayed open, for example a proxied connection with
@@ -931,24 +986,27 @@ OPEN_INFO, would be repeated. Early data under the floor travels after the
 carrier handshake and is never replayed. Therefore:
 
 - a client sends carrier early data only when its application allows its
-  early streams to be replayed, and never under the floor;
+  early streams to be replayed (API.md Section 6, `early_data`), and never
+  under the floor;
 - a server accepts carrier early data only when its application allows it,
-  reports to its application every stream whose opening frame arrived as
-  carrier early data as possibly replayed until the handshake has
-  completed, and applies the anti-replay measures of RFC 8446 Section 8 that
-  its TLS library offers; otherwise it rejects carrier early data;
+  and then reports every stream whose opening frame arrived as carrier
+  early data as replayable until the handshake has completed (API.md
+  Section 5.1); it applies the anti-replay measures of RFC 8446 Section 8
+  that its TLS library offers. A server that does not allow it rejects
+  carrier early data, which only costs the client the round trip it tried
+  to save;
 - a server that accepts carrier early data sends transport parameters that
   satisfy the remembered values (RFC 9000 Section 7.4.1 and the table
   above), as QMux-02 Section 8.2 requires. Since a client may have
   remembered the parameters of any earlier session with the same server
-  identity, the servers behind an identity keep the values the table marks
-  mandatory stable across the tickets they issue for it, or bind acceptance
-  to them (for example a configuration version stored in the ticket); a
-  server that lowers any of them, or cannot tell whether a ticket predates a
-  change, rejects carrier early data for those tickets (without a bound
-  version: every older ticket) and never accepts early data under limits it
-  no longer meets. A value at or above every value it has issued tickets
-  under needs nothing.
+  identity rather than those of the ticket's session, the servers behind
+  an identity keep the values the table marks mandatory stable across the
+  tickets they issue for it, or bind acceptance to them (for example a configuration
+  version stored in the ticket); a server that lowers any of them, or
+  cannot tell whether a ticket predates a change, rejects carrier early
+  data for those tickets (without a bound version: every older ticket) and
+  never accepts early data under limits it no longer meets. A value at or
+  above every value it has issued tickets under needs nothing.
 
 ### 6.2 Identification and version
 
@@ -959,10 +1017,11 @@ zmux endpoint presents the same ALPN identifiers as a QMux endpoint of the
 same application.
 
 - ALPN identifiers are configurable. The default identifier is `qmux-02`, the
-  bare QMux draft-02 identifier, used for an application agreed out of band.
-  Applications with their own identity configure their own identifiers: the
-  `qmux-02.<application>` form, which QMux implementations use to carry an
-  application protocol (for example `qmux-02.myapp-v4`), or a name in the
+  bare QMux draft-02 identifier that the Rust `qmux` crate uses for "an
+  application agreed out of band". Applications with their own identity
+  configure their own identifiers: the `qmux-02.<application>` form, which
+  QMux implementations over WebSocket and the `qmux` crate use to carry an
+  application protocol (for example `qmux-02.moq-lite-04`), or a name in the
   style of QMux-02 Section 8.1.
 - Because QMux draft-01 and draft-02 use identical codepoints, each
   configured identifier has at most one **draft-01 alias**, derived exactly
@@ -985,7 +1044,7 @@ same application.
   | Configured | Also accepted | Not accepted (examples) |
   |---|---|---|
   | `qmux-02` | `qmux-01` | `qmux-00`, `qmux-01.x`, `qmux` |
-  | `qmux-02.myapp-v4` | `qmux-01.myapp-v4` | `qmux-01.myapp-v3`, `qmux-00.myapp-v4`, `myapp-v4`, `QMUX-01.myapp-v4` |
+  | `qmux-02.moq-lite-04` | `qmux-01.moq-lite-04` | `qmux-01.moq-lite-03`, `qmux-00.moq-lite-04`, `moq-lite-04`, `QMUX-01.moq-lite-04` |
   | `h3qx-02` | `h3qx-01` | `h3qx-00`, `h3qx` |
   | `myapp-02` | `myapp-01` | `myapp-1` |
   | `myapp` | none | `myapp-01` |
@@ -995,10 +1054,11 @@ same application.
 - The TLS client MUST abort the handshake when no protocol is negotiated,
   with a no_application_protocol alert (QMux-02 Section 8.1) where its TLS
   library can send one. A library that learns the outcome only after the
-  handshake and cannot then send a fatal alert closes the connection before
-  sending any record on it, with the strongest signal it has (a fatal alert
-  if possible, otherwise close_notify and closing the transport); the server
-  treats it like a failed handshake.
+  handshake and cannot then send a fatal alert (the JDK's `SSLEngine`
+  client) closes the connection before sending any record on it, with the
+  strongest signal it has (a fatal alert if possible, otherwise close_notify
+  and closing the transport); the server treats it like a failed
+  handshake.
 
 **Without TLS**, the first bytes identify the protocol. A receiver MUST
 validate the first record of a bootstrap pipe incrementally, byte by byte as
@@ -1035,6 +1095,13 @@ writing anything (MULTIPATH.md Section 5.4). Consequences:
   which a legacy endpoint compares with `M`.
 - HTTP/1.1 and HTTP/2 prefaces fail within the first three bytes (QMux-02
   Section 4.2 chose the type value for this purpose).
+- On every carrier, the first record of an endpoint of this specification
+  can be told apart from a TLS record: its first two bytes are never
+  `16 03`. A Size of 0x16 (22) is followed by the first byte of the first
+  frame's type, which is `ff` (QX_TRANSPORT_PARAMETERS), `9a` (PIPE_JOIN)
+  or `ba` (PIPE_LANE); on a carrier that frames messages the first byte is
+  already one of these. REGISTRY.md Section 2.4 keeps this true for any
+  future first frame.
 
 ### 6.3 Session states
 
@@ -1051,28 +1118,40 @@ A **session with acknowledgement** is one in which multipath or pipe
 acknowledgement (MULTIPATH.md Section 3.5) is in use: every session between
 two zmux endpoints (Section 5.5). A **session without acknowledgement** is
 one with a plain QMux peer, or with a peer that sent neither
-`zmux_pipe_ack` nor a usable `zmux_multipath`.
+`zmux_pipe_ack` nor a usable `zmux_multipath`. The two kinds differ in what
+proves that the peer is alive, and in how an idle session ends.
 
 - In a session without acknowledgement, the idle timer restarts when a
   record has been completely received or completely passed to the carrier
   (QMux-02 Section 7.1), with one exception: passing a record that carries
-  only QX_PING requests and PADDING to the carrier does not restart it, so
-  that an endpoint's own keep-alive cannot keep a session with a vanished or
-  hung peer alive (Section 13.2 rule 8). RFC 9000 Section 10.1 (restart on
-  the first ack-eliciting packet sent after a receive) is not adopted: on a
-  carrier without visible acknowledgements it would idle out a peer that
-  only receives.
+  only QX_PING requests and PADDING to the carrier does not restart it.
+  QMux-02 restarts the timer on every sent record because a QMux stack cannot
+  see the carrier's acknowledgements and takes drained send buffers as their
+  substitute. Taken literally, an endpoint's own keep-alive would then keep a
+  session with a vanished or hung peer alive for as long as the carrier
+  accepts bytes, which for TCP can be many minutes and, with a peer whose
+  stack still acknowledges but whose QMux layer is stuck, forever. With the
+  exception, an unanswered keep-alive lets the idle timeout fire, while the
+  peer's QX_PING response, a received record, restarts the timer. This only
+  makes the endpoint close earlier when the peer has stopped answering
+  QX_PING (QMux-02 Section 4.3 requires an answer), so a plain QMux peer that
+  answers is unaffected. RFC 9000 Section 10.1 (restart on the first
+  ack-eliciting packet sent after a receive) is not adopted: on a carrier
+  without visible acknowledgements it would idle out a peer that only
+  receives, for example during a long upload that fits in the stream window.
 - In a session with acknowledgement, the idle timer counts only application
   activity, and a sent record counts only once the peer has acknowledged it.
   The timer restarts when a record that carries an **activity frame** has
   been completely received on any pipe, or when a PIPE_ACK newly
   acknowledges a record that carried one; activity frames are STREAM,
   RESET_STREAM, RESET_STREAM_AT, STOP_SENDING, DATAGRAM and QX_PING
-  (requests and responses). PIPE_ACK, PIPE_PING and the other pipe-layer and
-  control frames never keep the session alive, or the probing of idle pipes
-  (MULTIPATH.md Section 7.1) would keep every multipath session alive
-  forever. The peer acknowledges an activity record within its
-  `zmux_max_ack_delay` (MULTIPATH.md Section 6.3).
+  (requests and responses, so that keep-alive works).
+  PIPE_ACK, PIPE_PING and the other pipe-layer and control frames never keep
+  the session alive: otherwise the probing of idle pipes (MULTIPATH.md
+  Section 7.1) would keep every multipath session alive forever. Records sent on a pipe that may be dead prove nothing
+  by themselves; their delivery is proven by the PIPE_ACK they elicit, which
+  the peer sends within its `zmux_max_ack_delay` of an activity record
+  (MULTIPATH.md Section 6.3).
 - While a session is SUSPENDED, the idle timer is stopped and the resume
   grace timer runs instead (RESUME.md Section 4).
 
@@ -1085,7 +1164,10 @@ When the idle timer expires:
   the transport code ZMUX_IDLE_TIMEOUT on every live outbound pipe (on lane
   0 of a pipe with lanes, without the wait of Section 6.5 step 1, which
   applies to closes without error and application closes) and proceeds as
-  in Section 6.5.
+  in Section 6.5. A graceful end without CONNECTION_CLOSE would look like a
+  pipe failure to the peer, which would then suspend or report lost pipes
+  instead of a close; the dedicated code lets the peer tell an idle close
+  from a pipe failure.
 
 Either way the endpoint reports an idle timeout to its application, and the
 peer reports an idle timeout caused by the peer: after the graceful shutdown
@@ -1104,24 +1186,72 @@ How a peer's pipe ends therefore depends on the kind of session:
 - In a session with acknowledgement, a zmux peer always closes with
   CONNECTION_CLOSE, so a graceful end of the peer's pipe, at record
   boundaries on every lane, while no CONNECTION_CLOSE has been sent or
-  received (the session is ACTIVE or DRAINING) is not expected (MULTIPATH.md
-  Section 7.3) and is a pipe failure. Without multipath it ends the session
-  as Section 6.6 says, reported as pipes lost; in a multipath session
-  MULTIPATH.md Section 7 handles it. A lane that ends while other lanes of
-  its pipe are still open decides nothing until every lane has ended.
+  received (the session is ACTIVE or DRAINING) is not expected (MULTIPATH.md Section 7.3) and is a pipe failure: a peer
+  process that exits ends its carrier this way. Without multipath it ends
+  the session as Section 6.6 says, reported as pipes lost (Section 6.5 rule
+  4); in a multipath session MULTIPATH.md Section 7 handles it. A lane that
+  ends while other lanes of its pipe are still open decides nothing until
+  every lane has ended.
 
-CONNECTION_CLOSE with ZMUX_IDLE_TIMEOUT is thus the peer's idle timeout, any
-other CONNECTION_CLOSE is the peer's close with that code, and a pipe that
-ends without one is a pipe failure.
+The peer can thus tell the three outcomes apart: CONNECTION_CLOSE with
+ZMUX_IDLE_TIMEOUT is the peer's idle timeout (reported as an idle timeout
+caused by the peer), any other CONNECTION_CLOSE is the peer's close with
+that code, and a pipe that ends without one is a pipe failure.
 
 An endpoint that wants to keep an idle session alive sends a QX_PING request
-when the idle timer has not restarted for its keep-alive period. The
-keep-alive timer counts exactly the same activity as the idle timer, so
-probing cannot postpone a keep-alive past the idle timeout, and the request
-itself restarts neither: the response arriving or, in a session with
-acknowledgement, the PIPE_ACK that acknowledges the request's record does. A keep-alive that is never answered therefore lets the idle timeout
-close the session. The keep-alive period MUST be less than the effective
-idle timeout.
+when the idle timer has not restarted for its keep-alive period, that is,
+when the period has passed since the last event that restarted the idle
+timer as defined above. The keep-alive timer therefore counts exactly the
+same activity as the idle timer: in a session with acknowledgement, records
+that carry only PIPE_PING, PIPE_ACK or other pipe-layer frames restart
+neither, so probing cannot postpone a keep-alive past the idle timeout. In
+both kinds of session the keep-alive request itself proves nothing: what
+restarts the timers is evidence from the peer, the response arriving or,
+in a session with acknowledgement, the PIPE_ACK that acknowledges the
+request's record. A keep-alive that is never answered therefore lets the
+idle timeout close the session. At most one keep-alive is sent after each
+activity: an unanswered request is not repeated every k, and the next one
+waits until the idle timer restarts.
+
+The keep-alive period k is the setting `keep_alive_period` (API.md Section
+6; default 15 s), capped at half the effective idle timeout when there is
+one, so that every keep-alive has half the idle timeout to be answered
+(quic-go caps its `KeepAlivePeriod` the same way). Each wait is drawn when
+the keep-alive timer restarts, uniformly from [k x (1 - j), k], where j is
+the probe jitter of MULTIPATH.md Section 7.1 (the scheduler parameter
+`probe_jitter`, default 0.25; with j = 0 every wait is k), from a generator
+as that section requires; sessions established together then do not send
+their keep-alives in step.
+
+Keep-alive is on by default, in every kind of session. It is the only
+mechanism that finds the silent death of the carrier of a session without
+multipath (a NAT binding that expired, a host that vanished, a middlebox
+that drops the flow): without it, an idle session either idles out while
+its peer is still there or, without an idle timeout, keeps a dead carrier
+forever. With it, the idle timer measures the peer's silence, as the idle
+timeout of QUIC does when keep-alive PINGs run (RFC 9000 Section 10.1.2):
+a session whose peer answers stays open while idle, and one whose carrier
+died closes within the effective idle timeout of the last activity
+received or acknowledged (MULTIPATH.md Section 7.1, liveness bound). The
+idle timer still never counts zmux's own pipe-layer traffic, so an
+application that wants idle sessions to end turns `keep_alive_period` off,
+which restores the idle timeout as a limit on application inactivity, or
+closes the session itself. Keep-alive does not restart the idle timer by
+being sent: what keeps the session open is the peer's evidence, exactly
+as for any other activity. Without
+an idle timeout keep-alive still keeps the carrier and the middleboxes on
+its path in use, but nothing then closes a session whose peer is gone.
+
+Keep-alive concerns the session, not its pipes: in a multipath session the
+PIPE_PING probes of idle pipes (MULTIPATH.md Section 7.1) keep each pipe
+and its carrier in use and judge each pipe, and never keep the session
+alive; a keep-alive QX_PING postpones the probe of the pipe that carries
+it, as any ack-eliciting byte does, and replaces no other probe. It stays
+on by default there as well, so that whether an idle session ends does not
+depend on how many pipes it has; it costs one QX_PING per period on one
+pipe, whose probe it then replaces. In a session without multipath there
+are no such probes, and keep-alive is the only traffic zmux itself puts on
+an idle carrier.
 
 ### 6.5 Closing
 
@@ -1151,7 +1281,10 @@ idle timeout.
    complete, that is when CONNECTION_CLOSE has been handed to the carrier of
    every outbound pipe (or step 1's own wait has ended), not when the
    application asked to close; the two coincide when the carriers accept
-   bytes at once. The bytes read during
+   bytes at once. An implementation that armed the linger deadline earlier,
+   from a clock reading taken before CONNECTION_CLOSE was handed to every
+   carrier (a stale `now`), restarts it from the moment of that hand-off,
+   once, so that lingering is never cut short by a delayed write. The bytes read during
    lingering are bounded only by time; an endpoint MAY stop reading earlier
    when it has read more than one session receive window.
 4. After the linger period it closes the carriers. An abortive close (TCP
@@ -1169,29 +1302,30 @@ the first of the following that happened:
 2. a local close (including the close after rejected early data, Section
    6.1.2) or a locally detected protocol error;
 3. an idle timeout (local, or the peer's graceful shutdown in a session
-   without acknowledgement, Section 6.4),
-   handshake timeout or resume timeout;
+   without acknowledgement, Section 6.4), handshake timeout or resume
+   timeout;
 4. a carrier failure, or the loss of every pipe in a direction without resume
    (reported as "pipes lost").
 
 To honour rule 1, an endpoint MUST process every complete record it has
 already received on a pipe before acting on that pipe's failure, and a
 failure of a local write MUST NOT replace a peer CONNECTION_CLOSE that was
-already processed. Pending local writes and opens fail with the session error.
+already processed; legacy implementations lost the peer's close code under
+load this way. Pending local writes and opens fail with the session error.
 
 ### 6.6 Pipe failure outside multipath
 
 In a session that is not a multipath session, the failure of either bootstrap
 pipe terminates the session immediately (QMux-02 Section 7.4): the endpoint
 closes its carriers without sending frames and reports a carrier failure
-(Section 6.5, error precedence item 4) unless an earlier event takes precedence. A graceful
+(rule 4 of Section 6.5) unless an earlier event takes precedence. A graceful
 end of the inbound pipe at a record boundary is not a failure but the peer's
 close in a session without acknowledgement, and after a processed
 CONNECTION_CLOSE; in a session with pipe acknowledgement it is a failure
 when no CONNECTION_CLOSE has been sent or received (the session is ACTIVE or
-DRAINING, Section 6.4). For a pipe with lanes the end of the pipe is the end
-of every lane, in any order; a lane that ends inside a record, or with an
-error, is a failure at once. In a multipath session pipe failures are handled by
+DRAINING, Section 6.4). For a pipe with
+lanes the end of the pipe is the end of every lane, in any order; a lane
+that ends inside a record, or with an error, is a failure at once. In a multipath session pipe failures are handled by
 MULTIPATH.md Section 7, and the loss of the last pipe in a direction by
 MULTIPATH.md Section 8.5 and RESUME.md.
 
@@ -1219,19 +1353,21 @@ The stream index of a stream is its identifier shifted right by two bits.
    of one type in identifier order: no stream's first frame is sent before the
    first frame of every lower-numbered stream of that type that it has
    allocated. A stream that an application opens and cancels before any frame
-   has been emitted consumes no identifier and puts nothing on the wire. If
-   the application asked for the identifier
+   has been emitted consumes no identifier and puts nothing on the wire; a
+   legacy implementation that skipped identifiers this way left streams
+   silently open at its peer. If the application asked for the identifier
    before the first frame, the identifier is allocated at that moment instead
    (it is **pinned**), and the endpoint emits the stream's opening frame as
-   soon as flow control and, in a multipath session, its bound on retained
-   data (MULTIPATH.md Section 11 rule S4)
+   soon as flow control and the retransmit budget (SCHEDULER.md Section 13.1)
    allow, and in any case before the first frame of any later stream of that
    type: a STREAM frame at offset 0 that carries the preamble and no
    application data when the preamble is in use, or a STREAM frame with no
-   data and no FIN otherwise. Pinning counts as the stream's first frame
-   wherever this specification refers to it: settings that travel in the
-   preamble can no longer change after it, and a later priority change is
-   sent as PRIORITY_UPDATE. If such a stream is then cancelled before it sent
+   data and no FIN otherwise. A pinned stream therefore never holds back the
+   first frames of the streams opened after it. Pinning counts as the stream's
+   first frame wherever this specification or the API refers to it (for
+   example "before the first frame"): settings that travel in the preamble can
+   no longer change after it, and a later priority change is sent as
+   PRIORITY_UPDATE. If such a stream is then cancelled before it sent
    application data, the endpoint sends a reset (RESET_STREAM_AT with a
    Reliable Size equal to the preamble size, or RESET_STREAM without a
    preamble), so that the identifier never stays silently open at the peer.
@@ -1244,8 +1380,11 @@ The stream index of a stream is its identifier shifted right by two bits.
    pinning, whose stream index is at or above the peer's current limit for
    that type (RFC 9000 Section 4.6). When the application asks for the
    identifier and no credit is available, pinning waits until a MAX_STREAMS
-   frame raises the limit; waiting streams are assigned identifiers in the
-   order in which they asked.
+   frame raises the limit (the API call blocks or takes a deadline); waiting
+   streams are assigned identifiers in the order in which they asked.
+   Implementations that reserve stream credit when the application opens a
+   stream (API.md Section 5.1) always have credit for the streams already
+   opened, so for them pinning never waits.
 2. A receiver opens streams implicitly as RFC 9000 Section 3.2 describes:
    STREAM, RESET_STREAM, RESET_STREAM_AT and STREAM_DATA_BLOCKED open a
    receiving part; MAX_STREAM_DATA, STOP_SENDING and PRIORITY_UPDATE open a
@@ -1263,14 +1402,19 @@ The stream index of a stream is its identifier shifted right by two bits.
    (the QUIC behaviour). When the preamble is in use, a stream is offered as
    soon as its preamble has been received (EXTENSIONS.md Section 4.4), in
    the order in which the preambles are processed, unless the stack rejects
-   it (EXTENSIONS.md Sections 3.4, 4.4 rule 5 and 7.2); it
+   it (EXTENSIONS.md Sections 3.4 and 4.4 rule 5, API.md Section 4.4); it
    never waits for a lower-numbered stream whose preamble has not arrived:
    such a stream is open (rule 2), counts against the stream limit and is
-   offered when its own preamble arrives. Outside multipath and lanes the
-   preambles of a conforming peer arrive in identifier order (rule 1); in a
-   multipath session and over lanes they need not, and an application that
+   offered when its own preamble arrives. From a conforming peer the
+   preambles arrive in identifier order outside multipath and lanes (rule
+   1), so that is the order of accept there; in a multipath session, and
+   over lanes (MULTIPATH.md Section 2.5), the first frames of different
+   streams travel on different pipes or lanes, and an application that
    needs the order in which its peer opened streams carries it itself (for
-   example in an application TLV, EXTENSIONS.md Section 4.3).
+   example in an application TLV, EXTENSIONS.md Section 4.3), as over
+   WebTransport. Waiting for the lower-numbered streams would put back the
+   head-of-line blocking between streams that multipath and lanes remove
+   (CONFORMANCE.md Section 4.5, the AO rows).
 
 ### 7.3 Data ordering
 
@@ -1305,14 +1449,22 @@ lists the zmux deltas. RFC 9000 refers to acknowledgements. In zmux:
   the position of the record that carried it (MULTIPATH.md Section 6).
 
 **Delivery boundary.** Every delivery guarantee of zmux, including
-exactly-once, in-order delivery across the pipes of a multipath session and
-across a resumption, ends at the peer's zmux endpoint: an acknowledgement, a
-completed write, a finished stream ("Data Recvd") or a closed session never
-says that the peer's application has read, acted on or durably stored the
-data. Applications that need that use an acknowledgement of their own, as
-over TCP. The statements about processing that zmux carries (ZMUX_REJECTED
-and the GOAWAY watermarks, EXTENSIONS.md Sections 3.4 and 7.2) say that
-something was *not* processed, and are never inferred from delivery.
+exactly-once, in-order delivery of stream data across the pipes of a
+multipath session and across a resumption, ends at the peer's zmux
+endpoint at the latest: in a multipath session data is acknowledged once
+the peer's endpoint has received and processed the record that carried it,
+and outside multipath once that record has been passed to the carrier,
+which delivers it to the peer's endpoint unless the carrier fails. An
+acknowledgement, a completed write, a finished stream ("Data Recvd") or a
+closed session says no more than that. None of them says that the peer's application has read
+the data, acted on it or stored it durably; data that the peer's endpoint
+holds is lost if that endpoint or its process ends. Applications that need
+to know that their peer processed or persisted something, for example
+before deleting a local copy, use an acknowledgement of their own at the
+application level, as over TCP. The statements about processing that
+zmux does carry, ZMUX_REJECTED and the GOAWAY watermarks (EXTENSIONS.md
+Sections 3.4 and 7.2), say that something was *not* processed, are made
+by the peer's application or stack, and are never inferred from delivery.
 
 ### 7.5 Termination
 
@@ -1353,6 +1505,8 @@ An endpoint discards a stream's state once both of the following hold:
 Until then the stream counts against the concurrency limit it was opened
 under (Section 8.5), and any data the application has not read, the stream's
 open information and the final status remain available to the application.
+(Legacy implementations lost a stream's open information once it was
+accepted.)
 
 A stream that the stack itself rejects (EXTENSIONS.md Section 3.4) is never
 offered to the application and needs no release: its state is discarded as
@@ -1393,14 +1547,18 @@ it opened is reset.
 A STREAM frame that carries no data and only the FIN bit, at the offset the
 stream has already sent up to (a **FIN-only** frame), adds nothing to the
 sum, so no credit holds it back: once the stream's earlier data is sent,
-the sender sends it whatever stream or session credit remains (RFC 9000
-Section 4.1 limits data only). Holding it back could deadlock, because a
-peer that reads one stream to its end before reading others never releases
-the session credit the FIN would wait for. For the same reason a multipath
-sender's bound on retained data never holds it back (MULTIPATH.md Section
-11 rule S4), on whichever pipe carries it. A FIN-only frame that opens its
-stream (possible only without the preamble) still needs stream-count
-credit (Section 8.5).
+the sender schedules it whatever stream or session credit remains, as in
+QUIC, whose flow control limits data only (RFC 9000 Section 4.1); it still
+goes through the scheduler and the carrier's room like any frame.
+Holding it saves no credit, delays the end of the stream and can deadlock:
+a peer that reads one stream to its end before reading others never
+releases the session credit the FIN would wait for. For the same reason
+the retransmit budget of a multipath session never holds it back
+(SCHEDULER.md Section 13.1), on whichever pipe carries it (a JOINING one
+included, where MULTIPATH.md Section 11.1 rule S1 lets it carry stream
+data). A
+FIN-only frame that opens its stream (possible only without the preamble)
+still needs stream-count credit (Section 8.5).
 
 ### 8.3 Issuing credit
 
@@ -1457,42 +1615,146 @@ or was discarded on arrival (after STOP_SENDING, for example).
    happens only when nothing is consumed (and, for the session, the buffer
    cap of rule 4 is reached). A nearly blocked peer either receives credit
    or, once it has used its remaining credit, is blocked.
-4. **Session credit (receiver policy).** Beyond rules 2 and 3, when a
-   receiver releases session credit is local policy. A receiver SHOULD
-   release session credit for a byte when the byte is received into a
-   stream buffer, as long as the session's unread buffered bytes are below
-   its **buffer cap**. A byte received while the buffered bytes are at or
-   above the cap is held: its credit is released when the byte is consumed,
-   or as soon as the buffered bytes fall below the cap again, whichever comes
-   first. While at the cap, the receiver also stops growing its windows
-   until the buffered bytes are below half the cap. The cap is derived from
-   the receiver's own transport parameters and streams:
+4. **Session credit (receiver policy).** A receiver SHOULD release session
+   credit for a byte when the byte is received into a stream buffer, as long
+   as the session's unread buffered bytes are below its **buffer cap**. A
+   byte received while the buffered bytes are at or above the cap is held:
+   its credit is released when the byte is consumed, or as soon as the
+   buffered bytes fall below the cap again, whichever comes first. While at
+   the cap, the receiver also stops growing auto-tuned windows (stream and
+   session) until the buffered bytes are below half the cap. The cap is derived from the
+   receiver's own transport parameters and streams, with no setting of its
+   own:
 
        buffer_cap = max(session window cap, S)
        S = n_bidi x initial_max_stream_data_bidi_remote
          + n_uni  x initial_max_stream_data_uni
          + n_local x initial_max_stream_data_bidi_local
 
-   where the session window cap is the receiver's configured or default
-   bound on its session window (a fixed value, whatever the session window
-   has grown to), the stream windows are the ones the
-   receiver sent (so the peer cannot inflate the cap), n_bidi and n_uni are
-   the numbers of peer-initiated bidirectional and unidirectional streams
-   the receiver currently lets the peer have open at once (Section 8.5), and
+   where the session window cap is the configured one, or 96 MiB, the floor
+   of the default cap (below), whatever the session window has grown to;
+   the stream windows are the ones the receiver sent (so the peer
+   cannot inflate the cap), n_bidi and n_uni are the numbers of
+   peer-initiated bidirectional and unidirectional streams the receiver
+   currently lets the peer have open at once (Section 8.5 keeps them
+   constant once granted; n_uni is 16 by default until the application
+   accepts unidirectional streams, Section 8.5 rule 4), and
    n_local is the number of bidirectional streams the receiver has opened
    whose receiving part is not yet terminal. S is what all streams together
-   can hold at their initial windows, so streams that stop being read at
-   their initial windows never stall the session: session credit keeps
-   turning over on receipt and the streams that are read keep receiving.
-   Only streams whose windows grew and that then stopped being read can fill
-   the cap. The session's receive memory stays below the cap plus one
-   session window, whatever the peer does. Releasing session credit only on
-   reads, with no cap, lets streams nobody reads absorb the whole session
-   window and starve the others; releasing it on receipt with no cap gives
-   up any per-session memory bound.
+   can hold at their initial windows. With the defaults (Section 5.3;
+   IMPLEMENTATION.md Section 6.1) S is 256 x 256 KiB + 16 x 256 KiB = 68 MiB
+   plus 256 KiB per open local stream, and 128 MiB once the application
+   accepts unidirectional streams; under the gateway preset, 256 x 32 KiB +
+   16 x 32 KiB = 8.5 MiB plus 32 KiB per open local stream (16 MiB with
+   unidirectional streams).
+   This is local policy, not a wire requirement: the wire rules are rules 2
+   and 3. Its properties:
+   - **Streams stalled at their initial windows never stall the session.**
+     Streams that stop being read while their windows are still at the
+     initial size hold at most S minus the windows of the streams that are
+     read, which is below the cap, so session credit keeps turning over on
+     receipt and the streams that are read keep receiving. With the
+     defaults, 255 peer-initiated bidirectional streams stalled at 256 KiB
+     hold 63.75 MiB, below the 96 MiB cap (511 streams hold 127.75 MiB of a
+     128 MiB cap with unidirectional streams in use); the one stream being read holds at most
+     its own 256 KiB window, and the moment it is read the buffered bytes are
+     below the cap again and every held byte is released. A client that
+     opens 1000 requests and reads the responses in order raises S by 1000 x
+     256 KiB = 250 MiB, so the 999 responses waiting at their initial windows
+     do not stall the one being read either.
+   - Only streams whose windows auto-tuned above the initial size and that
+     then stopped being read can fill the cap. Two default streams that grew
+     to 48 MiB reach the 96 MiB cap (the stream window cap is 64 MiB). At the cap, session credit for new bytes
+     waits until data is consumed: a stream that is read keeps receiving as
+     fast as its own reads release credit, and a read stream that has nothing
+     buffered waits until the application reads or releases another stream.
+     That is the price of a per-session bound.
+   - **Memory the peer can pin.** What a peer can make the receiver hold
+     without any help from the application is bounded by the initial windows
+     of the streams it may open and that the application never touches: with
+     the defaults, at most 16 x 256 KiB = 4 MiB in unidirectional streams
+     (the credit granted before the application accepts one), and in
+     bidirectional streams nothing beyond
+     data in flight (about one session window, 1 MiB initially) when the
+     application accepts and reads them, or 256 x 256 KiB = 64 MiB when it
+     never accepts them (an application that never accepts peer streams
+     should set `max_incoming_streams` to 0, API.md Section 6). Under the
+     gateway preset the figures are 512 KiB, about 1 MiB and 8 MiB. Auto-tuned
+     stream windows grow only when the application consumes data (an update
+     carries released credit), so going beyond these figures needs the
+     application's cooperation (accepting streams, reading them fast, then
+     stopping); the session window can also grow as data is received, within
+     its cap, the listener's memory budget and the pause of this rule.
+   - The session's receive memory stays below the cap plus one session
+     window, whatever the peer does: credit for held bytes is released only
+     below the cap, so released-but-unread bytes never exceed the cap, and
+     the peer can send at most W beyond released credit. With the defaults
+     that is 96 + 96 = 192 MiB (128 + 96 = 224 MiB when the application
+     accepts unidirectional streams), plus the local streams' windows; under
+     the gateway preset 8.5 + 8 = 16.5 MiB (24 MiB). No parameter of the peer
+     enters the bound. By default the window caps are 64 MiB per stream and
+     96 MiB per session (4 x the BDP of 1 Gbit/s x 100 ms, IMPLEMENTATION.md
+     Section 6.5) as floors: beyond them an auto-tuned window grows only as
+     far as the measured rate and RTT ask (rule 6) and the memory budget
+     allows (the listener's, or for a session without a listener its own,
+     both 1 GiB by default, API.md Sections 4.4 and 6), so that a 10 Gbit/s
+     x 100 ms path reaches full rate without configuration (CONFORMANCE.md
+     H-6) while the budget bounds what all sessions hold together. A
+     configured cap is a fixed bound instead. Growth above the floors adds
+     to the session window, and so to the bound above, only what the budget
+     has granted.
+   - A listener-wide memory budget, 1 GiB by default, is the backstop: it
+     bounds what new sessions and streams add across sessions, session
+     window growth included (API.md Section 4.4,
+     IMPLEMENTATION.md Section 6.3); a session without a listener has a
+     budget of the same default for itself.
+   Releasing session credit only on reads, with no cap, lets streams nobody
+   reads absorb the whole session window and starve the others; releasing it
+   on receipt with no cap gives up any per-session memory bound.
 5. Credit updates SHOULD be coalesced per scope and sent with the next
    outgoing records; an endpoint MUST NOT send more than one MAX_DATA and one
    MAX_STREAM_DATA per stream in a single record.
+6. **Window growth (receiver policy).** A receiver that auto-tunes its windows
+   (IMPLEMENTATION.md Section 6.2) sizes each scope's window from the rate R at
+   which data arrives in that scope, as R x max(K x RTT, B) (K = 4 and a
+   latency budget B of 100 us by default), and never shrinks it. The K x RTT
+   term keeps a window-limited sender busy across the credit loop and the
+   queue the carrier builds below the session; B bounds what one bulk stream
+   can queue ahead of the others on a short path to about B of transmission
+   time. A receiver MUST NOT size a window from an RTT it has not measured:
+   before the first sample only the B term applies, and it never uses a
+   smoothed mean or the 333 ms default of Section 1.3. Its RTT input, outside
+   multipath, MUST be a minimum: the carrier's own minimum RTT when the
+   carrier reports one with microsecond resolution (TCP_INFO `tcpi_min_rtt` on
+   Linux, SIO_TCP_INFO `MinRttUs` on Windows), otherwise the minimum over the
+   last 300 s of its credit-loop samples (the time from sending MAX_DATA or
+   MAX_STREAM_DATA that raised a limit at which the peer was blocked to the
+   arrival of the first byte beyond that limit), of any QX_PING samples and,
+   when pipe acknowledgement is in use, of its PIPE_ACK samples (min_rtt of
+   SCHEDULER.md Section 2.1).
+   An endpoint whose carrier reports no such minimum SHOULD put a QX_PING
+   request in its first record (Section 5.1 rule 3 allows it), so that it
+   has a sample one round trip after establishment instead of after the
+   first credit loop, and its windows start growing that much earlier.
+   All these samples are at least one round trip; a minimum over a span
+   shorter than the time a bulk transfer keeps the carrier's bottleneck queue
+   standing takes that queue into its input and drives the windows after it (a 10 s
+   span read 420 ms on a 100 ms path and grew the window to 16 x BDP). In a
+   multipath session the input of a scope is RTT_max, the largest of the
+   pipes' own minimum RTTs (the carrier minimum when the carrier reports one,
+   otherwise min_rtt_p, the 300 s minimum of the pipe's PIPE_ACK samples,
+   SCHEDULER.md Section 2.1) over the pipes on which the scope's data arrived
+   during the intervals that set R: the pipes the sender keeps eligible for
+   that data (SCHEDULER.md Section 10), so that idle less-preferred tiers and
+   standby pipes that have not taken over do not enlarge it. It is never the
+   minimum across pipes, which would leave the windows short of MULTIPATH.md
+   Section 12 by the ratio of the slowest to the fastest RTT. Growth stops at the
+   window caps, at the memory allowance, and while rule 4 pauses it (from
+   the buffer cap until the buffered bytes are below half of it). Windows sized on the default RTT, or on an RTT that includes
+   the session's own queue, reach their caps on a fast link, and the data
+   they let a bulk stream queue ahead of a small exchange turns a round trip
+   of tens of microseconds into milliseconds (IMPLEMENTATION.md Section 9.2
+   sets the latency-under-load target).
 
 ### 8.4 BLOCKED frames
 
@@ -1536,7 +1798,7 @@ action on them, and their absence never delays credit (Section 8.3).
    MAX_STREAMS no more (EXTENSIONS.md Section 3.3). Memory pressure is not an
    exception: an endpoint that cannot afford new streams keeps raising
    MAX_STREAMS and rejects new peer streams with ZMUX_REJECTED instead
-   (EXTENSIONS.md Section 7.2); rejected streams are
+   (EXTENSIONS.md Section 7.2, API.md Section 4.4); rejected streams are
    discarded at once and return their credit like any other.
 4. **Staged unidirectional credit (local policy).** An endpoint MAY
    advertise a small `initial_max_streams_uni` and raise unidirectional
@@ -1545,7 +1807,7 @@ action on them, and their absence never delays credit (Section 8.3).
    MAX_STREAMS (unidirectional) with its full concurrency N, and from then on
    N is the initial limit of rule 3. zmux implementations do this by
    default, advertising 16 and raising to N = 256, unless the application
-   configures `max_incoming_uni_streams`, which they then
+   configures `max_incoming_uni_streams` (API.md Section 6), which they then
    advertise at once in their transport parameters, 0 included. A peer can
    therefore open its first 16 unidirectional streams without waiting (the
    control and QPACK streams of HTTP/3, a few MoQ-style streams), while an
@@ -1563,8 +1825,8 @@ This is the defence against Rapid Reset (CVE-2023-44487) and MadeYouReset
 ## 9. Robustness rules
 
 The rules of this section are normative for every mode, including plain QMux
-mode. They make the defect classes of stream multiplexing and of the HTTP/2
-attack history impossible or explicitly bounded.
+mode. They make the defect classes found in the legacy zmux libraries and the
+HTTP/2 attack history impossible or explicitly bounded.
 
 ### 9.1 Continuous reading
 
@@ -1616,8 +1878,9 @@ entries, by contrast, is checked (MULTIPATH.md Section 6.2).
 
 Stream-level frames carry only application error codes (RFC 9000 Section
 20.2). A stream-level failure that the local application causes or observes is
-reported as a stream error and never escalates to the session, including
-stream races such as STOP_SENDING crossing a local finish.
+reported as a stream error and never escalates to the session. Legacy
+libraries turned stream races, such as STOP_SENDING crossing a local finish,
+into session errors.
 
 ### 9.4 The no-effect budget
 
@@ -1628,17 +1891,18 @@ a compliant peer is never closed for its normal traffic, whatever the
 implementation (RFC 9000 Section 21.9; QMux-02 Section 12.2).
 
 The budget counts frames, not bytes. Frames whose cost is the cost of reading
-their bytes (DATAGRAM, PIPE_ACK, PADDING inside a record that carries other
-frames) are not charged; the carrier's rate bounds them.
+their bytes (DATAGRAM, PIPE_ACK, PADDING, including a record that consists
+only of PADDING frames and an empty message of a message-framed carrier,
+Section 3.4) are not charged; the carrier's rate bounds them.
 
 #### 9.4.1 Chargeable frames (closed list)
 
 A received frame is **chargeable** only if it matches a row of this list.
-Every other frame is **neutral**: it neither costs nor earns tokens.
+Every other frame is **neutral**: it neither costs nor earns tokens. The
+rows start at NE-2; NE-1 is not assigned.
 
 | # | Chargeable when |
 |---|---|
-| NE-1 | a record consists only of PADDING frames, or is an empty message of a message-framed carrier (Section 3.4) (charged once per record) |
 | NE-2 | a QX_PING request that arrives while the receiver has not yet answered an earlier one (Section 4.5); a PIPE_PING (every one) |
 | NE-3 | MAX_DATA or MAX_STREAMS that does not increase its limit; MAX_STREAM_DATA that does not increase the limit of its sending part |
 | NE-4 | DATA_BLOCKED, STREAM_DATA_BLOCKED or STREAMS_BLOCKED whose limit is not greater than the largest limit already reported in a BLOCKED frame of the same scope (the session, a stream, a stream type) |
@@ -1663,7 +1927,7 @@ Two exemptions apply to the list:
    known final size, including a FIN-only copy, is never chargeable there.
    Reinjection makes duplicate and outdated copies normal, and their number
    depends on how much was in flight on a failed pipe, not on the peer's
-   intent (MULTIPATH.md Section 7.6). NE-1 and NE-2 remain chargeable; an
+   intent (MULTIPATH.md Section 7.6). NE-2 remains chargeable; an
    outdated QX_PING request (Section 4.5) is not a request that awaits an
    answer and is never chargeable. For
    the same reason the frames that exist only in multipath sessions are never
@@ -1674,9 +1938,12 @@ carries and wherever it lands relative to data already received. A
 compliant sender in a multipath session cuts stream data at every
 application write and every chunk and spreads the frames over pipes of
 different delay, so small ranges isolated beyond holes are its normal
-traffic, which a receiver cannot tell from deliberate fragmentation. What
-fragmentation could cost is memory, and Section 9.8 bounds that
-independently of the frames.
+traffic (CONFORMANCE.md T-1-rr: a paced stream that the application
+writes in small pieces, spread by `spread-round-robin` over pipes of 30 and
+40 ms one way), and a receiver cannot tell
+them from deliberate fragmentation: a charge per isolated range closes
+such a compliant session with ZMUX_EXCESSIVE_LOAD. What fragmentation could cost is memory, and Section 9.8
+bounds that independently of the frames.
 
 #### 9.4.2 The budget
 
@@ -1696,12 +1963,12 @@ the boundary.
 
 A compliant peer follows these rules:
 
-1. It sends at most 16 PADDING-only records (empty messages included,
-   Section 3.4), QX_PING requests and PIPE_PING
-   frames together in any one-second interval,
-   whether or not the receiver will charge them (MULTIPATH.md Section 6.4
-   limits PIPE_PING accordingly), and has at most one QX_PING request outstanding (Section
-   4.5).
+1. It sends at most 16 QX_PING requests and PIPE_PING frames together in
+   any one-second interval, whether or not the receiver will charge them
+   (MULTIPATH.md Section 6.4 limits PIPE_PING accordingly), and has at most
+   one QX_PING request outstanding (Section 4.5). Records that consist only
+   of PADDING frames are not limited here; towards a plain QMux peer Section
+   13.2 limits them.
 2. It sends limit updates only when they increase the limit (Section 4.3,
    which also lists the multipath copies), at
    most one BLOCKED frame per scope and limit with increasing limits (Section
@@ -1717,7 +1984,7 @@ A compliant peer follows these rules:
    the second copies of PIPE_ACK and credit frames (MULTIPATH.md Section 6.5),
    opportunistic reinjection (MULTIPATH.md Section 7.5.1) and redundant
    urgent data with the copy of the first chunk after an idle period
-   (MULTIPATH.md Section 7.5). None of these is chargeable.
+   (SCHEDULER.md Section 4.1). None of these is chargeable.
 5. It cuts new stream data into frames of whatever size its writes and
    its scheduler produce and, in a multipath session, sends them on any
    pipes, in any order across pipes (Section 7.3). Nothing bounds how
@@ -1730,8 +1997,8 @@ response (at most one per second, because it has at most one request to
 answer at a time). In multipath sessions NE-3 to NE-8 do not apply. A
 compliant peer therefore spends at most about 17 tokens per second against a
 refill of 32, for any rate of stream opening and closing, crossing frames and
-reinjection. CONFORMANCE.md Section 4.2 requires a regression test for this
-floor.
+reinjection. CONFORMANCE.md Section 4.3 requires the regression test for this
+floor; legacy libraries closed sessions that carried legitimate stream churn.
 
 ### 9.5 Bounded metadata
 
@@ -1749,8 +2016,10 @@ MUST NOT send PIPE_ACK or any other acknowledgement frame unless pipe
 acknowledgement is in use (MULTIPATH.md Section 3.5), except the fence of
 early data, which it sends before it knows (Section 6.1.2). Before the
 peer's parameters are processed, whether multipath will be in use is not
-known: an endpoint that sent early data and `zmux_multipath` keeps its early
-frames until then (Section 6.1.2). Pipe acknowledgement serves the sender's queue control only; it retains no data. Retransmission state
+known: an endpoint that sent early data and `zmux_multipath` keeps its
+early frames until then (Section 6.1.2). Pipe acknowledgement
+serves the sender's queue control only: it keeps per range in flight the
+sample state of SCHEDULER.md Section 2, never the data. Retransmission state
 exists only in multipath sessions.
 
 ### 9.7 GREASE
@@ -1766,17 +2035,18 @@ Extension points are exercised so that they do not ossify [RFC9170]:
 
 | Resource | Bound |
 |---|---|
-| partially received record | the local `max_record_size` per pipe; with lanes (MULTIPATH.md Section 2.5) at most one per lane, whose bytes are part of what the carrier connection's own receive window admits, so they need no bound of their own |
-| stream receive buffers | the advertised stream limits; per session the buffer cap plus one session window (Section 8.3 rule 4); across sessions, new grants are limited by the listener's memory budget |
+| partially received record | the local `max_record_size` per pipe; with lanes (MULTIPATH.md Section 2.5) at most one per lane, whose bytes are part of what the carrier connection's own receive window admits, which the adapter sets within the memory budget (API.md Section 4.1), so they need no bound of their own; an implementation does not reserve `max_record_size` per lane (IMPLEMENTATION.md Section 13.8 N8) |
+| stream receive buffers | the advertised stream limits; per session the buffer cap plus one session window (Section 8.3 rule 4); across sessions, new grants are limited by the listener's memory budget (API.md Section 4.4) |
 | reassembly in multipath sessions | the same limits (no separate reorder limit is needed, RFC 9000 Section 21.7) |
-| memory per byte held | received stream data held for the application in a session, in order or out of order, MUST cost at most a fixed multiple of the sum of its streams' spans (a stream's span runs from the offset the application has read up to, to the highest offset received, which flow control charges to the stream and the session, Section 8.2), plus a constant per stream and the read buffer that each pipe or lane (MULTIPATH.md Section 2.5) is being read into, however the peer fragments and frames it: bookkeeping per range and any part of a receive buffer the data keeps alive count; CONFORMANCE.md Section 4.2 tests 2.5 x |
+| memory per byte held | received stream data held for the application in a session, in order or out of order, MUST cost at most a fixed multiple of the sum of its streams' spans (a stream's span runs from the offset the application has read up to, to the highest offset received, which flow control charges to the stream and the session, Section 8.2), plus a constant per stream and the read buffer that each pipe or lane (MULTIPATH.md Section 2.5) is being read into, however the peer fragments and frames it: bookkeeping per range and any part of a receive buffer the data keeps alive count; IMPLEMENTATION.md Section 3 gives a representation within 2.125 x the sum, and CONFORMANCE.md Section 4.3 tests 2.5 x |
 | implicitly opened streams | the advertised stream-count limits (RFC 9000 Section 21.8) |
 | pending response state | Section 9.2 |
 | received datagrams not yet read | queue limits in datagrams and a session-wide byte limit, which also covers datagrams held for streams not yet opened; excess datagrams are dropped (EXTENSIONS.md Section 6.5) |
 | pipes | at most max_pipes + H unretired attachments joined by the peer (MULTIPATH.md Section 5.4 step 9, Section 8.4), which bounds PIPE_ACK snapshots (split across frames when needed), and the replay window for IDs without attachment state (MULTIPATH.md Section 4.3) |
 | unauthenticated carriers (pending joins, unpaired split-bootstrap carriers) | per-listener, per-session and per-source counts and the first-record timeout (MULTIPATH.md Section 5.6, Section 6.1.1) |
-| retained data for reinjection | the peer's flow-control limits and the sender's own bound (MULTIPATH.md Section 11 rule S4) |
+| retained data for reinjection | the peer's flow-control limits and the local retransmit budget (SCHEDULER.md Section 13.1) |
 | suspended sessions | count and total buffered bytes, retained and received (RESUME.md Section 9) |
+| records processed per second | no protocol bound; an implementation MAY apply a local, configurable limit to the rate at which it reads records from a pipe, the same for every record whatever frames it carries, by reading more slowly and never by closing the session or charging the budget of Section 9.4 |
 
 ---
 
@@ -1811,11 +2081,12 @@ for example its limit on concurrent sessions (Section 14.3). zmux adds:
 | ZMUX_PIPE_FAILED | 0x296a5bf5 | PIPE_ABANDON reason: the pipe failed or was removed abruptly | yes (PIPE_ABANDON only) |
 | ZMUX_PIPE_RESOURCE_LIMIT | 0x0b4fa113 | PIPE_ABANDON reason: the endpoint cannot keep the pipe | yes (PIPE_ABANDON only) |
 | ZMUX_PIPE_AUTH_FAILED | 0x09613938 | a join failed authentication | never: local reporting only (MULTIPATH.md Section 5.4) |
-| ZMUX_IDLE_TIMEOUT | 0x2736d55c | the sender's idle timer expired in a session with acknowledgement (Section 6.4); the receiver reports an idle timeout caused by the peer | yes |
+| ZMUX_IDLE_TIMEOUT | 0x2736d55c | the sender's idle timer expired in a session with acknowledgement (multipath or pipe acknowledgement, Section 6.4); the receiver reports an idle timeout caused by the peer | yes |
 
 NO_VIABLE_PATH (0x10) is sent on a remaining outbound pipe when a multipath
 session lost every pipe in a direction without resume in use (MULTIPATH.md
-Section 8.5). Locally that termination is reported as "pipes lost" (Section 6.5, error precedence item 4), like a carrier failure outside multipath.
+Section 8.5). Locally that termination is reported as "pipes lost" (Section
+6.5 rule 4), like a carrier failure outside multipath.
 
 A receiver MUST treat an unknown transport error code in CONNECTION_CLOSE as a
 generic transport error (INTERNAL_ERROR semantics for the application) and in
@@ -1845,7 +2116,7 @@ PIPE_ABANDON as ZMUX_PIPE_FAILED.
 | stream preamble violations | PROTOCOL_VIOLATION |
 | multipath violations not listed otherwise in MULTIPATH.md | PROTOCOL_VIOLATION |
 | no-effect budget exhausted | ZMUX_EXCESSIVE_LOAD |
-| idle timeout in a session with acknowledgement | ZMUX_IDLE_TIMEOUT |
+| idle timeout in a session with acknowledgement (multipath or pipe acknowledgement) | ZMUX_IDLE_TIMEOUT |
 | new session refused by listener policy | CONNECTION_REFUSED |
 
 **Precedence.** When one frame violates several rules, decode errors take
@@ -1870,21 +2141,42 @@ The traces of CONFORMANCE.md check these codes exactly.
 ## 11. Multipath
 
 Multipath is part of the core protocol and is specified in
-[MULTIPATH.md](./MULTIPATH.md). It changes two rules of this document, and
-only in multipath sessions: stream data may arrive out of order (Section
-7.3, replacing QMux-02 Section 4.1), and the failure of a pipe does not
-terminate the session (Section 6.6, replacing QMux-02 Section 7.4). A third
-difference applies to every session with acknowledgement, multipath or
-not: the idle timer, with the keep-alive timer, is driven only by
-application activity received or acknowledged, and its expiry sends
+[MULTIPATH.md](./MULTIPATH.md). In summary:
+
+- a session runs over any number of unidirectional pipes, each provided by a
+  pluggable carrier adapter, added at any time with a PIPE_JOIN handshake that
+  costs the acceptor no round trip (data on a new pipe waits for its
+  confirmation and probation while other pipes carry the traffic) and
+  removed gracefully (PIPE_ABANDON with drain) or abruptly;
+- every stream's data in each direction may be scattered frame by frame over
+  all pipes; receivers reassemble by offset within flow-control limits;
+- each pipe has an implicit byte position; PIPE_ACK carries the cumulative
+  positions of all inbound pipes and may travel on any reverse pipe;
+- pipe failure is detected from acknowledgement progress, and the
+  unacknowledged information of a failed or suspect pipe is re-sent on the
+  other pipes following RFC 9000 Section 13.3; there are no retransmission
+  timers;
+- joins are authenticated with keys derived from the bootstrap TLS exporter
+  or a pre-shared key, or both.
+
+Multipath changes two rules of this document, and only in multipath
+sessions: stream data may arrive out of order (Section 7.3, replacing QMux-02
+Section 4.1), and the failure of a pipe does not terminate the session
+(Section 6.6, replacing QMux-02 Section 7.4). A third difference applies to
+every session with acknowledgement, multipath or not: the idle timer, with
+the keep-alive timer, is driven only by application activity received or
+acknowledged, not by every record, and its expiry sends
 CONNECTION_CLOSE(ZMUX_IDLE_TIMEOUT) (Section 6.4).
 
 ## 12. Resume
 
 Resume is part of the core protocol and is specified in
-[RESUME.md](./RESUME.md): when every pipe in a direction is lost, a session
+[RESUME.md](./RESUME.md). When every pipe in a direction is lost, a session
 with resume in use enters the SUSPENDED state for a grace period instead of
-closing, and continues when new pipes join.
+closing. New pipes join with the ordinary PIPE_JOIN handshake; the first
+records on the new pipes carry complete PIPE_ACK snapshots, and both
+endpoints retransmit from the positions these report. A session fails closed when the states are
+inconsistent.
 
 ---
 
@@ -1918,12 +2210,13 @@ A zmux endpoint whose peer is a plain QMux peer is a QMux-02 endpoint:
 2. The endpoint sends no zmux frame (Section 4.2 rows from GOAWAY onwards), no
    PIPE_ACK and no out-of-order or repeated STREAM data. Every stream's data
    is sent in offset order (QMux-02 Section 4.1). The one exception is the
-   fence of early data, which reaches a plain QMux peer only when it is
-   wrongly declared a zmux endpoint, or when its remembered parameters were
-   those of a zmux endpoint, and which ends the session before the peer
-   processes any early data (Section 13.1). Early data under a plain QMux
-   peer's remembered parameters is QMux-02 Section 8.2 0-RTT, without fence
-   or preamble.
+   fence of early data, which reaches a plain QMux peer only when the
+   application wrongly declares it a zmux endpoint (a guess from an earlier
+   session included, Section 6.1.2), or when the peer's remembered
+   parameters were those of a zmux endpoint, and which ends the
+   session before the peer processes any early data (Section 13.1). Early
+   data under a plain QMux peer's remembered parameters is QMux-02 Section
+   8.2 0-RTT, without fence or preamble.
 3. It sends RESET_STREAM_AT only if the peer advertised `reset_stream_at`, and
    DATAGRAM only if the peer advertised `max_datagram_frame_size`.
 4. It still sends its zmux transport parameters, which the peer ignores
@@ -1944,11 +2237,15 @@ A zmux endpoint whose peer is a plain QMux peer is a QMux-02 endpoint:
    (Section 6.1): when the carrier turns out to be a join, the joiner
    discards that leading record (MULTIPATH.md Section 5.7 step 3) and the
    acceptor counts its outbound position from the end of it (MULTIPATH.md
-   Section 5.4 step 8). A listener MAY instead wait until the first
-   record's prefix shows a session start; that is a bounded exception to
-   the QMux-02 MUST, which costs its sessions one round trip on TLS 1.3. A
-   plain QMux client does not wait for the server's parameters, so
-   interoperability is unaffected either way.
+   Section 5.4 step 8), at the cost of about 100 bytes on the join carrier.
+   A listener MAY instead wait until the first record's prefix shows a
+   session start; that is a bounded exception to the QMux-02 MUST, which
+   costs its sessions one round trip on TLS 1.3, where the client could
+   otherwise send stream data as soon as it has the server's Finished
+   flight, and about nothing on plain TCP, where the client's first record
+   arrives with the end of the handshake. A plain QMux client does not wait
+   for the server's parameters, so interoperability is unaffected either
+   way.
 8. **Bounded exception: idle timer and keep-alive.** QMux-02 Section 7.1
    restarts the idle timer on every record sent. A zmux endpoint does not
    restart it for a sent record that carries only QX_PING requests and
@@ -1957,20 +2254,29 @@ A zmux endpoint whose peer is a plain QMux peer is a QMux-02 endpoint:
    answers QX_PING the behaviour is identical; towards one that does not, the
    zmux endpoint closes at its idle timeout instead of keeping the session
    open.
+9. **Records of PADDING only.** QMux-02 does not define a budget, and a
+   plain QMux peer may bound records that carry no other frame in its own
+   way. Towards a plain QMux peer an endpoint sends at most 16 records that
+   consist only of PADDING frames (empty messages included, Section 3.4) and
+   QX_PING requests together in any one-second interval. Towards a zmux
+   endpoint such records are not limited (Section 9.4.3 rule 1).
 
 **Known peer behaviour.** Some QMux implementations accept
-`reset_stream_at` but treat RESET_STREAM_AT like RESET_STREAM and can drop
-data below the Reliable Size that their application has not yet read. A
-zmux sender that needs data delivered reliably before a reset cannot depend
-on RESET_STREAM_AT with such a peer; it finishes the stream instead, or
-waits for an application-level acknowledgement before it resets.
+`reset_stream_at` but treat RESET_STREAM_AT like RESET_STREAM; for example
+the Rust `qmux` crate 0.6.2 can drop data below the Reliable Size that its
+application has not yet read. A zmux sender that needs data delivered
+reliably before a reset cannot depend on RESET_STREAM_AT with such a peer;
+it finishes the stream instead, or waits for an application-level
+acknowledgement before it resets.
 
-Some QMux implementations send QX_PING requests at a fixed cadence whether
-or not earlier ones were answered. Under the accounting of Section 9.4 such
-requests are free as long as each one arrives after the previous one was
-answered, which holds at any cadence slower than the receiver's write path;
-charging every request would close a session that probes every 20 ms after
-about four minutes.
+The `qmux` crate can send QX_PING requests at a fixed cadence
+(`rtt_interval`, 1 s by default and as short as 1 ms) whether or not earlier
+ones were answered. Under the accounting of Section 9.4 such requests are
+free as long as each one arrives after the previous one was answered, which
+holds at any cadence slower than the receiver's write path; charging every
+request would close a session probing every 20 ms after about four minutes
+(50 charges per second against a refill of 32). qmux-go answers only the
+latest of several pending requests, as Section 4.5 requires of zmux.
 
 A zmux endpoint MUST accept everything a correct QMux-02 peer may send,
 including: PADDING anywhere in a record; STREAM frames with or without the OFF
@@ -1978,26 +2284,26 @@ and LEN bits; QX_PING requests whose sequence starts at any value, including
 0; CONNECTION_CLOSE type 0x1c with Frame Type 0; records of any size up to its
 own `max_record_size`; empty messages on a message-framed carrier (Section
 3.4); and transport parameters it does not know, such as the
-`application_protocols` parameter (0x3d4f9c2a8b1e6075) that some QMux
-implementations use on carriers without TLS.
+`application_protocols` parameter (0x3d4f9c2a8b1e6075) that the Rust `qmux`
+crate uses on carriers without TLS.
 
 ### 13.3 ALPN and identification
 
 ALPN identifies the application protocol, not zmux or QMux (QMux-02 Section
 8.1). A zmux endpoint presents the same identifiers as a QMux endpoint
-(Section 6.2): `qmux-02` by default, `qmux-02.<application>` for an
-application, an application's own identifier used directly as a WebSocket
-subprotocol [QMUX-WS], and the draft-01 forms such as `qmux-01` and `h3qx-01` on
-receipt. zmux implementations MUST let the application choose the
-identifiers. Without TLS, the first-record check of Section
+(Section 6.2): `qmux-02` by default, `qmux-02.<application>` for the `qmux`
+crate's application form, an application's own identifier used directly as
+a WebSocket subprotocol [QMUX-WS], and the draft-01 forms such as `qmux-01`
+and `h3qx-01` on receipt. zmux implementations MUST let the application choose the
+identifiers (API.md Section 3). Without TLS, the first-record check of Section
 6.2 applies to both kinds of peer: a plain QMux peer's first record is also
 QX_TRANSPORT_PARAMETERS.
 
-On carriers without TLS, some QMux implementations negotiate the application
-protocol with an `application_protocols` transport parameter
+On carriers without TLS, the `qmux` crate can negotiate the application
+protocol with its own `application_protocols` transport parameter
 (0x3d4f9c2a8b1e6075, a list of length-prefixed names). zmux does not define
 this parameter; implementations MAY offer it as an optional interoperability
-hook. Without it, both sides of a plain TCP or Unix
+hook (API.md Section 6). Without it, both sides of a plain TCP or Unix
 carrier must agree on the application out of band (QMux-02 Section 3.1).
 
 ### 13.4 What zmux needs and QMux does not provide
@@ -2031,14 +2337,14 @@ against existing QMux implementations.
 | MadeYouReset (CVE-2025-8671) | peer violations are session errors, never stream resets (9.3) |
 | CONTINUATION flood (VU#421644), HPACK bomb (CVE-2016-1544) | single-frame bounded preamble, no compression (9.5) |
 | Settings with excessive entries (CVE-2020-11080) | transport parameters once, no duplicates (5.2) |
-| zero-window deadlock | credit without BLOCKED and zero-window liveness (8.3) |
-| stalls from coupling transport reads to application reads | continuous reading (9.1) |
-| legitimate churn closed as abuse | closed chargeable list, crossing-frame exemption and compliant floor (9.4) |
-| close code lost, abortive close before CLOSE | close procedure and error precedence (6.5) |
+| zero-window deadlock (legacy zmux format) | credit without BLOCKED and zero-window liveness (8.3) |
+| stalls from coupling transport reads to application reads (earlier stream multiplexers) | continuous reading (9.1) |
+| legitimate churn closed as abuse (legacy zmux libraries) | closed chargeable list, crossing-frame exemption and compliant floor (9.4) |
+| close code lost, abortive close before CLOSE (legacy zmux libraries) | close procedure and error precedence (6.5) |
 | TCP-over-TCP meltdown | no retransmission timers (MULTIPATH.md 7.5) |
 | MPTCP keys in the clear (RFC 8684, RFC 7430) | join keys from the TLS exporter or a PSK; no join on plaintext without a PSK (MULTIPATH.md 10) |
 | Terrapin (CVE-2023-48795) | implicit counters are never authentication inputs; joins and resume MAC explicit fields (MULTIPATH.md 10, RESUME.md 5) |
-| crashes and memory exhaustion from datagram fragmentation over reliable streams | no datagram fragmentation (EXTENSIONS.md 6) |
+| crashes and memory exhaustion from datagram fragmentation over reliable streams (seen in a QUIC-based proxy protocol) | no datagram fragmentation (EXTENSIONS.md 6) |
 
 ### 14.2 Carrier protection
 
@@ -2072,13 +2378,13 @@ carriers; these are deployment policy.
 - [RFC8446] TLS 1.3 (Section 7.5, exporters).
 - [RFC5869] HKDF. [RFC2104] HMAC. FIPS 180-4 (SHA-256).
 - [RFC7301] ALPN. [RFC2119], [RFC8174] requirement keywords.
-- [RFC9002] QUIC Loss Detection and Congestion Control.
 
 ### 15.2 Informative
 
+- [RFC9002] QUIC Loss Detection and Congestion Control.
 - [RFC9297] HTTP Datagrams and the Capsule Protocol (context model).
 - [RFC9298] Proxying UDP in HTTP.
 - [RFC9170] Long-Term Viability of Protocol Extension Mechanisms.
 - [RFC1928] SOCKS Protocol Version 5.
 - draft-ietf-quic-multipath-21; RFC 8684 (MPTCP); RFC 6182; RFC 7430.
-- [QMUX-WS] draft-lcurley-qmux-websocket-00, the QMux mapping to WebSocket.
+- [QMUX-WS] L. Curley, draft-lcurley-qmux-websocket-00 (the QMux mapping to WebSocket).

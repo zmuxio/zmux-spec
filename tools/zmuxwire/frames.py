@@ -570,8 +570,8 @@ def decode_record(buf, pos, max_record_size=R.LIMITS["default_max_record_size"],
 def decode_message(msg, max_record_size=R.LIMITS["zmux_max_record_size"], enabled=None):
     """Decode one message of a message-framed carrier (SPEC.md Section 3.4):
     the message is a record's Frames field and its length is the Size. An empty
-    message is a record without frames, a no-op (it is charged like a PADDING-only
-    record, which is the receiver's budget, not decoding)."""
+    message is a record without frames, a no-op (like a PADDING-only record it is
+    not chargeable to the receiver's budget, which is not part of decoding)."""
     if len(msg) == 0:
         return []
     if len(msg) > max_record_size:

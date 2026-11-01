@@ -1,8 +1,9 @@
 # zmux State Machines
 
-This document collects the rules of SPEC.md, MULTIPATH.md, RESUME.md and
-EXTENSIONS.md as state machines. Where a table here and a referenced section
-disagree, the referenced section wins.
+Status: normative summary. The rules are defined in SPEC.md, MULTIPATH.md,
+RESUME.md and EXTENSIONS.md; this document collects them as state machines.
+Where a table here and a referenced section disagree, the referenced section
+wins and the disagreement is a defect of this document.
 
 ---
 
@@ -42,7 +43,7 @@ receiving part: Recv -> Size Known -> Data Recvd -> Data Read
 | D4 | After both parts are terminal, the stream waits for the application's release before its state is discarded and its credit returns. | SPEC 7.6, 8.5 |
 | D5 | Once a sending part has received STOP_SENDING, it sends no new data and no FIN; it answers with RESET_STREAM or RESET_STREAM_AT. | SPEC 4.3 |
 | D6 | PRIORITY_UPDATE is permitted in every state of a part the receiver sends on and opens peer-initiated bidirectional streams. | EXTENSIONS 5.4 |
-| D7 | A peer stream at or above a GOAWAY watermark the endpoint sent, or a new peer stream arriving while the listener is under memory pressure, is rejected by the stack and never offered; a stream the application rejects was offered, but none of its data was read. Either way the endpoint sends RESET_STREAM(ZMUX_REJECTED) on its sending part (bidirectional streams), which moves that part to Reset Sent, and STOP_SENDING(ZMUX_REJECTED) on its receiving part, which then waits for the peer's reset or FIN. | EXTENSIONS 3.4, 7.2 |
+| D7 | A peer stream at or above a GOAWAY watermark the endpoint sent, or a new peer stream arriving while the listener is under memory pressure (API 4.4), is rejected by the stack and never offered; a stream the application rejects was offered, but none of its data was read. Either way the endpoint sends RESET_STREAM(ZMUX_REJECTED) on its sending part (bidirectional streams), which moves that part to Reset Sent, and STOP_SENDING(ZMUX_REJECTED) on its receiving part, which then waits for the peer's reset or FIN. | EXTENSIONS 3.4, 7.2 |
 | D8 | In multipath sessions, every frame may be duplicated or reordered. A frame that does not advance a state is ignored. | MULTIPATH 7.6 |
 
 ### 2.3 Life cycle of a stream record
@@ -88,16 +89,16 @@ Frames for a DISCARDED stream are ignored (SPEC 7.6).
 
 ### 2.5 Application-visible outcomes
 
-These outcomes are normative for traces (TRACES.md) and for the errors an
-implementation reports to its application. "Remote" means the peer caused it.
+These outcomes are normative for traces (TRACES.md) and for API error mapping
+(API.md Section 5). "Remote" means the peer caused it.
 
 | Situation | Read returns | Write returns |
 |---|---|---|
 | peer sent FIN, all data read | end of stream | (unaffected) |
 | peer RESET_STREAM(c) / RESET_STREAM_AT(c) after reliable data read | stream reset, code c, remote, even if all data and a FIN arrived, unless the end of stream was already read (SPEC 7.5) | (unaffected) |
 | peer STOP_SENDING(c) | (unaffected) | stream stopped, code c, remote; for every write, including one already in progress |
-| local stop(c) | closed by local stop, code c | (unaffected) |
-| local reset(c) | (unaffected) | closed by local reset, code c |
+| local stop(c) (CancelRead) | closed by local stop, code c | (unaffected) |
+| local reset(c) (CancelWrite) | (unaffected) | closed by local reset, code c |
 | ZMUX_REJECTED from peer | stream rejected (retryable) | stream rejected (retryable) |
 | stream index at or above a received GOAWAY watermark | stream rejected (retryable) | stream rejected (retryable) |
 | stream opened locally, neither emitted nor pinned, when a GOAWAY arrives, and every open call after it (EXTENSIONS 3.5 rule 2) | going away (retryable) | going away (retryable) |
@@ -118,17 +119,17 @@ with the session error as soon as the session ends.
 ```text
                     join sent or handed off
    (none) ---------------------------------> JOINING ---------------------------+
-                                               |   \  stall                      | carrier error,
+                                               |   \  stall > T_suspect          | carrier error,
               first PIPE_ACK > 0 (up) or       |    +----------------+           | join not confirmed
               first record received (down)     v                     v           v within the handshake timeout
    session established (pipe 0) ---------> ACTIVE <------------> SUSPECT ----------> FAILED
-   acceptor verified a down/bidi join -------^   stall /              |  lasting stall,  ^  ^
-                                                 ack advances and     |  error, abrupt   |  |
-                                                 writes resume        |  removal         |  |
-                                   graceful     |                     |                  |  |
-                                   removal      v    graceful removal |                  |  |
-                                             DRAINING <---------------+------------------+  |
-                                                |  \ drain not complete in time,           |
+   acceptor verified a down/bidi join -------^   stall > T_suspect /  |  T_fail with an  ^  ^
+                                                 ack advances and     |  ACTIVE alterna- |  |
+                                                 writes resume        |  tive, T_dead as |  |
+                                   graceful     |                     |  last pipe,      |  |
+                                   removal      v    graceful removal |  error, abrupt   |  |
+                                             DRAINING <---------------+  removal --------+  |
+                                                |  \ drain not complete after T_fail,       |
                                                 |   +- carrier error, abrupt removal -------+
                                                 |  PIPE_ABANDON exchange complete and
                                                 |  all stream data sent on it acknowledged
@@ -138,48 +139,53 @@ with the session error as soon as the session ends.
    FAILED or CLOSED, after own PIPE_ABANDON acknowledged, and either the
    peer's PIPE_ABANDON received or unilateral retirement, and inbound side
    ended -> RETIRED; FAILED -> RETIRED also by local retirement at the cap
-   while suspended (MULTIPATH 5.4 step 9). ACTIVE, SUSPECT and DRAINING ->
-   FAILED also on a carrier error or an abrupt removal.
+   while suspended (MULTIPATH 5.4 step 9)
 ```
 
-A "stall" is the lack of acknowledgement or write progress from which the
-endpoint concludes that a pipe may be dead (MULTIPATH 7.1). A DRAINING pipe
-never returns to ACTIVE or SUSPECT: a stall only marks it suspect, which
+"Stall" is an ack stall or a write stall (MULTIPATH 7.1). T_dead is the
+stall limit of the last pipe of a direction (MULTIPATH 7.1). All durations follow the boundary convention of SPEC 1.3 (a stall
+"longer than T" means one that has lasted T). A DRAINING pipe never returns
+to ACTIVE or SUSPECT: a stall of T_suspect only marks it suspect, which
 moves it to the end of the pipe choice of MULTIPATH 6.5 and reinjects its
 unacknowledged information. A pipe whose join was never confirmed fails
-only on a carrier error or the handshake timeout.
+only on a carrier error or the handshake timeout, never on T_fail or T_dead.
 
 | From | Event | To | Actions |
 |---|---|---|---|
-| (none) | session established: pipe 0 (both bootstrap carriers) | ACTIVE | |
-| (none) | joiner allocates pipe ID and sends or hands off PIPE_JOIN | JOINING | carries control frames; not usable until ACTIVE, so it never holds back failover to a standby pipe; new stream data only while no outbound pipe is usable (MULTIPATH 5.7, 9, 11 rule S1) |
-| (none) | acceptor verified a join with a down or bidi direction | ACTIVE | acceptor writes a record carrying a complete PIPE_ACK snapshot (when it has an entry), PIPE_PING and its PIPE_STATUS request, if any, within max_ack_delay (MULTIPATH 5.4 step 8) |
-| JOINING | PIPE_ACK acknowledges position > 0 (up), or a record arrives on the down direction | ACTIVE | |
-| JOINING | stall (acknowledgement stalls only while the endpoint has a live inbound pipe) | SUSPECT | stop new stream data; reinject; PIPE_PING (MULTIPATH 7.2) |
+| (none) | session established: pipe 0 (both bootstrap carriers) | ACTIVE | t_ref starts at establishment; its RTT state starts from the initial values or the test hook |
+| (none) | joiner allocates pipe ID and sends or hands off PIPE_JOIN | JOINING | carries control frames; not usable until ACTIVE, so it never holds back failover to a standby pipe; new stream data only while no outbound pipe is usable (MULTIPATH 5.7, 11.1 rule S1; SCHEDULER 10) |
+| (none) | acceptor verified a join with a down or bidi direction | ACTIVE | acceptor writes a record carrying a complete PIPE_ACK snapshot (when it has an entry), PIPE_PING and its PIPE_STATUS request, if any, within max_ack_delay (MULTIPATH 5.4 step 8); probation starts (SCHEDULER 11) |
+| JOINING | PIPE_ACK acknowledges position > 0 (up), or a record arrives on the down direction | ACTIVE | probation starts (SCHEDULER 11) |
+| JOINING | stall longer than T_suspect | SUSPECT | stop new stream data; reinject; PIPE_PING (MULTIPATH 7.2) |
 | JOINING | graceful removal (local) or PIPE_ABANDON(NO_ERROR) received | DRAINING | stop new stream data; PIPE_ABANDON(NO_ERROR) if not yet sent |
 | JOINING, SUSPECT (never confirmed) | carrier error, or not confirmed within the handshake timeout | FAILED | reinject; PIPE_ABANDON(ZMUX_PIPE_FAILED) |
-| ACTIVE | stall (acknowledgement stalls only while the endpoint has a live inbound pipe) | SUSPECT | stop new stream data; reinject; PIPE_PING |
-| SUSPECT | acknowledged position advances and the carrier accepts writes | ACTIVE | drop reinjections now acknowledged |
-| SUSPECT (confirmed) | lasting stall (acknowledgement stalls only while the endpoint has a live inbound pipe) | FAILED | close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED) |
+| ACTIVE | ack stall or write stall longer than T_suspect (ack stalls only while the endpoint has a live inbound pipe) | SUSPECT | stop new stream data; reinject; take back frames not yet handed to the adapter; PIPE_PING |
+| ACTIVE | another attachment of the same joiner and non-zero fate group failed abruptly, that attachment's graceful removal had not started (no PIPE_ABANDON(NO_ERROR) sent or received for it) and it was not abandoned with ZMUX_PIPE_RESOURCE_LIMIT (MULTIPATH 7.1), and this pipe has unacknowledged ack-eliciting bytes | SUSPECT | as above (an idle pipe is probed instead) |
+| SUSPECT | acknowledged position advances and the carrier accepts writes | ACTIVE | drop reinjections now acknowledged; probation starts, its backoff exponent raised if the pipe became suspect in probation or soon after its last one (SCHEDULER 11) |
+| SUSPECT (confirmed) | stall longer than T_fail while another outbound pipe is ACTIVE; stall longer than T_dead while none is; in both cases ack stalls count only while the endpoint has a live inbound pipe | FAILED | close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED) |
 | SUSPECT | carrier error, abrupt removal, PIPE_ABANDON(error) received | FAILED | close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED) if not yet sent |
 | ACTIVE | carrier error, abrupt removal, PIPE_ABANDON(error) received | FAILED | reinject; close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED), or ZMUX_PIPE_RESOURCE_LIMIT for a removal for a local resource limit or a loop (MULTIPATH 8.3) |
 | ACTIVE, SUSPECT | graceful removal (local) or PIPE_ABANDON(NO_ERROR) received | DRAINING | stop new stream data; PIPE_ABANDON(NO_ERROR) if not yet sent |
-| DRAINING | stall | DRAINING (marked suspect) | last choice for control frames; reinject the unacknowledged information, stream data included, once |
+| DRAINING | stall of T_suspect | DRAINING (marked suspect) | last choice for control frames; reinject the unacknowledged information, stream data included, once |
 | DRAINING | PIPE_ABANDON exchange complete (own sent, peer's received) and all stream data sent on the pipe acknowledged, checked when the own PIPE_ABANDON is sent, the peer's arrives or an acknowledgement arrives (MULTIPATH 8.2) | CLOSED | graceful write shutdown; reinject the information of unacknowledged control frames |
-| DRAINING | drain not complete in time; carrier error; abrupt removal; PIPE_ABANDON(error) received | FAILED | reinject what was not yet reinjected; close carrier; no second PIPE_ABANDON |
+| DRAINING | drain not complete T_fail after entering DRAINING; carrier error; abrupt removal; PIPE_ABANDON(error) received | FAILED | reinject what was not yet reinjected; close carrier; no second PIPE_ABANDON |
 | FAILED, CLOSED | own PIPE_ABANDON acknowledged, peer's PIPE_ABANDON received or unilateral retirement (max(2 s, 3 x PTO) after that acknowledgement), inbound side ended; at the first moment all hold, including the moment the failure or the drain itself completes them (MULTIPATH 8.4) | RETIRED | free state; for an attachment the peer joined, its pipe ID's bit stays set in the replay window until it slides out (MULTIPATH 4.3, 8.4) |
 | FAILED | the endpoint is SUSPENDED, at its cap of unretired attachments, a rejoin needs the room, and this is the oldest failed attachment whose own PIPE_ABANDON is unacknowledged (MULTIPATH 5.4 step 9) | RETIRED | free state, including the pending PIPE_ABANDON |
 | JOINING, ACTIVE, SUSPECT, DRAINING | the endpoint is SUSPENDED, at its cap of unretired attachments with none failed, a join that provides a direction it lacks needs the room, and this attachment has the oldest last progress (MULTIPATH 5.4 step 9) | RETIRED | reinject; close carrier; free state; no PIPE_ABANDON |
 
 Modifiers: the effective **priority** and **standby** flag of the outbound
-direction (local setting, else the peer's PIPE_STATUS request, else priority
-0 and available) and the **suspect mark** of a DRAINING pipe restrict
-sending (MULTIPATH 6.5, 8.2, 9) without being states.
+direction (local setting, else the peer's PIPE_STATUS request, else priority 0
+and available), **probation**, **saturation** and the **suspect mark** of a
+DRAINING pipe restrict scheduling (MULTIPATH 6.5, 8.2, 9; SCHEDULER 10, 11) without being
+states.
 
-New stream data may be sent only in ACTIVE, and in JOINING, reinjected
-information first, while no outbound pipe is usable; control frames may use
-SUSPECT and DRAINING pipes as a last resort (MULTIPATH 11 rule S1). An
-outbound pipe is **live** in JOINING, ACTIVE, SUSPECT and DRAINING.
+New stream data may be scheduled only in ACTIVE, and in JOINING,
+reinjected information first, while no outbound pipe is usable; control frames may use SUSPECT and DRAINING
+pipes as a last resort (MULTIPATH 11.1 rule S1).
+An outbound pipe is **live** in JOINING, ACTIVE, SUSPECT and DRAINING.
+The last pipe of a direction (no other outbound pipe ACTIVE) fails from a
+stall only after T_dead: by default T_fail with resume and max(T_fail, half
+the idle timeout) without (MULTIPATH 7.1).
 
 ### 3.2 Inbound pipe (the local endpoint reads)
 
@@ -192,7 +198,7 @@ outbound pipe is **live** in JOINING, ACTIVE, SUSPECT and DRAINING.
 | OPEN | graceful end at a record boundary after PIPE_ABANDON or CONNECTION_CLOSE was received, or after the endpoint sent PIPE_ABANDON(NO_ERROR) for the attachment | ENDED (graceful) | final position in next PIPE_ACK |
 | OPEN | linger timeout after the PIPE_ABANDON exchange completed | ENDED (graceful) | close carrier |
 | OPEN | carrier error, reset, end inside a record, or unexpected end | ENDED (failed) | discard incomplete record; fail own outbound direction of a pair; PIPE_ABANDON(ZMUX_PIPE_FAILED) (MULTIPATH 7.3) |
-| OPEN, attachment without a local outbound direction | judged dead after no complete record for at least the minimum of MULTIPATH 7.3 | ENDED (failed) | as above; close carrier |
+| OPEN, attachment without a local outbound direction | no complete record for L_in, or for max(L_in, T_dead) when it is the last live inbound pipe (inbound silence, MULTIPATH 7.3) | ENDED (failed) | as above; close carrier |
 | OPEN | local abrupt removal | ENDED (failed) | close carrier |
 | ENDED | attachment retired (MULTIPATH 8.4; at once when the end of this direction completes the conditions) | RETIRED | stop listing in PIPE_ACK |
 
@@ -219,7 +225,7 @@ event.
 | Pipe state (outbound) | Lanes the writer may open |
 |---|---|
 | JOINING | none (lane 0 not yet acknowledged) |
-| ACTIVE, SUSPECT | new lanes once a position greater than 0 on lane 0 is acknowledged, none after a refused one; a lane carries only its PIPE_LANE until confirmed; SUSPECT pipes take only what rule S1 of MULTIPATH 11 allows, on any confirmed lane |
+| ACTIVE, SUSPECT | new lanes once a position greater than 0 on lane 0 is acknowledged, none after a refused one; a lane carries only its PIPE_LANE until confirmed; SUSPECT pipes take only what rule S1 of MULTIPATH 11.1 allows, on any confirmed lane |
 | DRAINING, FAILED, CLOSED, RETIRED | none |
 
 ### 3.4 Attachments without multipath
@@ -260,11 +266,10 @@ zmux CLOSING. zmux DRAINING is the GOAWAY phase.
 | ACTIVE, DRAINING | no live outbound or inbound pipe, resume not in use (multipath) | CLOSING or CLOSED | CONNECTION_CLOSE(NO_VIABLE_PATH) if an outbound pipe is live; report pipes lost (MULTIPATH 8.5) |
 | ACTIVE, DRAINING | bootstrap pipe failure, not a multipath session | CLOSED | report carrier failure (SPEC 6.6) |
 | ACTIVE, DRAINING | graceful end of the inbound bootstrap pipe without CONNECTION_CLOSE, session without acknowledgement (plain QMux peer) | CLOSING | shut down writes without frames; report the peer's idle close (SPEC 6.4) |
-| ACTIVE, DRAINING | graceful end of the inbound bootstrap pipe (every lane) without CONNECTION_CLOSE, pipe acknowledgement in use | CLOSED | a pipe failure: report pipes lost (SPEC 6.4, 6.6) |
+| ACTIVE, DRAINING | graceful end of the inbound bootstrap pipe (every lane) without CONNECTION_CLOSE, pipe acknowledgement in use | CLOSED | a pipe failure: report carrier failure (`PipesLost`, SPEC 6.4, 6.6) |
 | SUSPENDED | an ACTIVE outbound pipe and an OPEN inbound pipe exist | DRAINING if it was DRAINING or a GOAWAY was sent or received while suspended, otherwise ACTIVE | stop grace timer; send queued frames (RESUME 4.4); the first records of the new pipes already carried complete PIPE_ACK snapshots (RESUME 5) |
 | SUSPENDED | local protocol error detected (for example on an inbound pipe of a partially suspended endpoint) | CLOSING, or CLOSED without a live outbound pipe | CONNECTION_CLOSE on every live outbound pipe (SPEC 6.5) |
 | SUSPENDED | grace timer expired | CLOSED (or CLOSING if an outbound pipe is live) | ZMUX_RESUME_TIMEOUT (RESUME 8) |
-| SUSPENDED | the listener's limits on suspended sessions would be exceeded (RESUME 9) | CLOSED (or CLOSING if an outbound pipe is live) | ZMUX_RESUME_TIMEOUT |
 | SUSPENDED | application closes | CLOSED (or CLOSING if an outbound pipe is live) | CONNECTION_CLOSE on any live outbound pipe (RESUME 11) |
 | any but CLOSED | fail-closed resume condition | CLOSING or CLOSED | ZMUX_RESUME_FAILED (RESUME 7) |
 | ACTIVE, DRAINING | local close or local protocol error | CLOSING | CONNECTION_CLOSE on every live outbound pipe, then shut down writes (SPEC 6.5) |
@@ -276,5 +281,4 @@ zmux CLOSING. zmux DRAINING is the GOAWAY phase.
 ### 4.3 Error precedence
 
 The session error is the first of: a processed peer CONNECTION_CLOSE, a local
-close or detected violation, a timeout, a carrier failure or the loss of
-every pipe in a direction ("pipes lost") (SPEC 6.5).
+close or detected violation, a timeout, a carrier failure (SPEC 6.5).

@@ -45,8 +45,10 @@ parameters at codepoints of 2^14 and above.
 
 | Document | Content |
 |---|---|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | scope, layering, relationship to QUIC and QMux, extension policy |
 | [SPEC.md](./SPEC.md) | records, frames, transport parameters, session lifecycle, streams, flow control, robustness rules, errors, QMux compatibility, security |
 | [MULTIPATH.md](./MULTIPATH.md) | pipes, lanes, joins, acknowledgement, failure detection, reinjection, removal, sender rules, join security and carrier binding |
+| [SCHEDULER.md](./SCHEDULER.md) | the multipath sender's estimators, scheduling policies, tiers, probation and budgets |
 | [RESUME.md](./RESUME.md) | suspension and authenticated resumption |
 | [EXTENSIONS.md](./EXTENSIONS.md) | roles, GOAWAY, stream preamble, priorities, datagrams, application error codes, nested sessions and relays, duplicate sessions |
 | [STATE_MACHINE.md](./STATE_MACHINE.md) | stream, pipe and session state machines |
@@ -54,11 +56,15 @@ parameters at codepoints of 2^14 and above.
 | [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md) | byte-exact examples, generated and machine-checked |
 | [CONFORMANCE.md](./CONFORMANCE.md) | conformance requirements, invalid inputs, test vectors, QMux interoperability |
 | [TRACES.md](./TRACES.md) | the executable trace format and the trace runner |
+| [IMPLEMENTATION.md](./IMPLEMENTATION.md) | implementation architecture, scheduling, flow-control tuning, defaults, performance targets |
+| [API.md](./API.md) | cross-language API guidance, configuration and statistics schemas |
 
-All documents except WIRE_EXAMPLES.md are normative; the test-mode
-settings of TRACES.md Section 3.4 bind only a trace runner. How an implementation
-schedules frames across pipes, sizes its buffers and presents its API is
-up to the implementation, within the rules these documents state.
+SPEC.md, MULTIPATH.md, RESUME.md, EXTENSIONS.md, STATE_MACHINE.md,
+REGISTRY.md and, for conformance claims, SCHEDULER.md, CONFORMANCE.md and
+TRACES.md are normative; the test-mode settings of TRACES.md Section 3.3 bind
+only a trace runner. The rest is informative. How an implementation schedules
+frames across pipes, sizes its buffers and presents its API is up to the
+implementation, within the rules these documents state.
 
 ## Test vectors
 
@@ -85,11 +91,11 @@ format (the one that starts with the ASCII magic `ZMUX`) under the same
 major version; the two fail at their first bytes and do not interoperate.
 zmux has no version negotiation: additive changes are negotiated
 extensions, and a change to existing encodings would be a new protocol
-version with new ALPN identifiers (REGISTRY.md Section 2.6).
+version with new ALPN identifiers (ARCHITECTURE.md Section 5.4).
 
 ## Implementations
 
-- [zmux-go](https://github.com/zmuxio/zmux-go) (Go)
+- [zmux-go](https://github.com/zmuxio/zmux-go) (Go, reference implementation)
 - [zmux-rs](https://github.com/zmuxio/zmux-rs) (Rust)
 - [zmux-python](https://github.com/zmuxio/zmux-python) (Python, bindings to zmux-rs)
 

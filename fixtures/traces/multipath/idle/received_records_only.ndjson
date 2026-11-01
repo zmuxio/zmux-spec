@@ -5,7 +5,7 @@
 {"step": 4, "op": "expect_event", "event": "established", "fields": {"features": ["goaway", "preamble", "priority", "multipath"]}}
 {"step": 5, "op": "set_writable", "pipe": 0, "writable": false}
 {"step": 6, "op": "peer_send", "pipe": 0, "records": [[{"type": "PIPE_ACK", "entries": [{"pipe": 0, "lane": 0, "position": {"$sent": 0}, "delay": 0}]}, {"type": "STREAM", "id": 0, "off": 0, "data": "0078", "fin": false}]]}
-{"step": 7, "op": "note", "text": "The acknowledgement for this record is written only at 4900 ms, before the last pipe's stall limit of the test-mode sender (TRACES.md Section 3.4) fails the write-stalled pipe; in a session without acknowledgement that write would restart the idle timer."}
+{"step": 7, "op": "note", "text": "The acknowledgement for this record is written only at 4900 ms, before the last pipe's T_dead (half the 10 s idle timeout by default) fails the write-stalled pipe; in a session without acknowledgement that write would restart the idle timer."}
 {"step": 8, "op": "advance", "ms": 4900}
 {"step": 9, "op": "set_writable", "pipe": 0, "writable": true}
 {"step": 10, "op": "expect_frames", "pipe": 0, "match": "contains", "frames": [{"type": "PIPE_ACK"}]}

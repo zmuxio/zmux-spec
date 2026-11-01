@@ -1,6 +1,6 @@
 # zmux Negotiated Features
 
-Each feature in this document is announced with a zmux
+Status: normative. Each feature in this document is announced with a zmux
 transport parameter and is **in use** only when both endpoints sent that
 parameter (SPEC.md Section 5.5). zmux endpoints send `zmux_goaway`,
 `zmux_preamble`, `zmux_priority` and `reset_stream_at` in every session;
@@ -163,9 +163,10 @@ GOAWAY's sender and can be retried elsewhere.**
 
 ZMUX_REJECTED is the only stream termination that the zmux stack initiates on
 its own (SPEC.md Section 4.3): after GOAWAY as above, and under the local
-memory pressure of a listener, which rejects new peer
+memory pressure of a listener (API.md Section 4.4), which rejects new peer
 streams instead of withholding stream credit. The other permitted use is an
-application that declines a stream before reading any of its data.
+application that declines a stream before reading any of its data (API.md
+Section 5.1).
 
 ### 3.5 Receiving
 
@@ -178,7 +179,7 @@ An endpoint B that receives GOAWAY:
    frame delivered late in a multipath session and is ignored, not an error;
 2. MUST NOT open any new stream, whatever the watermarks, as HTTP/2 (RFC
    9113 Section 6.8) and HTTP/3 require: A is draining. Local open attempts
-   fail with the retryable "going away" error, and so
+   fail with the retryable "going away" error (API.md Section 5.1), and so
    does every stream the application opened that has neither emitted its
    first frame nor been pinned (an open that waited for credit, or a stream
    opened before establishment): it sends nothing, holds no identifier and
@@ -193,7 +194,8 @@ An endpoint B that receives GOAWAY:
    final watermark only has to cover streams B emitted before it learned of
    the first;
 3. MUST report every stream it opened (emitted or pinned) with an index at or
-   above the watermark as not processed and retryable ("rejected") to its application at once, without waiting for A's
+   above the watermark as not processed and retryable ("rejected", API.md
+   Section 5.1) to its application at once, without waiting for A's
    RESET_STREAM and STOP_SENDING;
 4. enters DRAINING itself (STATE_MACHINE.md Section 4): existing streams
    continue; B may send its own GOAWAY.
@@ -227,7 +229,8 @@ accepts.
 - zmux implementations send 4096, or the smallest of their initial stream
   windows and one quarter of their `initial_max_data` when that is smaller,
   and never less than the early-data floor of 1024 (SPEC.md Section 6.1.2),
-  which the floors of those windows always allow.
+  which the floors of those windows always allow (one quarter of 16384 is
+  4096).
 
 ### 4.2 Format and placement
 
@@ -260,7 +263,8 @@ TLV {
   reinjection (MULTIPATH.md Section 7.4).
 - The peer's sending part of a bidirectional stream has no preamble.
 - Because the preamble occupies the first bytes of the stream, application
-  data can never overtake it on the wire.
+  data can never overtake it on the wire, as metadata could in the legacy
+  format.
 
 ### 4.3 TLV types
 
@@ -340,7 +344,7 @@ the reset (reliable-stream-reset-11 Section 5).
 
 ### 4.6 Design notes
 
-The preamble is one frame, length
+The preamble replaces the legacy format's OPEN_METADATA flag. It is one frame, length
 prefixed and bounded by the receiver (SPEC.md Section 9.5); there is no header
 compression and no continuation (CONTINUATION flood, HPACK bomb). It costs one
 byte per stream when empty. It follows the stream-header model of WebTransport
@@ -352,9 +356,16 @@ Overlays, relays and proxies often need routing and ownership metadata at
 stream open: where the stream should end, on whose behalf it runs, how many
 more relays it may cross, and a trace identifier. The preamble carries such
 metadata in the opening frame, so it costs no round trip and is never
-overtaken by data. zmux defines none of it; applications use their TLV
-range (Section 4.3), for example for a destination, an owner, a hop limit
-and a trace context.
+overtaken by data. zmux defines none of it; the layout below is an example
+of how an application might use its TLV range, with sizes chosen so that
+the whole set stays far below the 4096-byte preamble limit.
+
+| Example type | Example meaning | Example value |
+|---|---|---|
+| 0x1000 | destination: the endpoint where the stream terminates | opaque identifier, 1 to 255 bytes |
+| 0x1001 | owner: the principal on whose behalf the stream runs, for accounting and policy | opaque identifier, 1 to 255 bytes |
+| 0x1002 | hop limit: how many more relays the stream may cross | 1 byte |
+| 0x1003 | trace context | 16-byte trace ID, 8-byte parent span ID, 1 flags byte |
 
 - **Hop limit and loops.** A relay that forwards a stream copies the
   metadata into the next hop's preamble, decrements the hop limit, and
@@ -404,7 +415,7 @@ stream with the given priority, using the model of RFC 9218 Sections 4 and
 non-incremental streams of the same urgency are served one after the other in
 stream-identifier order, incremental streams share bandwidth round-robin.
 Priorities are hints; a receiver MAY ignore them. An endpoint's own sending
-priorities are local and need no frame.
+priorities are local and need no frame (API.md Section 5.1).
 
 ### 5.4 Rules
 
@@ -451,7 +462,9 @@ zmux uses the DATAGRAM frames of RFC 9221 as QMux-02 Section 9.1 permits:
 
 **No fragmentation.** zmux never splits a datagram across frames or records
 and never reassembles one. A datagram that does not fit is refused locally
-with a "too large" error; the application then uses a stream.
+with a "too large" error; the application then uses a stream. Fragmentation
+over reliable carriers has caused crashes and memory exhaustion in deployed
+proxy protocols.
 
 ### 6.2 Datagram flows parameter
 
@@ -500,7 +513,7 @@ exist.
   multipath sender SHOULD avoid this: while the opening frame of a stream is
   unacknowledged, it sends that stream's datagrams after it on a pipe that
   carries the frame or a reinjected copy of it, and while no such pipe may
-  carry DATAGRAM frames (MULTIPATH.md Section 11 rule S1) it keeps them in
+  carry DATAGRAM frames (MULTIPATH.md Section 11.1 rule S1) it keeps them in
   its send queue, so they cannot overtake the opening frame.
 - A stream whose parts are both terminal, that the application has
   released, or whose state is discarded: the datagram is dropped and
@@ -509,25 +522,45 @@ exist.
 
 ### 6.5 Queues and loss
 
-- A sender keeps a bounded queue of datagrams waiting for a pipe; when it
-  is full, the oldest is dropped. A datagram may also be dropped when it has
-  waited longer than an application-set maximum age. Sending never blocks.
-- A receiver keeps bounded queues of datagrams the application has not
-  read, following the per-stream model of RFC 9297 Section 2: datagrams
-  with Flow 0, and all datagrams when datagram flows are not in use, go to
-  the session queue; datagrams with Flow > 0 go only to the queue of their
-  stream, never to the session queue. When a queue is full, its oldest
-  datagram is dropped. All received datagrams not yet read, held for
-  streams not yet opened or on their way to a queue, together stay within a
-  session-wide byte limit; a datagram that would exceed it makes room by
-  dropping the oldest unread datagrams of the session.
-- Drops never cause an error or a budget charge.
+- A sender keeps a bounded queue of datagrams waiting for a pipe (default 64
+  datagrams); when it is full, the oldest is dropped. A datagram may also be
+  dropped when it has waited longer than an application-set maximum age.
+  Sending never blocks; an explicit waiting variant may exist in the API
+  (API.md Section 5.6).
+- A receiver keeps bounded queues of datagrams the application has not read,
+  following the per-stream model of RFC 9297 Section 2:
+  - datagrams with Flow 0, and all datagrams when datagram flows are not in
+    use, go to the session queue (default 128 datagrams);
+  - datagrams with Flow > 0 go only to the queue of their stream (default 32
+    datagrams per stream), never to the session queue, and the application
+    receives them from the stream (API.md Section 5.6);
+  - when a queue is full, its oldest datagram is dropped to make room;
+  - all received datagrams not yet read, in every queue, held for streams
+    not yet opened, and held by the endpoint on their way to a queue (for
+    example waiting for an application limiter, API.md Appendix A.1),
+    together stay within a session-wide byte limit (default 1 MiB); a
+    datagram that would exceed it makes room by dropping the oldest
+    datagrams of the session that the application has not read. A datagram
+    is counted from the moment the endpoint has read it from a pipe until
+    the application has read it or it is dropped, so that no stage between
+    the pipe and the application holds datagram bytes outside the limit:
+    the count is one per session, updated by every stage (atomically where
+    a stage runs outside the core lock), and a stage that would exceed it
+    drops its own oldest datagrams, or the arriving one when it holds
+    none.
+- Drops are counted in statistics (API.md Section 7) and never cause an error
+  or a budget charge.
+- The queue lengths and the byte limit are local defaults, not protocol
+  constants: they bound the memory a peer can make the receiver hold with
+  datagrams it does not read, and applications configure them (parameters of
+  `enable_datagrams`, API.md Section 6).
 - In a session that is not a multipath session, a datagram that has been
   written to the carrier is delivered (QMux-02 Section 1.1). In a multipath
-  session, datagrams are never reinjected, and are lost with a failed pipe: they are truly
+  session, datagrams are sent on the pipe with the earliest estimated arrival,
+  are never reinjected, and are lost with a failed pipe: they are truly
   unreliable.
 - zmux never sends a datagram twice: the redundant copies of urgent stream
-  data (MULTIPATH.md Section 7.5) and opportunistic reinjection apply to
+  data (SCHEDULER.md Section 4.1) and opportunistic reinjection apply to
   stream data only. A datagram is dropped, never queued without bound,
   when its queue is full; an application that needs redundancy sends it
   twice itself.
@@ -552,18 +585,22 @@ more. Every IP packet of an MTU up to 65 000 bytes fits a zmux peer, and
 the packets of 1500-byte and 9000-byte (jumbo) links fit every zmux peer,
 and every plain QMux peer whose parameters allow frames of that size, with
 room for the overhead, over a single pipe and over every pipe of a multipath session alike: the
-size limits are those of the peer, not of a pipe. Over TLS a sender keeps
-records at 16382 bytes of frames (SPEC.md Section 3.3), so datagrams up to
-that size share a record with other frames and larger ones occupy a record
-of their own. Implementations report the current largest payload, which
-applications use as the MTU of a packet interface.
+size limits are those of the peer, not of a pipe, and the write-call bounds
+of IMPLEMENTATION.md Section 4 let a record holding one datagram exceed
+them by what the datagram needs. Over TLS a sender keeps records at 16382
+bytes of frames (SPEC.md Section 3.3), so datagrams up to that size share
+a record with other frames and larger ones occupy a record of their own.
+The API reports the current largest payload (API.md Section 5.6), which
+applications use as the MTU of a packet interface. Several datagrams are
+packed into one record whenever they are ready together (IMPLEMENTATION.md
+Section 4).
 
 ### 6.7 Datagrams across relays and nested sessions
 
 Datagram semantics are per session and per hop:
 
 - **Relayed hop by hop** (a relay forwards the datagrams of one session,
-  or of a stream's datagram flow, to another session):
+  or of a stream's datagram flow, to another session, API.md Appendix A):
   every hop applies its own queues and drops. A datagram is delivered end
   to end at most once, may be lost at any hop, and is not reordered on a
   single-pipe hop, but may be reordered across the pipes of a multipath
@@ -578,6 +615,68 @@ Datagram semantics are per session and per hop:
   nested session's own queues, and lost with a pipe that fails. Traffic
   that relies on loss rather than delay, such as IP packets whose own
   transport recovers loss, is better relayed hop by hop.
+
+### 6.8 Datagrams on a carrier's datagram channel
+
+Some carriers have an unreliable datagram service of their own besides the
+reliable stream that is the pipe: QUIC DATAGRAM frames (RFC 9221) on the
+connection a QUIC stream pipe belongs to, HTTP Datagrams (RFC 9297) of the
+HTTP/3 request stream that is the pipe, and the datagrams of the
+WebTransport session a WebTransport stream pipe belongs to. A DATAGRAM frame
+sent there instead of in a record is not held behind stream data or
+retransmitted by the carrier: a lost one is lost, as on IP.
+
+`zmux_carrier_datagrams`, ID 0x3d274c5f, empty value: the sender accepts
+DATAGRAM frames on the datagram channels of its pipes. An endpoint sends it
+only when it has announced datagram support (`max_datagram_frame_size` >
+0, Section 6.1). The channel of a pipe is **in use** when both endpoints sent
+the parameter and the pipe's carrier has the channel (negotiated by the
+carrier itself: QUIC `max_datagram_frame_size`, HTTP/3
+`SETTINGS_H3_DATAGRAM`, WebTransport datagram support).
+
+**Format.** A channel datagram carries exactly one DATAGRAM frame, encoded
+as the last frame of a record (type 0x30, no Length field):
+
+```text
+Channel Datagram {
+  Pipe Stream ID (i),
+  DATAGRAM Frame (..),
+}
+```
+
+- **Pipe Stream ID** is the carrier stream ID of the pipe, as the carrier
+  numbers it (the QUIC stream ID, or the WebTransport stream's ID within its
+  QUIC connection), present on QUIC and WebTransport channels. On an HTTP/3
+  channel the HTTP Datagram's Quarter Stream ID already names the request
+  stream, and the payload is the DATAGRAM frame alone.
+- The frame's data has the format of Sections 6.2 and 6.3 as negotiated for
+  the session, and all of Sections 6.1 to 6.6 apply as if the frame had
+  arrived in a record on that pipe.
+
+**Sending.** A sender MAY send a DATAGRAM frame on the channel of the pipe
+that the frame would otherwise go to (Section 6.5; MULTIPATH.md Section 11.1
+rule S7) when the channel is in use and the frame fits the channel's current
+maximum datagram size; otherwise, and while the implementation shapes the
+pipe's records, the frame goes in a record as before. The choice is per frame: datagrams carry no ordering promise, and
+their sizes and queues (Sections 6.5 and 6.6) are unchanged.
+
+**Receiving.** A channel datagram whose Pipe Stream ID names no pipe of a
+session at the receiver (unknown, not yet attached, or closed) is dropped
+and counted; one received for a pipe of a session that did not negotiate the
+channel is dropped and counted. Otherwise a payload that is not exactly one
+DATAGRAM frame of type 0x30 (a truncated or longer payload, or another
+frame type) is a PROTOCOL_VIOLATION of that session. A channel datagram may
+arrive before the opening frame of the stream its Flow names, on a single
+pipe as well: for a peer-initiated stream within the limit that has not been
+opened yet, a receiver SHOULD hold it as Section 6.4 allows (at most one
+smoothed RTT, within the byte limit of Section 6.5) rather than drop it.
+Channel datagrams are not records: they do not advance PIPE_ACK positions, are not charged to the
+no-effect budget, and never restart idle timers.
+
+**Relation to other mechanisms.** Plain QMux peers never send or see the
+parameter, and so never the channel. A pipe that is a stream of a nested
+session, or a relayed carrier, has no channel; hop-by-hop relaying (Section
+6.7) uses each hop's channel where that hop has one.
 
 ---
 
@@ -613,8 +712,9 @@ offered, but its data was not read.
   and STOP_SENDING on its receiving part.
 - It is used after GOAWAY (Section 3.4), by a stack under local memory
   pressure for new peer streams, which are rejected without allocating
-  receive buffers and are never offered to the application, and when an
-  application declines a stream before reading any of its data.
+  receive buffers and are never offered to the application (API.md Section
+  4.4), and when an application declines a stream before reading any of its
+  data (API.md Section 5.1).
 - A stream opener that receives ZMUX_REJECTED reports a retryable error.
 
 ### 7.3 Proxy open-failure codes
@@ -645,19 +745,19 @@ imply that no stream data was forwarded to the target.
 ### 7.4 Codes chosen by libraries
 
 When a zmux library terminates a stream because of a local API action that
-carries no explicit code, it uses code 0:
+carries no explicit code, it uses code 0 (API.md Section 5.1):
 
 - RESET_STREAM (or RESET_STREAM_AT covering the preamble) with code 0 when the
-  application drops or closes a sending part without an explicit finish
-  (a handle released, closed or collected while unfinished, or a scope left
-  through an error). Only an explicit finish
+  application drops or closes a sending part without an explicit finish: Rust
+  `Drop`, Java `close()`, Python leaving `async with` through an exception,
+  and garbage collection of an unfinished handle. Only an explicit finish
   (FIN) is a clean end; a reset is never complete (SPEC.md Section 7.5);
 - STOP_SENDING with code 0 when the application drops or closes a receiving
   part before reading its end;
 - ZMUX_REJECTED as Section 7.2 describes;
 - ZMUX_CARRIER_FAILED when a stream used as a carrier is aborted (Section
-  10.2) and when a relay loses the other side of a spliced stream (Section
-  10.5).
+  10.2) and when the splice helper loses the other side (API.md Appendix
+  A).
 
 ZMUX_CANCELLED is for applications that want to say "abandoned" explicitly;
 libraries never choose it on their own.
@@ -676,14 +776,14 @@ ZMUX_PIPE_AUTH_FAILED.
 
 ## 9. Reserved extension points
 
-The codepoints and frameworks below are reserved (REGISTRY.md Section 7). Endpoints of this specification MUST NOT use them.
+The codepoints and frameworks below are fixed now and implemented later
+(REGISTRY.md Section 7). Endpoints of this specification MUST NOT use them.
 
 | Extension point | Reserved | Notes |
 |---|---|---|
 | DEADLINE preamble TLV | TLV type 0x03 | relative deadline in milliseconds (variable-length integer), relative because clocks differ |
-| carrier implicit acknowledgement | behaviour only | adapters such as HTTP POST, whose 2xx response proves full delivery, could report it as an acknowledgement; endpoints MUST NOT treat carrier events as acknowledgements |
-| qlog event schema | none | QUIC qlog events plus pipe events |
-| padding and traffic-shaping hooks | none | adapter level; PADDING-only records are limited by SPEC.md Section 9.4.3 |
+| carrier implicit acknowledgement | behaviour only | adapters such as HTTP POST, whose 2xx response proves full delivery, may later report it as an acknowledgement; endpoints MUST NOT treat carrier events as acknowledgements yet |
+| qlog event schema | none | QUIC qlog events plus pipe events (IMPLEMENTATION.md Section 11) |
 | record protection | transport parameter 0x1dbe26bc | AEAD protection of records for carriers that cannot protect end to end, with keys from the session secret; receivers ignore the parameter until it is specified |
 
 ---
@@ -697,9 +797,9 @@ a pipe pair of another zmux session (the **nested** session). Two
 endpoints then keep one end-to-end nested session whose pipes run over
 different routes: for example a direct carrier, and streams that cross one
 or more **relays**, each relay being an endpoint of two outer sessions that
-splices a stream of one to a stream of the other (Section 10.5). The
+splices a stream of one to a stream of the other (API.md Appendix A). The
 nested session's tiers, failure detection, reinjection, redundancy and
-resume (MULTIPATH.md, RESUME.md) then move its traffic from
+resume (MULTIPATH.md, SCHEDULER.md, RESUME.md) then move its traffic from
 one route to another without its streams noticing, which per-hop relaying
 of each stream cannot do: a stream relayed hop by hop dies with any relay
 it crosses.
@@ -712,7 +812,8 @@ failures.
 
 ### 10.2 The stream carrier
 
-An implementation that offers streams as carriers behaves as follows.
+An implementation that offers streams as carriers (API.md Section 4.6)
+behaves as follows.
 
 - **One bidirectional stream is one pipe pair**, with byte-stream framing
   (SPEC.md Section 3.1). The endpoint that opens the stream is the pipe's
@@ -731,7 +832,7 @@ An implementation that offers streams as carriers behaves as follows.
   recognises the carrier stream by its own means.
 - **Operations.**
 
-| Pipe operation | Stream operation |
+| Pipe operation (API.md Section 4.1) | Stream operation |
 |---|---|
 | write | write; "not writable" while the stream lacks stream or session credit or send-buffer space, the backpressure every adapter has |
 | graceful end of the sending half | finish (FIN) |
@@ -745,20 +846,24 @@ An implementation that offers streams as carriers behaves as follows.
 - **No queue capabilities.** The adapter reports neither unsent bytes nor
   a low-water mark nor a carrier RTT: bytes waiting in the outer session's
   send buffer, in each relay and in each hop's carrier form a queue the
-  adapter cannot see; only the nested session's own acknowledgements
-  (multipath or pipe acknowledgement, MULTIPATH.md Section 3.5) show it.
+  adapter cannot see. The nested sender therefore paces the pipe with the
+  carrier queue limiter (SCHEDULER.md Section 9.1), whose inputs are the
+  nested session's own acknowledgements, present whenever both nested
+  endpoints are zmux endpoints (multipath or pipe acknowledgement,
+  MULTIPATH.md Section 3.5). An adapter MUST NOT report the outer stream's
+  own send buffer as the carrier's unsent bytes: that hides the relays'
+  queues from the limiter while switching it off (Section 10.4).
 - **Lanes.** The adapter reports the outer session as the carrier
   connection and can open further streams of it, each with PIPE_CARRIER, as
   lanes of the pipe (MULTIPATH.md Sections 2.5 and 5.8; the receiving
-  application hands them to the nested session like any carrier
-  stream). A lane carries the nested
+  application hands them to the nested session's listener or lane router
+  like any carrier stream, API.md Section 4.1). A lane carries the nested
   peer's Lane Key, so it reaches its pipe also through a relay, as long as
   the relay forwards it over the same outer session as the pipe's lane 0
   (otherwise it names no pipe on the connection it arrives on and is
   refused, which costs the pipe nothing); other clients of the relay, which
   do not know the key, cannot attach a stream to the pipe. Whether lanes
-  pay off depends on the outer sessions' own pipes (MULTIPATH.md Section
-  2.5).
+  pay off depends on the outer sessions' own pipes (API.md Section 4.6).
 - **Join security.** Joins over relayed streams are authenticated by the
   nested session's secret (MULTIPATH.md Section 10); a relay cannot forge
   or redirect them. A relayed stream carries no TLS of its own, so the
@@ -773,7 +878,7 @@ An implementation that offers streams as carriers behaves as follows.
   that routing state can form with a hop limit (Section 4.7).
 - A nested session with a plain QMux implementation at one end is a
   single-pipe session without acknowledgements: it works, but its sender
-  cannot see the relays' queue.
+  cannot see the relays' queue (SCHEDULER.md Section 9.1).
 
 ### 10.3 Flow control and freedom from deadlock
 
@@ -785,12 +890,12 @@ cycle:
 1. The nested sender's write on a relayed pipe waits for the first hop's
    credit, which the first relay releases when it reads that stream.
 2. A relay forwards from hop i to hop i + 1 only while hop i + 1 has credit
-   (Section 10.5): hop i waits for hop i + 1 and never for anything
+   (API.md Appendix A): hop i waits for hop i + 1 and never for anything
    upstream of it.
 3. The last hop's credit is released when the nested receiver reads its
    pipe. Every endpoint reads every pipe continuously, whatever its
    application does (SPEC.md Section 9.1), never lets a read wait behind a
-   write, and holds only what the nested
+   write (IMPLEMENTATION.md Section 2.3), and holds only what the nested
    session's own credit allows, which the nested peer cannot exceed.
 
 Each chain of waits therefore ends at a reader that does not wait.
@@ -799,7 +904,7 @@ Chains meet in the outer sessions' shared session credit. A relay that
 cannot forward a stream (its downstream gives no capacity) stops reading
 it, and the stream then holds its receive window in the outer session.
 Below the buffer cap of SPEC.md Section 8.3 rule 4 that slows no other
-stream, but stalled streams whose windows had grown can fill the cap,
+stream, but stalled streams whose windows had auto-tuned can fill the cap,
 and then every stream of that outer session waits for session credit,
 other nested pipes and other relayed streams included. What ends such a
 wait depends on what the stalled streams carry:
@@ -807,7 +912,7 @@ wait depends on what the stalled streams carry:
 - **Carrier streams.** A lasting stall is a stall of a nested pipe, which
   the nested session detects like any stalled pipe (MULTIPATH.md Section
   7.1) and fails: it aborts the pipe, the reset travels hop by hop without
-  waiting for capacity (Section 10.5), every hop releases the
+  waiting for capacity (API.md Appendix A.2), every hop releases the
   session credit of the lost bytes at once (SPEC.md Section 8.3), and the
   nested session reinjects the pipe's unacknowledged data on its other
   pipes. An outer session that carries only carrier streams is therefore
@@ -822,7 +927,8 @@ wait depends on what the stalled streams carry:
   deadlock.
 
 Relays keep stalled streams from reaching the cap either by bounding the
-receive windows of the streams they splice so that the streams that may stall together stay below the
+receive windows of the streams they splice (`SetReceiveWindow`, API.md
+Section 5.1) so that the streams that may stall together stay below the
 outer session's buffer cap, or, more simply, by carrying carrier streams
 and streams relayed hop by hop, or traffic classes that must not block one
 another, over separate outer sessions. A cycle of waits through several
@@ -831,15 +937,48 @@ session's failure detection for carrier streams and with the application
 for streams relayed hop by hop; no rule of the protocol makes it
 permanent.
 
-### 10.4 Overhead
+**Double auto-tuning.** Each hop sizes its windows from its own rate and
+RTT, the nested session from its rate and end-to-end RTT (SPEC.md Section
+8.3 rule 6). They do not feed each other as long as the nested sender's
+limiter bounds what it has in flight on the pipe to about 2 x R_p x
+(RTT_base + B): the hops then never hold more than that, and their windows
+grow only with what the relay consumes. Without the limiter the nested
+sender fills whatever the hops let it, the hop windows grow with the queue,
+ and the queue grows with the windows, which delays failure detection on
+the pipe by seconds.
 
-Every nested record is outer stream data, so it pays a second STREAM frame
-header and record Size. The nested session's PIPE_ACK travels end to
-end as outer stream data, and each hop acknowledges its own pipes as usual.
+**Memory.** A relay holds, per relayed stream direction, at most the
+upstream stream's receive window, plus what the downstream stream holds
+unsent within its peer's credit, plus one splice chunk (API.md Appendix
+A.2); all are bounded by the outer sessions' windows and memory budgets
+(API.md Section 4.4). A nested
+endpoint holds the nested session's usual bounds (retained data within the
+retransmit budget, SCHEDULER.md Section 13.1; receive memory by SPEC.md
+Section 8.3 rule 4) plus the outer streams' buffers. Retention is stacked
+too: the nested session retains end to end what its pipes have not
+acknowledged, and a multipath hop retains its own unacknowledged bytes.
+
+### 10.4 Overhead and performance
+
+**Framing.** Every nested record is outer stream data, so it pays a second
+STREAM frame header and record Size. For bulk data in nested records of
+16 366 bytes of data (16 382 bytes of frames, the TLS-sized record of
+SPEC.md Section 3.3), each carried in one outer record (16 382 bytes below
+1 GiB of stream offset, with a 2-byte outer Size; 16 392 above, with a
+4-byte Size and 8-byte offsets at both levels), the overhead is 0.098 % to
+0.159 %, against 0.049 % to 0.073 % on a direct carrier; a 100-byte message in a record of
+its own costs 16 bytes instead of 8. The nested session's PIPE_ACK (about
+10 bytes per 64 KiB, MULTIPATH.md Section 3.5) travels end to end as outer
+stream data (8 more bytes when it is alone in an outer record), and each
+hop acknowledges its own pipes as usual. Each hop's carrier adds its own
+protection overhead (for TLS about 22 bytes per 16 KiB record).
+
+CONFORMANCE.md Section 4.5 (NS-1 to NS-6) gives the targets for nested
+sessions.
 
 ### 10.5 Relays
 
-Relays SHOULD splice the stream's data verbatim and
+Relays SHOULD splice the stream's data verbatim (API.md Appendix A) and
 SHOULD NOT parse the nested session's records:
 
 - the data is forwarded without copying and without per-nested-stream
@@ -853,7 +992,7 @@ SHOULD NOT parse the nested session's records:
 The price is visibility: a relay sees one stream per nested pipe and its
 bytes, which include the nested session's framing, acknowledgements,
 reinjected data and redundant copies. Exact application byte counts exist
-only at the nested session's endpoints. An application
+only at the nested session's endpoints (API.md Section 7). An application
 that needs per-stream metadata or exact per-stream accounting at a relay
 relays those streams hop by hop instead (one outer stream per application
 stream, spliced at each relay, with the metadata of Section 4.7), and gives
@@ -861,7 +1000,7 @@ up end-to-end migration for them. Both can run side by side over the same
 outer sessions.
 
 A relay that forwards a carrier stream opens the next hop's stream with
-PIPE_CARRIER as well, so that the last hop can tell
+PIPE_CARRIER as well (API.md Appendix A.2), so that the last hop can tell
 it apart. A relay forwards data from one hop to the next only while the
 next hop has credit. It forwards a plain reset or a STOP_SENDING with its
 code to the other side at once, and on the loss of one side's session
@@ -874,7 +1013,8 @@ with RESET_STREAM_AT, the same code and a Reliable Size covering the
 forwarded bytes in the downstream stream's offsets (its preamble
 included); when the downstream session does not use RESET_STREAM_AT (a
 plain QMux peer that did not announce it), it resets with RESET_STREAM once
-the forwarded bytes have been passed to the carrier.
+the forwarded bytes have been passed to the carrier. API.md Appendix A.2
+describes a helper that does this.
 
 ---
 

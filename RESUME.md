@@ -1,8 +1,8 @@
 # zmux Resume
 
-Resume is part of the zmux core protocol (SPEC.md Section 12). It builds on
-MULTIPATH.md: it is available only in multipath sessions and reuses
-PIPE_JOIN, PIPE_ACK, PIPE_ABANDON and the reinjection rules.
+Status: normative, part of the zmux core protocol (SPEC.md Section 12).
+Resume builds on MULTIPATH.md: it is available only in multipath sessions and
+reuses PIPE_JOIN, PIPE_ACK, PIPE_ABANDON and the reinjection rules.
 
 ---
 
@@ -29,8 +29,8 @@ the SUSPENDED state, the grace timer and the fail-closed rules.
   while the other still has pipes, for example when only the uplinks died.
   The other endpoint keeps sending until its own failure detection
   (MULTIPATH.md Section 7.1) fails its outbound pipes, and then suspends too.
-- Retained information is exactly the multipath retention of MULTIPATH.md
-  Section 11 rule S4: everything not yet acknowledged.
+- Retained information is exactly the multipath retention of SCHEDULER.md
+  Section 13.1: everything not yet acknowledged.
 - Positions are zmux-level counts of processed records (MULTIPATH.md Section
   6.1). After all pipes are lost, a receiver's final positions say exactly
   which information arrived; everything beyond them is re-sent.
@@ -59,7 +59,7 @@ could rejoin). The grace period of the session is the smaller of the two
 Resume Grace values.
 
 zmux implementations send `zmux_resume` when the application sets a resume
-timeout. A server that accepts resume SHOULD also accept
+timeout (API.md Section 6). A server that accepts resume SHOULD also accept
 joins (non-empty locator).
 
 ---
@@ -81,7 +81,7 @@ On entry the endpoint:
 
 1. stops the idle timer and any keep-alive (SPEC.md Section 6.4);
 2. starts the grace timer, which expires at entry time plus the grace period;
-3. reports a suspension event to the application;
+3. reports a suspension event to the application (API.md Section 5.5);
 4. keeps all stream, flow-control and retained state.
 
 The grace timer is started once per suspension. Joins that are attempted and
@@ -92,8 +92,7 @@ cannot keep a dead session alive beyond the grace period.
 ### 4.2 Behaviour while suspended
 
 - Application writes are accepted into send buffers until stream or session
-  flow control, the bound on retained data (MULTIPATH.md Section 11 rule
-  S4) or the local
+  flow control, the retransmit budget (SCHEDULER.md Section 13.1) or the local
   send buffer limit is reached; then they block. Writes never fail because the
   session is suspended.
 - Reads wait for data. Application deadlines and cancellations apply as usual.
@@ -106,16 +105,16 @@ cannot keep a dead session alive beyond the grace period.
 - Frames that cannot be sent for lack of an outbound pipe (PIPE_ABANDON for
   the failed attachments, limit updates, PIPE_ACK, GOAWAY) are kept as
   coalesced state (SPEC.md Section 9.2) and sent on the next live outbound
-  pipe (JOINING or ACTIVE, MULTIPATH.md Section 11 rule S1).
+  pipe (JOINING or ACTIVE, MULTIPATH.md Section 11.1 rule S1).
 
 An endpoint may be suspended in one direction only (Section 2):
 
 - **No inbound pipe, live outbound pipes.** The endpoint keeps using its
   outbound pipes as in ACTIVE: it sends stream data, credit and other frames
-  within flow control and the bound on retained data, so that a peer that can
-  still read receives them. Because no acknowledgement can reach it, it marks no outbound pipe suspect or failed for lack of acknowledgement
-  progress (carrier errors and write stalls still count, MULTIPATH.md
-  Section 7.1). It keeps sending PIPE_ACK snapshots on them
+  within flow control and the retransmit budget, so that a peer that can
+  still read receives them. Because no acknowledgement can reach it, it does
+  not fail outbound pipes for lack of acknowledgement progress
+  (MULTIPATH.md Section 7.1). It keeps sending PIPE_ACK snapshots on them
   (MULTIPATH.md Section 6.3), so the peer learns its final positions.
 - **No outbound pipe, live inbound pipes.** The endpoint keeps reading and
   processing its inbound pipes and delivering data to the application; what
@@ -126,20 +125,21 @@ An endpoint may be suspended in one direction only (Section 2):
 Either endpoint may join new pipes while suspended, using MULTIPATH.md
 Section 5 unchanged; in practice the endpoint that can reach the other's
 listener (usually the initiator) does it, possibly driven by an
-application-supplied redial hook. A rejoining endpoint
+application-supplied redial hook (API.md Section 5.5). A rejoining endpoint
 joins a direction it lacks: an endpoint without a live inbound pipe joins a
 down or bidi attachment, and one without a live outbound pipe joins an up or
 bidi attachment. The peer may lack a direction too, for example an acceptor
 whose only outbound pipe was the downlink that failed: an up attachment
 alone cannot be acknowledged then. A joiner whose rejoined up attachment has
-not become ACTIVE within the time after which it would mark that pipe
-suspect (MULTIPATH.md Section 7.1) SHOULD therefore also join a down or
+not become ACTIVE within that pipe's T_suspect (MULTIPATH.md Section 7.1;
+about 2 s with the initial estimates) SHOULD therefore also join a down or
 bidi attachment. A joiner that knows its carriers are split, so that a lost
 direction is always paired with a lost peer direction (uplinks and downlinks
 through a CDN, an HTTP POST body and a GET response), SHOULD instead join an
 up and a down attachment in parallel from the start, which saves that wait.
-An inbound pipe that stays open but silent fails (MULTIPATH.md Section 7.3),
-after which the endpoint lacks that direction and rejoins it.
+An inbound pipe that stays open but silent is failed by the inbound silence
+rule of MULTIPATH.md Section 7.3, after which the endpoint lacks that
+direction and rejoins it.
 
 Rejoining needs no grant from the peer: the joiner takes fresh pipe IDs
 (MULTIPATH.md Section 4.1), and connection attempts cost the acceptor
@@ -219,8 +219,12 @@ from that queue; everything else is sent on the new pipes, before new data.
 
 An endpoint MAY start reinjecting as soon as it has a new outbound pipe:
 while the pipe is JOINING and no other pipe is usable it may carry stream
-data like an ACTIVE pipe (MULTIPATH.md Section 11 rule S1), and duplicates
-are harmless.
+data like an ACTIVE pipe (MULTIPATH.md Section 11.1 rule S1), and duplicates
+are harmless. To avoid re-sending large amounts of data the peer already
+has, it SHOULD wait, up to one smoothed RTT of that pipe (333 ms before its
+first sample), for the first PIPE_ACK received after the pipe became live
+before reinjecting more than one chunk per pipe. New stream data does not
+wait.
 
 ---
 
@@ -235,8 +239,7 @@ ZMUX_RESUME_FAILED, and MUST NOT attempt to continue, when:
    the PROTOCOL_VIOLATION of MULTIPATH.md Section 6.2);
 2. information that must be re-sent from an acknowledged position is no
    longer available (the gap exceeds the retained data). With the retention
-   rule of MULTIPATH.md Section 11 rule S4 this happens only after state
-   loss.
+   rule of SCHEDULER.md Section 13.1 this happens only after state loss.
 
 If no pipe is available to carry CONNECTION_CLOSE, the endpoint closes
 locally. In every case the application sees ZMUX_RESUME_FAILED and knows that
@@ -254,18 +257,32 @@ its listener, so later joins fail at locator lookup (MULTIPATH.md Section
 5.4 step 3) and the peer learns that it must start a new session.
 
 A server that lost its state (for example after a restart) cannot resume
-any session; joins for its old locators fail in the same way.
+any session; joins for its old locators fail in the same way. A listener
+that answers unknown joins (MULTIPATH.md Section 5.4 step 3) tells the
+joiner so at once, and a suspended joiner then closes with
+ZMUX_RESUME_FAILED without waiting for its grace period (MULTIPATH.md
+Section 5.7 step 6).
 
 ---
 
 ## 9. Server limits
 
-A listener MUST bound the resources held by suspended sessions: their
-number, the total bytes they hold (retained data, unread received data,
-reassembly buffers and queued datagrams together), and the pending carriers
-per session and per listener (MULTIPATH.md Section 5.6). When a limit would
-be exceeded, the listener closes suspended sessions, the longest-suspended
-first, with ZMUX_RESUME_TIMEOUT.
+A listener MUST bound the resources held by suspended sessions:
+
+- the number of suspended sessions (RECOMMENDED default 1024 per listener);
+- the total bytes that suspended sessions hold, retained (unacknowledged)
+  data, unread received data, reassembly buffers and queued datagrams
+  together (RECOMMENDED default 256 MiB per listener);
+- the pending carriers per session and per listener (MULTIPATH.md Section
+  5.6).
+
+The defaults suit paths up to about 1 Gbit/s at 100 ms; on longer or faster
+paths a suspended session can hold its whole send buffer and receive
+windows, and the total is configured accordingly (IMPLEMENTATION.md Section
+6.5). When a limit would be exceeded, the listener closes suspended
+sessions, the longest-suspended first, with ZMUX_RESUME_TIMEOUT. Deployments SHOULD also
+count suspended sessions in per-client quotas: otherwise "open a session,
+then disappear" is a cheap way to hold server memory.
 
 ---
 
@@ -319,7 +336,10 @@ first, with ZMUX_RESUME_TIMEOUT.
 - A secret mismatch between the endpoints shows as join authentication
   failures at the acceptor (MULTIPATH.md Section 5.4 step 5); the joiner
   learns of it only when the grace period expires.
-- Suspended sessions cost memory; Section 9 bounds it. Deployments SHOULD
-  also count suspended sessions in per-client quotas.
+- The answer to an unknown join (MULTIPATH.md Section 5.4 step 3) is
+  sent only after admission and only for a locator of the answering
+  instance; a forged one on an unprotected carrier ends a suspension no
+  earlier than dropping the joins would.
+- Suspended sessions cost memory; Section 9 bounds it.
 - The grace period lets a session outlive its carriers. Applications that
   need prompt failure reporting should keep the grace period short.

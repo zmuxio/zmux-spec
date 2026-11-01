@@ -29,7 +29,9 @@ from zmuxwire.varint import DecodeError  # noqa: E402
 ERRORS = []
 CHECKS = {"registry": 0, "examples": 0, "corpus": 0, "traces": 0, "steps": 0, "docs": 0}
 
-DOCS = ["README.md", "SPEC.md", "MULTIPATH.md", "RESUME.md", "EXTENSIONS.md", "STATE_MACHINE.md", "REGISTRY.md", "WIRE_EXAMPLES.md", "CONFORMANCE.md", "TRACES.md"]
+DOCS = ["README.md", "ARCHITECTURE.md", "SPEC.md", "MULTIPATH.md", "SCHEDULER.md", "RESUME.md", "EXTENSIONS.md",
+        "STATE_MACHINE.md", "REGISTRY.md", "CONFORMANCE.md", "TRACES.md", "WIRE_EXAMPLES.md",
+        "IMPLEMENTATION.md", "API.md"]
 
 
 def fail(msg):
@@ -82,13 +84,14 @@ def check_docs():
             doc, sec = m.group(1), m.group(2)
             if doc in DOCS and not ref_ok(f"{doc}#{sec}"):
                 fail(f"docs: {d} references {doc} Section {sec}, which does not exist")
-        for m in re.finditer(r"\b([A-Z_]+\.md)\b", flat):
+        for m in re.finditer(r"\b([A-Z_-]+\.md)\b", flat):
             if not (ROOT / m.group(1)).exists():
                 fail(f"docs: {d} mentions missing {m.group(1)}")
         CHECKS["docs"] += 1
     # unqualified "Section N" inside a document must exist in that document
-    for d in ["SPEC.md", "MULTIPATH.md", "RESUME.md", "EXTENSIONS.md", "STATE_MACHINE.md",
-              "TRACES.md", "CONFORMANCE.md", "REGISTRY.md"]:
+    for d in ["SPEC.md", "MULTIPATH.md", "SCHEDULER.md", "RESUME.md", "EXTENSIONS.md", "STATE_MACHINE.md",
+              "TRACES.md", "CONFORMANCE.md", "REGISTRY.md", "IMPLEMENTATION.md", "API.md",
+              "ARCHITECTURE.md"]:
         if not (ROOT / d).exists():
             continue
         raw = read(d)
@@ -374,7 +377,8 @@ OPS = {
 CALLS = {"open_bidi", "open_uni", "accept_bidi", "accept_uni", "write", "finish", "reset", "stop",
          "read", "release", "reject", "set_priority", "set_peer_priority", "send_datagram",
          "recv_datagram", "ping", "shutdown", "close", "add_pipe", "remove_pipe",
-         "set_pipe_status", "stream_id", "set_reliable_boundary"}
+         "set_pipe_status", "set_scheduler", "stream_id", "set_reliable_boundary",
+         "revalidate_pipes", "set_redundant"}
 EVENTS = {"established", "goaway_received", "pipe_state", "join_auth_failed", "suspended",
           "resumed", "datagram_dropped", "closed", "oob_join"}
 LOCAL_REASONS = {"HANDSHAKE_TIMEOUT", "IDLE_TIMEOUT", "PIPES_LOST", "EARLY_DATA_REJECTED"}

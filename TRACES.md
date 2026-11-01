@@ -1,7 +1,9 @@
 # zmux Executable Traces
 
-This document defines the trace format in `fixtures/traces/` and what a trace
-runner must do (CONFORMANCE.md Section 3).
+Status: normative for conformance claims (CONFORMANCE.md Section 3). This
+document defines the trace format in `fixtures/traces/` and what a trace
+runner must do. Every implementation ships a trace runner and passes every
+trace.
 
 ---
 
@@ -22,8 +24,10 @@ under test), against a scripted **peer**. The runner:
   steps, and the runner fires every local timer that is due.
 
 The runner does not interpret the peer's behaviour: the peer's bytes are
-fully scripted. With lanes, delivered and collected bytes name the lane
-too, and a new inbound stream is handed over with its carrier connection
+fully scripted. A sans-IO core (IMPLEMENTATION.md Section 2) makes the runner
+a thin layer: `receive(pipe, bytes)`, API calls, `poll_transmit(pipe)`,
+`handle_timeout(now)`; with lanes, `receive` and `poll_transmit` name the
+lane too, and a new inbound stream is handed over with its carrier connection
 (Section 5.1.1).
 
 ---
@@ -34,7 +38,7 @@ too, and a new inbound stream is handed over with its carrier connection
 |---|---|
 | `fixtures/profiles.json` | local endpoint profiles |
 | `fixtures/traces/<group>/<name>.ndjson` | one trace per file |
-| `fixtures/traces/index.json` | every trace id with its file, title, references, profile and step count |
+| `fixtures/traces/index.json` | every trace id with its file, groups and references |
 | `fixtures/wire/valid.ndjson`, `fixtures/wire/invalid.ndjson` | the wire corpus (CONFORMANCE.md Section 5) |
 
 Every trace file is NDJSON: one JSON object per line. The first line is the
@@ -59,33 +63,42 @@ are lowercase hex.
 
 - **tp**: the exact transport parameters the local endpoint sends, besides
   the GREASE parameter. Values follow the formats of REGISTRY.md Section 4:
-  integers, `null` for empty values, and objects for `zmux_role`
-  (`{"role": name, "nonce": n}`), `zmux_multipath` (`{"flags": n, "nonce":
-  hex, "locator": hex}`) and `zmux_max_lanes` (`{"max_lanes": n,
-  "lane_key": hex}`), as in WIRE_EXAMPLES.md. Some values are below what an
-  application can configure (for example `zmux_preamble`, `zmux_ack_threshold` and
+  integers, `null` for empty values, objects for `zmux_role`,
+  `zmux_multipath` and `zmux_max_lanes` (`{"max_lanes": n, "lane_key": hex}`). Some values are below what the API lets an application
+  configure (for example `zmux_preamble`, `zmux_ack_threshold` and
   `max_datagram_frame_size`, and the windows, stream limit and preamble limit
   below the early-data floor of SPEC.md Section 6.1.2), so that traces stay
   small; the runner sets them through the test hooks of Section 3.3. The
   scripted peers of many traces advertise less than the floor as well, or
   omit parameters every zmux endpoint sends (`zmux_pipe_ack`), which a
   receiver does not check unless it sent early data.
-- **config**: local settings that are not transport parameters:
-  `handshake_timeout`, `keep_alive_period` and `resume_timeout`
-  (milliseconds), `max_pipes`, `enable_datagrams`,
-  `max_incoming_uni_streams`, `role` (`initiator`, `responder` or `auto`:
-  the role the application asks for at session creation), `early_data` (an object with
-  `zmux_peer`, the declaration that the peer is a zmux endpoint, and
-  `replayable`, booleans; absent means both false; the in-memory carriers
-  have no early data of their own, so traces exercise only the zmux floor),
-  `pipe_auth` as
-  an object with `psk` (hex), and the local sender settings of the
-  multipath profiles: `sender` `test-mode`, the sender of Section 3.4.
-  `max_incoming_uni_streams` set to a number is the
-  explicit configuration (the profile's `initial_max_streams_uni` equals
-  it); `null` means unset, that is staged unidirectional credit (SPEC.md
-  Section 8.5 rule 4): the profile then sends `initial_max_streams_uni` 16
-  and the endpoint raises it to 256 on the first `accept_uni`.
+- **config**: local settings that are not transport parameters, with the
+  names of API.md Section 6 (`handshake_timeout`, `keep_alive_period`
+  (every profile sets it to 0, off, except in the traces that test it),
+  `max_pipes`, `scheduler`, `resume_timeout`, `enable_datagrams`,
+  `max_incoming_uni_streams`), the scheduler parameters `suspect_floor`,
+  `dead_timeout`, `probation` and `overflow_delay` in milliseconds (API.md
+  Sections 4.2 and 6, the session-wide defaults that also apply to pipe 0;
+  absent or `null` means the default of MULTIPATH.md and SCHEDULER.md, and the multipath
+  profiles set `probation` to 0, disabling it, except in the traces that
+  test it), the scheduler parameter `redundancy` (`urgent` or `off`, API.md
+  Section 6; the multipath profiles set it to `off`, so that a trace sees
+  each chunk once, except in the traces that test SCHEDULER.md Section 4.1),
+  `standby_probe` in milliseconds (MULTIPATH.md Section 7.1; the multipath
+  profiles set it to 0, the 15 s probe interval, except in the traces that
+  test it), `probe_jitter` (MULTIPATH.md Section 7.1; every profile sets it to 0, so
+  that every probe wait is the probe interval and every keep-alive wait the
+  keep-alive period, SPEC.md Section 6.4, and traces can name the moment of
+  each probe and keep-alive), plus
+  `role` (`initiator`,
+  `responder` or `auto`: the role argument of session creation, API.md
+  Section 3), `early_data` (object with `zmux_peer` and `replayable`, booleans, API.md Section 6; absent means both false; the in-memory carriers have no early data of their own, so traces exercise only the zmux floor) and
+  `pipe_auth` as an object with `psk` (hex).
+  `max_incoming_uni_streams` set to a number is the explicit
+  configuration (the profile's `initial_max_streams_uni` equals it); `null`
+  means unset, that is staged unidirectional credit (SPEC.md Section 8.5
+  rule 4): the profile then sends `initial_max_streams_uni` 16 and the
+  endpoint raises it to 256 on the first `accept_uni`.
 - **test**: test hooks (Section 3.3).
 
 A trace header may override individual entries. `zmux-default` is the base
@@ -103,7 +116,7 @@ be reachable from production configuration:
 
 | Hook | Effect |
 |---|---|
-| (transport parameters) | the local endpoint sends exactly the `tp` values of the profile, including values that are internal constants in production |
+| (transport parameters) | the local endpoint sends exactly the `tp` values of the profile, including values that are internal constants in production (API.md Section 6) |
 | `grease_tp` `{id, value}` | the GREASE transport parameter to send (SPEC.md 5.2 rule 6) |
 | `grease_tlv` `{type, value}` | the GREASE TLV to put last in the first preamble (EXTENSIONS.md 4.3); in test mode no other preamble carries a GREASE TLV, and the other TLVs of a preamble are written in increasing type order |
 | `session_nonce` | the 16-byte `zmux_multipath` Session Nonce |
@@ -114,14 +127,17 @@ be reachable from production configuration:
 | `pipe_rtt_ms` | `{pipe: ms}`: the initial smoothed RTT of particular pipes, overriding `rtt_ms`, for traces that depend on which pipe has the lowest one-way delay |
 | `pipe_cap` | the number of unretired attachments of the peer that the local endpoint keeps (instead of max_pipes + H, MULTIPATH.md 5.4 step 9); an authenticated join beyond it is refused with PIPE_ABANDON(ZMUX_PIPE_RESOURCE_LIMIT) (MULTIPATH.md 5.4 step 7), which makes the resource-exhaustion path deterministic |
 
-These choices are fixed in test mode, without a hook:
+Three SHOULD/MAY choices are fixed in test mode, without a hook:
 
-- the local endpoint puts no QX_PING request in its first record;
-- a carrier attached with `conn` (Section 5.1.1) belongs to a connection
-  whose streams are delivered independently and whose stream credit never
-  runs out, so the local endpoint opens lanes on it as Section 3.4 says,
-  within the peer's `zmux_max_lanes` and MULTIPATH.md Section 5.8; a
-  carrier without `conn` offers no lanes;
+- the runner's carriers count as reporting a carrier minimum RTT, so the
+  local endpoint puts no QX_PING request in its first record (SPEC.md 8.3
+  rule 6);
+- a carrier attached with `conn` (Section 5.1.1) belongs to a
+  connection whose streams are delivered independently and whose stream
+  credit never runs out, so the local endpoint opens lanes on it exactly
+  when SCHEDULER.md Section 9.2 calls for one, within the peer's
+  `zmux_max_lanes` and MULTIPATH.md Section 5.8; a carrier without `conn`
+  offers no lanes;
 - a local endpoint that accepts carriers waits for the first record's
   prefix before it sends its transport parameters (the MAY of SPEC.md 13.2
   rule 7), so it never writes a leading QX_TRANSPORT_PARAMETERS record on a
@@ -130,61 +146,6 @@ These choices are fixed in test mode, without a hook:
 
 Everything else the local endpoint sends is determined by the specification
 and the trace, except where an expectation uses a wildcard.
-
-### 3.4 Test-mode sender
-
-The settings of this section are harness settings, not protocol
-requirements: they bind only an endpoint running in test mode, so that
-traces can predict choices that the protocol leaves to the sender (which
-pipe and lane carry a frame, and when a pipe is judged suspect or failed).
-They apply to every profile; the pipe choice and detection rules matter
-only for the multipath profiles (`"sender": "test-mode"`).
-
-- **Estimates.** For each outbound pipe, smoothed_rtt, rttvar and min_rtt
-  as RFC 9002 Section 5 defines them, starting from the `rtt_ms` or
-  `pipe_rtt_ms` hook (rttvar half of it), sampled from PIPE_ACK entries
-  that advance the pipe's acknowledged position (MULTIPATH.md Section 2.5)
-  and newly acknowledge an ack-eliciting byte; R_p, the delivery rate, is
-  1 MB/s until its first sample. OWD_p = min_rtt_p - (the smallest min_rtt
-  of the live outbound pipes) / 2 once p has an RTT sample, and
-  smoothed_rtt_p / 2 before.
-- **Pipe choice.** New stream data is cut into chunks of at most 16 KiB;
-  each chunk goes to the usable pipe (MULTIPATH.md Section 9) of the
-  most-preferred tier with the smallest ETA_p(L) = (Q_p + L) / R_p + OWD_p,
-  Q_p being the bytes committed to p and not yet written, ties going to the
-  pipe that has the write opportunity. Frames are bound to a pipe only when
-  it is written. Control frames follow the control order of MULTIPATH.md
-  Section 6.5. The traces keep data small enough that no slower pipe is
-  needed.
-- **Lanes.** Lane 0 carries the control frames (SPEC.md Section 1.4) and
-  PIPE_PING. Each stream direction is bound, when it next has data for the pipe, to the
-  confirmed lane other than lane 0 with the fewest bound stream directions,
-  then the fewest unacknowledged bytes, until none of its data on the pipe
-  is unacknowledged; when every such lane has a bound stream direction, the
-  endpoint opens a further lane, as the peer's L allows.
-- **Control order.** Among the ACTIVE pipes of the most-preferred tier
-  (MULTIPATH.md Section 6.5), the lowest OWD_p first.
-- **Probes.** In test mode, pipe pairs are also probed when no
-  ack-eliciting byte has been sent on them for 15 s.
-- **Detection.** PTO = smoothed_rtt + max(4 x rttvar, 1 ms) + the peer's
-  `zmux_max_ack_delay`. A pipe is suspect after an ack stall or write stall
-  (MULTIPATH.md Section 7.1) of max(250 ms, 2 x PTO), and fails after a
-  stall of max(2 s, 8 x PTO) while another outbound pipe is ACTIVE. The
-  last outbound pipe of a direction fails from a stall only after
-  max(max(250 ms, 2 x PTO), D), where D is max(2 s, 8 x PTO) with resume in
-  use and max(2 s, 8 x PTO, half the effective idle timeout) without (the
-  idle timeout counting as 30 s when there is none). A write stall is
-  measured from the moment bytes wait for a carrier that is not writable.
-  As MULTIPATH.md Section 7.1 requires, acknowledgement stalls count only
-  while the endpoint has a live inbound pipe.
-- **Nothing optional.** Every pipe that joins or returns from SUSPECT may
-  take new stream data at once (no probation), no redundant copies (MULTIPATH.md
-  Section 7.5 exception 3), no opportunistic reinjection (MULTIPATH.md
-  Section 7.5.1), and no PIPE_PING beyond those MULTIPATH.md requires or
-  recommends (CONFORMANCE.md C-5) and the probes above.
-
-An implementation whose production sender differs provides this one in test
-mode, like the hooks of Section 3.3.
 
 ---
 
@@ -260,24 +221,28 @@ in `args.stream`. `expect` is the required result (Section 5.5).
 |---|---|---|
 | `open_bidi`, `open_uni` | `open_info` (hex), `priority` `{urgency, incremental}` | `{"ok": true}`; `priority` only sets the PRIORITY TLV of the preamble (a request to the peer), not local scheduling |
 | `accept_bidi`, `accept_uni` | | `{"stream": id, "open_info": hex, "priority": {...}, "pipe_carrier": bool, "app_tlvs": [{"type": n, "value": hex}, ...]}` or `{"pending": true}`; `app_tlvs` lists the application TLVs in the order received (EXTENSIONS.md 4.3, 4.4) |
-| `write` | `stream`, `data` (hex) or `fill` (`{"len": n, "byte": b}`: n copies of byte b, for large writes), `fin` (bool) | `{"accepted": n}`: the bytes taken into the send buffer. Writes never block in traces: the send buffer (4 MiB in test mode) is larger than the data of any trace, so `n` is the data length unless the stream already failed |
+| `write` | `stream`, `data` (hex) or `fill` (`{"len": n, "byte": b}`: n copies of byte b, for large writes), `fin` (bool) | `{"accepted": n}`: the bytes taken into the send buffer. Writes never block in traces: the send buffer (API.md Section 6, default 4 MiB) is larger than the data of any trace, so `n` is the data length unless the stream already failed |
 | `stream_id` | `stream` | `{"stream": id}`; reading the identifier pins it (SPEC.md 7.2) |
-| `set_reliable_boundary` | `stream` | `{"ok": true}`; the data written so far must be delivered even if the stream is reset later (the RESET_STREAM_AT Reliable Size) |
+| `set_reliable_boundary` | `stream` | `{"ok": true}`; the data written so far must be delivered even if the stream is reset later (RESET_STREAM_AT Reliable Size, API.md 5.1) |
 | `finish` | `stream` | `{"ok": true}` |
 | `reset` | `stream`, `code` | `{"ok": true}` |
 | `stop` | `stream`, `code` | `{"ok": true}` |
 | `read` | `stream`, `max` | `{"data": hex, "fin": bool}` or `{"pending": true}` |
 | `release` | `stream` | `{"ok": true}`; drops every handle without finishing: an unfinished sending part is reset and an unread receiving part is stopped, both with code 0 (EXTENSIONS.md 7.4) |
 | `reject` | `stream` | `{"ok": true}`; declines an accepted stream before reading (EXTENSIONS.md 7.2) |
-| `set_peer_priority` | `stream`, `urgency`, `incremental` | `{"ok": true}`; a priority request to the peer: the PRIORITY TLV before a local stream's first frame (first write or pinning), PRIORITY_UPDATE otherwise |
-| `send_datagram` | `data`, optional `stream`, `context` | `{"ok": true}`; without `stream` a session datagram (Flow 0), with `stream` a datagram of the stream's flow (Flow = stream ID + 1) |
+| `set_priority` | `stream`, `urgency`, `incremental` | local scheduling only |
+| `set_peer_priority` | `stream`, `urgency`, `incremental` | `{"ok": true}`; the API of the same name (API.md 5.1): the PRIORITY TLV before a local stream's first frame (first write or pinning), PRIORITY_UPDATE otherwise |
+| `send_datagram` | `data`, optional `stream`, `context` | `{"ok": true}`; without `stream` a session datagram (Flow 0), with `stream` the stream's datagram method (Flow = stream ID + 1, API.md 5.6) |
 | `recv_datagram` | optional `stream` | `{"data": hex}` from the session queue, or `{"data": hex, "context": n}` from the stream's queue; `{"pending": true}` when the queue is empty |
 | `ping` | | `{"ok": true}`; sends a QX_PING request, or, while a request is outstanding, joins it and sends nothing (SPEC.md 4.5) |
 | `shutdown` | `code` | graceful close: the two-phase GOAWAY when it is in use (EXTENSIONS.md 3.3), then CONNECTION_CLOSE once no stream remains (SPEC.md 6.7) |
-| `close` | `code`, `reason` (hex), `app` (always `true`) | `{"ok": true}`; the application closes the session with an application error code (SPEC.md Section 10.1: an application never chooses a transport code, so there is no trace step for a transport close; `app` stays for clarity and MUST be `true`) |
-| `add_pipe` | `pipe`, `dir`, `fate_group`, `oob` (bool), `carrier_bound` (bool), optional `send_priority`, `receive_priority`, `send_standby`, `receive_standby` as in `set_pipe_status`; `receive_priority` and `receive_standby` go into the PIPE_JOIN as the initial request for the peer's outbound direction (MULTIPATH.md 5.1, 9) | `{"ok": true}`, or `{"pending": true}` when the endpoint may not join yet: it has max_pipes + H unretired attachments of its own (MULTIPATH.md 5.4 step 9) or is in the refusal backoff (MULTIPATH.md 5.7 step 1); it then joins with ID `pipe` once allowed. The runner attaches the carrier at the call either way |
+| `close` | `code`, `reason` (hex), `app` (always `true`) | `{"ok": true}`; the application closes the session with an application error code (SPEC.md Section 10.1: an application never chooses a transport code, so there is no API, and no trace step, for a transport close; `app` stays for clarity and MUST be `true`) |
+| `add_pipe` | `pipe`, `dir`, `fate_group`, `oob` (bool), `carrier_bound` (bool), optional `send_priority`, `receive_priority`, `send_standby`, `receive_standby`, `weight`, `probation` (ms) as in `set_pipe_status` and API.md 4.2 `PipeOptions`; `receive_priority` and `receive_standby` go into the PIPE_JOIN as the initial request for the peer's outbound direction (MULTIPATH.md 5.1, 9) | `{"ok": true}`, or `{"pending": true}` when the endpoint may not join yet: it has max_pipes + H unretired attachments of its own (MULTIPATH.md 5.4 step 9) or is in the refusal backoff (MULTIPATH.md 5.7 step 1); it then joins with ID `pipe` once allowed. The runner attaches the carrier at the call either way |
 | `remove_pipe` | `pipe`, `graceful` (bool) | `{"ok": true}` |
-| `set_pipe_status` | `pipe`, and any of `send_priority`, `receive_priority` (integers 0 to 2^62 - 1, lower preferred), `send_standby`, `receive_standby` (bool); `send_priority` or `send_standby` set to `null` clears the local setting | `{"ok": true}`; `send_priority` and `send_standby` set the local settings of the local outbound direction (no frame; `null` clears the setting, back to the peer's request, else the default); `receive_priority` and `receive_standby` change the request for the peer's outbound direction, which the endpoint sends at once as one PIPE_STATUS with the next sequence number, the current receive standby flag and receive priority, or, while the attachment is JOINING, once it is ACTIVE with the latest values (MULTIPATH.md 5.7 step 3, 9) |
+| `set_pipe_status` | `pipe`, and any of `send_priority`, `receive_priority` (integers 0 to 2^62 - 1, lower preferred), `send_standby`, `receive_standby` (bool), `weight` (integer); `send_priority` or `send_standby` set to `null` clears the local setting | `{"ok": true}`; the setters of API.md 4.2: `send_priority`, `send_standby` and `weight` apply to the local outbound direction (no frame; `null` = `ClearSendPriority` / `ClearSendStandby`, back to the peer's request, else the default); `receive_priority` and `receive_standby` change the request for the peer's outbound direction, which the endpoint sends at once as one PIPE_STATUS with the next sequence number, the current receive standby flag and receive priority, or, while the attachment is JOINING, once it is ACTIVE with the latest values (MULTIPATH.md 5.7 step 3, 9; SCHEDULER.md 10) |
+| `set_redundant` | `stream`, `redundant` (bool) | `{"ok": true}`; `SetRedundant` of API.md 5.1 for the stream's sending part (SCHEDULER.md 4.1) |
+| `revalidate_pipes` | optional `pipe` (absent: every live outbound pipe) | `{"ok": true}`; `RevalidatePipes` or `Revalidate` of API.md 4.2: a PIPE_PING at once, and the pipe awaits revalidation until it is acknowledged (SCHEDULER.md 11.1) |
+| `set_scheduler` | `policy` (`affinity`, `session-affinity`, `spread-eta`, `spread-round-robin`, `spread-rate-weighted`), optional `stream` (bind name: that stream's directions; absent: the session) | `{"ok": true}`; takes effect at the next chunk (SCHEDULER.md Section 12) |
 
 ### 5.4 Expectation steps
 
@@ -314,9 +279,7 @@ bytes come out, at the current virtual time.
 {"error": {"kind": "session", "space": "transport", "code": "FLOW_CONTROL_ERROR", "remote": false}}
 ```
 
-The kinds follow STATE_MACHINE.md Section 2.5, plus `too_large` (a datagram
-above what the peer accepts, EXTENSIONS.md Section 6.1) and `unsupported`
-(an operation of a feature that is not in use). A result object that contains
+The kinds follow STATE_MACHINE.md Section 2.5. A result object that contains
 only some fields matches any result with those fields.
 
 ### 5.6 Frame matching
@@ -370,7 +333,7 @@ frame. In `expect_state`, a pipe `state` may likewise be `{"oneof": [names]}`.
 | `oob_join` | `pipe`, `frame` (hex): the PIPE_JOIN the local endpoint asks its adapter to deliver out of band |
 | `goaway_received` | `max_bidi`, `max_uni`, `code`; reported only when a watermark is lowered |
 | `pipe_state` | `pipe`, `dir`, `state` |
-| `join_auth_failed` | `reason`: `mac`, or `mac_carrier_bound` when the token was carrier-bound (MULTIPATH.md 5.4 step 5) |
+| `join_auth_failed` | `reason`: `mac`, or `mac_carrier_bound` when the token was carrier-bound (MULTIPATH.md 5.4 step 5; API.md 4.3 `JoinAuthFailed`) |
 | `suspended`, `resumed` | |
 | `datagram_dropped` | `count` |
 | `closed` | `error` |
@@ -407,8 +370,7 @@ frame. In `expect_state`, a pipe `state` may likewise be `{"oneof": [names]}`.
 | RAW | `bytes`: inserted verbatim (only in `peer_send`, for malformed input) |
 | REPEAT | `count`, `frame`: `count` copies of `frame` (only in `peer_send`) |
 
-Error codes in frames are integers; in `expect_close` application codes are
-integers and transport codes are names from
+Error codes in frames are integers; in `expect_close` they are names from
 REGISTRY.md Section 6, or one of these local reasons with `"space": "local"`:
 
 - `HANDSHAKE_TIMEOUT`;
@@ -421,10 +383,11 @@ REGISTRY.md Section 6, or one of these local reasons with `"space": "local"`:
   endpoint closes with CONNECTION_CLOSE(NO_ERROR);
 - `PIPES_LOST`: the session ended because pipes were lost: a carrier failure
   outside multipath (with pipe acknowledgement, a graceful end of the peer's
-  pipe without CONNECTION_CLOSE included), or the loss of every pipe in a
-  direction without resume
+  pipe without CONNECTION_CLOSE included), or the loss of every pipe in a direction without resume
   (MULTIPATH.md 8.5), in which case the endpoint may also have sent
   CONNECTION_CLOSE(NO_VIABLE_PATH) on a remaining pipe.
+
+These map to the API termination kinds of API.md Section 5.3.
 
 ### 6.1 Placeholders
 

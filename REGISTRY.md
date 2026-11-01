@@ -1,6 +1,6 @@
 # zmux Registry
 
-This document lists every codepoint that zmux defines,
+Status: normative. This document lists every codepoint that zmux defines,
 uses or prohibits, the GREASE rules, and the policy for future registrations.
 The machine-readable form is [assets/registry.json](./assets/registry.json).
 Both are generated from `tools/zmuxwire/registry.py`; the tables between
@@ -33,7 +33,7 @@ the source agree, and that every zmux value obeys Section 2.
   (RFC 9000 Section 22); zmux only uses them as QUIC defines them.
 - zmux-allocated values lie in [2^14, 2^30): they encode in four bytes, are
   outside the QUIC Standards Action range, and avoid every IANA QUIC
-  registration at the time of allocation (RFC 9000 Section 22.1.2 recommends values of
+  registration as of 2026-10-10 (RFC 9000 Section 22.1.2 recommends values of
   2^14 and above, chosen at random).
 - Values at and above 2^30 (eight-byte encodings) are left to QUIC and QMux,
   which use them for provisional registrations (for example QMux's
@@ -88,28 +88,16 @@ A new frame type or transport parameter MUST:
 4. state the response state it creates and show that it is bounded (SPEC.md
    Section 9.2);
 5. not change the meaning of any existing codepoint.
+6. if it may be the first frame on a carrier (SPEC.md Section 6.2,
+   MULTIPATH.md Section 5.5), have a type whose encoding does not begin
+   with `03`, so that a Size of 0x16 is never followed by 0x03 and a first
+   record never begins with `16 03` (Section 8.2).
 
 ### 2.5 Experiments
 
 Experimental frames and parameters use randomly chosen eight-byte values
 (2^30 and above), are negotiated like any other extension, and are used only
 between endpoints under common control. They are never registered.
-
-### 2.6 Compatibility and versioning
-
-- Existing codepoints never change meaning, and transport parameters are
-  never renegotiated within a session.
-- A feature is in use only when both endpoints announced it, except where
-  the feature defines a unilateral capability (as DATAGRAM and
-  RESET_STREAM_AT do).
-- Reserved bits that must be zero stay zero; new semantics use new
-  parameters, not reserved bits. GREASE (Section 8) keeps the extension
-  points open.
-- zmux has no version field and no version negotiation: it is identified by
-  its first bytes (SPEC.md Section 6.2) and runs under the application's
-  ALPN identifiers. Additive changes are extensions. A change that alters
-  existing encodings (for example aligning with a published QMux RFC) is a
-  new protocol version with new ALPN identifiers.
 
 ---
 
@@ -191,12 +179,13 @@ multipath reinjection rule of MULTIPATH.md Section 7.4.
 | zmux_preamble | 0x0439e07a | zmux, varint | not supported | 4096 (less when the stream windows are smaller) | EXTENSIONS.md#4 |
 | zmux_priority | 0x31e7139d | zmux, empty | not supported | always | EXTENSIONS.md#5 |
 | zmux_datagram_flows | 0x0af391ed | zmux, empty | not supported | when datagrams are enabled | EXTENSIONS.md#6 |
-| zmux_multipath | 0x30dc2978 | zmux, multipath | not supported | when more than one pipe or resume is enabled | MULTIPATH.md#3 |
+| zmux_carrier_datagrams | 0x3d274c5f | zmux, empty | not supported | when datagrams are enabled and a pipe carrier can have a datagram channel | EXTENSIONS.md#6.8 |
+| zmux_multipath | 0x30dc2978 | zmux, multipath | not supported | when max_pipes > 1 or resume is enabled | MULTIPATH.md#3 |
 | zmux_pipe_ack | 0x34b47621 | zmux, empty | not supported | always | MULTIPATH.md#3.5 |
-| zmux_ack_threshold | 0x2762c7e5 | zmux, varint | 65536 | omitted (65536) | MULTIPATH.md#3.2 |
-| zmux_max_ack_delay | 0x17fa1ed6 | zmux, varint | 25 | omitted (25) | MULTIPATH.md#3.2 |
-| zmux_max_lanes | 0x27856ef0 | zmux, lanes | 1 lane (no lanes) | always: Max Lanes 258 and a random 16-byte Lane Key | MULTIPATH.md#3.6 |
-| zmux_resume | 0x0d5778ce | zmux, varint | not supported | the resume grace in ms when resume is enabled | RESUME.md#3 |
+| zmux_ack_threshold | 0x2762c7e5 | zmux, varint | 65536 | omitted (65536) | MULTIPATH.md#3 |
+| zmux_max_ack_delay | 0x17fa1ed6 | zmux, varint | 25 | omitted (25) | MULTIPATH.md#3 |
+| zmux_max_lanes | 0x27856ef0 | zmux, lanes | 1 lane (no lanes) | always: Max Lanes 258 (max_lanes) and a random 16-byte Lane Key | MULTIPATH.md#3.6 |
+| zmux_resume | 0x0d5778ce | zmux, varint | not supported | resume_timeout in ms when enabled | RESUME.md#3 |
 | zmux_record_protection | 0x1dbe26bc | zmux (reserved), opaque | not supported | never (reserved) | REGISTRY.md#7 |
 <!-- END GENERATED: transport_parameters -->
 
@@ -286,9 +275,8 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 |---|---|---|
 | record protection | transport parameter `zmux_record_protection` 0x1dbe26bc | reserved; MUST NOT be sent; ignored on receipt |
 | DEADLINE preamble TLV | TLV type 0x03 | reserved; MUST NOT be sent; ignored on receipt |
-| carrier implicit acknowledgement | none (adapter behaviour) | reserved; carrier events are not acknowledgements |
-| qlog event schema | none | informative: QUIC qlog events plus pipe events |
-| padding and shaping hooks | none | adapter level |
+| carrier implicit acknowledgement | none (adapter behaviour) | reserved; carrier events are not acknowledgements yet |
+| qlog event schema | none | informative (IMPLEMENTATION.md Section 11) |
 
 ---
 
@@ -326,6 +314,10 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 | PIPE_STATUS Priority | 0 to 2^62 - 1 | lower preferred; default 0; every value is valid |
 <!-- END GENERATED: fixed_values -->
 
+The types that may be first frames, QX_TRANSPORT_PARAMETERS, PIPE_JOIN and
+PIPE_LANE, are encoded beginning with `ff`, `9a` and `ba`. A type added
+later that may be a first frame never begins with `03` (Section 2.4 item 6).
+
 ---
 
 ## 9. Labels and limits
@@ -351,15 +343,25 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 | budget_refill_per_second | 32 |
 | sender_probe_rate_per_second | 16 |
 | pipe_ping_rate_per_second | 8 |
+| suspect_floor_ms | 250 |
+| fail_floor_ms | 2000 |
 | first_record_timeout_ms | 2000 |
 | unauthenticated_carriers_per_source | 8 |
+| stream_datagram_queue | 32 |
+| datagram_receive_bytes | 1048576 |
+| suspect_floor_min_ms | 50 |
 | probe_interval_ms | 15000 |
+| busy_window_ms | 15000 |
 | ack_redundancy_ms | 50 |
 | unretired_attachments_extra | 8 |
 | replay_window_floor_ids | 64 |
 | join_refusal_backoff_min_ms | 1000 |
 | join_refusal_backoff_max_ms | 60000 |
 | unilateral_retirement_floor_ms | 2000 |
+| inbound_silence_margin_floor_ms | 2000 |
+| dead_timeout_min_ms | 1000 |
+| write_call_min_bytes | 4096 |
+| write_call_rate_ms | 50 |
 | early_data_max_data | 16384 |
 | early_data_max_streams_bidi | 4 |
 | early_data_max_stream_data | 4096 |
@@ -377,8 +379,7 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 
 `assets/registry.json` contains the objects `protocol`, `frame_types`,
 `transport_parameters`, `transport_errors`, `application_errors`,
-`application_error_block`, `preamble_tlvs`, `preamble_tlv_application_range`,
-`grease`, `fixed_values`, `labels`, `limits` and `allocation`. Integer
+`preamble_tlvs`, `fixed_values`, `labels`, `limits` and `allocation`. Integer
 codepoints appear both as numbers (`value`, which may exceed 2^53 for QMux
 values, so consumers should prefer the hex form) and as lowercase hex strings
 (`hex`). A frame type's `gate` is the transport parameter whose feature
