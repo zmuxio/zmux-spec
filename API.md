@@ -400,10 +400,11 @@ custom policy (Section 5.2). The session-wide `overflow_delay` (default
 ### 4.3 Pipe credentials (`pipe_auth`)
 
 `PipeAuth` selects the secret flags of `zmux_multipath` (MULTIPATH.md Section
-10.1): `PipeAuth.TLS(...)` / `tls(...)` asserts that the bootstrap TLS 1.3
-handshake (a TLS connection, or the QUIC connection whose stream is pipe 0)
-terminates at the peer and uses its exporter (Go, Rust with rustls, Java 25
-`ExtendedSSLSession`); `PSK(key)` supplies a pre-shared key, static or
+10.1): `PipeAuth.Exporter(...)` / `exporter(...)` asserts that the innermost
+end-to-end handshake of pipe 0 terminates at the peer and uses its exporter.
+Today its source is the bootstrap TLS 1.3 handshake that this process
+terminates (a TLS connection, or the QUIC connection whose stream is pipe 0;
+Go, Rust with rustls, Java 25 `ExtendedSSLSession`); `PSK(key)` supplies a pre-shared key, static or
 derived per session by the application (MULTIPATH.md Section 10.2), alone or
 together with the exporter; `AllowInsecure` is for plaintext deployments
 protected by other means. There is no default: the
@@ -415,17 +416,17 @@ deployments (a PSK).
 
 | Language | Credentials |
 |---|---|
-| Go | `PipeAuth` value in `Config.PipeAuth` |
-| Rust | `PipeAuth::none()`, `PipeAuth::tls()`, `PipeAuth::psk(key)`, `PipeAuth::insecure()`, `.with_psk(key)`; `Config::pipe_auth` |
-| Java | `PipeAuth` in `ZmuxConfig` |
-| Python | `zmux.PipeAuth`, immutable: `PipeAuth.tls()`, `PipeAuth.psk(key: bytes)`, `PipeAuth.insecure()`, `auth.with_psk(key)` returning a new value; `Config(pipe_auth=...)`, `None` the default (no credentials). It replaces the keywords `psk` and `tls_auth` |
+| Go | `PipeAuth` value in `Config.PipeAuth` (`PSK`, `Exporter`, `AllowInsecure`); `zmux.TerminatedTLS(p)` reports the TLS a carrier terminates in this process |
+| Rust | `PipeAuth::none()`, `PipeAuth::exporter()`, `PipeAuth::psk(key)`, `PipeAuth::insecure()`, `.with_psk(key)`; `Config::pipe_auth` |
+| Java | `PipeAuth` in `ZmuxConfig`: `PipeAuth.exporter()`, `PipeAuth.psk(key)`, `PipeAuth.insecure()` |
+| Python | `zmux.PipeAuth`, immutable: `PipeAuth.exporter()`, `PipeAuth.psk(key: bytes)`, `PipeAuth.insecure()`, `auth.with_psk(key)` returning a new value; `Config(pipe_auth=...)`, `None` the default (no credentials). It replaces the keywords `psk` and `tls_auth` |
 
 The exporter is taken from the carrier's TLS state (in Go its
-`ConnectionState`). A Go WebSocket carrier (`zmuxws`) reports the TLS that
+`ConnectionState`, judged by `TerminatedTLS`). A Go WebSocket carrier (`zmuxws`) reports the TLS that
 the process itself terminates beneath it: a client's wss connection, or the
 TLS connection of a server's request. The WebSocket streams of one HTTP/2
 connection (extended CONNECT) share that connection's TLS, and so its
-exporters. `PipeAuth.TLS` and carrier-bound joins therefore work over wss.
+exporters. `PipeAuth.Exporter` and carrier-bound joins therefore work over wss.
 Where TLS ends elsewhere (a ws URL, or a server behind a TLS-terminating
 proxy) the state is reported without a completed handshake, and both fail
 rather than bind to TLS that is not the peer's. There is no switch to

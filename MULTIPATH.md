@@ -2058,11 +2058,12 @@ selection:
 When both endpoints set E and P, both enter the session secret.
 
 An endpoint sets E only when the application has explicitly asserted that
-the bootstrap carriers of pipe 0 are carried by a TLS 1.3 handshake that
-terminates at the peer and offers an RFC 8446 Section 7.5 exporter (a TLS
+the innermost end-to-end handshake of pipe 0's bootstrap carriers
+terminates at the peer and offers an RFC 8446 Section 7.5 style exporter;
+today that handshake is TLS 1.3 terminated by the endpoint (a TLS
 connection, a QUIC connection whose stream is the carrier, RFC 9001
 Section 4, or another channel with such an exporter) (API.md Section 4.3,
-`PipeAuth.tls(...)`); an implementation never sets E on its own, because it
+`PipeAuth.exporter(...)`); an implementation never sets E on its own, because it
 cannot tell whether a CDN or a TLS-intercepting proxy sits in the path, and
 then the two ends export different values. It sets P only when the
 application supplied a PSK; I only when the application explicitly allowed
@@ -2191,7 +2192,7 @@ streams of the connection, and need not:
 
 - **End-to-end TLS** (the endpoints terminate TLS themselves, for example
   direct TCP, a TLS passthrough load balancer, or QUIC between the
-  endpoints): `PipeAuth.tls(...)` (E), and optionally carrier-bound tokens
+  endpoints): `PipeAuth.exporter(...)` (E), and optionally carrier-bound tokens
   for joins over further direct TLS connections or QUIC streams.
 - **Mixed carriers** (for example a relayed pipe through an intermediary
   plus direct QUIC or KCP pipes between the endpoints): the secret source
