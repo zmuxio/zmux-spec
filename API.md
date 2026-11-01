@@ -252,10 +252,13 @@ least one of them, each closed by zmux exactly once:
   rejected early data itself, or cannot report the verdict, gives no
   restart hook, and the adapter then does not offer carrier early data.
   A client with the floor (`zmux_peer`) on a carrier that reports such a
-  verdict (Go: its sending half is an `EarlyClientCarrier`, such as a
+  verdict and sends early data this time (Go: its sending half is an
+  `EarlyClientCarrier` whose `SendsEarlyData()` is true, such as a
   carrier transform whose first message carries the first flight) sends
   its early streams as carrier early data the same way, and must set
-  `replayable` (else a configuration error).
+  `replayable` (else a configuration error). A carrier that sends its
+  first bytes only after its handshake (QUIC without 0-RTT) reports
+  false: floor early data on it needs neither `replayable` nor a verdict.
 - Built-in adapters: TCP and Unix sockets, TLS (exporter wired), WebSocket
   (following QMux's WebSocket mapping), HTTP carriers, QUIC streams (lanes
   wired), in-memory pipes, and streams of another zmux
@@ -424,7 +427,7 @@ deployments (a PSK).
 
 | Language | Credentials |
 |---|---|
-| Go | `PipeAuth` value in `Config.PipeAuth` (`PSK`, `Exporter`, `AllowInsecure`); `zmux.Exporter(p) (KeyingMaterialExporter, bool)` is the one source of the exporter: a half implementing `KeyingMaterialExporter` (a carrier transform with its own handshake), else the TLS state this process terminates (`zmux.TerminatedTLS(p)`, which is no proof of an end-to-end handshake) |
+| Go | `PipeAuth` value in `Config.PipeAuth` (`PSK`, `Exporter`, `AllowInsecure`); `zmux.Exporter(p) (KeyingMaterialExporter, bool)` is the one source of the exporter: a half implementing `KeyingMaterialExporter` (a carrier transform with its own handshake), else the TLS handshake this process runs, read from its state when the exporter is read (completed: `zmux.TerminatedTLS(p)`, which is no proof of an end-to-end handshake; or still running on a `*tls.Conn` or a carrier with early data such as QUIC 0-RTT, whose replacement connection after a rejection is the one read); a carrier-bound join arriving as early data is read once its handshake completed |
 | Rust | `PipeAuth::none()`, `PipeAuth::exporter()`, `PipeAuth::psk(key)`, `PipeAuth::insecure()`, `.with_psk(key)`; `Config::pipe_auth` |
 | Java | `PipeAuth` in `ZmuxConfig`: `PipeAuth.exporter()`, `PipeAuth.psk(key)`, `PipeAuth.insecure()` |
 | Python | `zmux.PipeAuth`, immutable: `PipeAuth.exporter()`, `PipeAuth.psk(key: bytes)`, `PipeAuth.insecure()`, `auth.with_psk(key)` returning a new value; `Config(pipe_auth=...)`, `None` the default (no credentials). It replaces the keywords `psk` and `tls_auth` |
@@ -868,7 +871,7 @@ and resumptions included, and no entry point bypasses it.
 
 | Language | Admission | Configured on |
 |---|---|---|
-| Go | `Admission{Peek, MaxPeek, PeekTimeout, Decide, StallMin, StallMax}`, `Decision{Verdict, Skip, Value, Need, Variant}` (`VerdictMore`), `AdmissionStats.Variants`, `CarrierInfo{Source, Peer netip.AddrPort, TLS, Request, Head}` | `ListenerConfig.Admission`; fallback targets `ListenerConfig.Fallback` (byte streams), `HTTPOptions.Next`, the `fallback` argument of `zmuxquic.Serve` |
+| Go | `Admission{Peek, MaxPeek, PeekTimeout, Decide, StallMin, StallMax}`, `Decision{Verdict, Skip, Value, Need, Variant}` (`VerdictMore`), `Listener.VariantStats() []VariantStat`, `CarrierInfo{Source, Peer netip.AddrPort, TLS, Request, Head}` | `ListenerConfig.Admission`; fallback targets `ListenerConfig.Fallback` (byte streams), `HTTPOptions.Next`, the `fallback` argument of `zmuxquic.Serve` |
 | Rust | `Admission::new(peek, f)` (a synchronous decision) or `Admission::with_decider(peek, impl Decide)`, with `with_peek_timeout`, `with_stall_interval`; `trait Decide`, `Verdict`; `CarrierInfo` (`source`, `peer`: `SocketAddr`) | `ListenerConfig::admission`; fallback targets `ListenerConfig::fallback` (byte streams), the `fallback` of the HTTP, HTTP/3 and WebTransport adapters' options, the `QuicFallback` of `zmux_quinn::serve` |
 | Java | `Admission(peek, peekTimeout, stallMin, stallMax, decider)`, `Admission.of(peek, decider)`, `Admission.Decider` (`Decider.immediate` for a synchronous one), `Decision`, `Verdict`, `CarrierInfo(source, peer: InetSocketAddress, ...)` with `RequestHead` | `ListenerConfig.admission`; fallback targets `ListenerConfig.fallback` (byte streams), the host handler behind `HttpEndpoint`, `QuicServer.Fallback` |
 | Python | `Admission(decide, *, peek, peek_timeout, stall)`, `Admission.prefix_auth(auth, ...)`, `Verdict`; `CarrierInfo.source`, `.peer`: `(host, port)` | `Listener(admission=...)`; no fallback target (Fallback stalls a stream carrier, an HTTP request gets 404) |
@@ -886,10 +889,15 @@ and resumptions included, and no entry point bypasses it.
   message, whole, of at most max(`Peek`, `MaxPeek`) bytes (a longer one is
   closed); `Skip` is 0 (the message is replayed) or the message's length.
 - `Decision.Variant` is a short label of the carrier for any verdict,
-  counted in `AdmissionStats.Variants` (a copy; per variant `Accepted`,
-  `Fallback`, `Stalled` with the stall overflow, `Closed`), and on
+  counted in `Listener.VariantStats()` (a copy sorted by `Name`; per
+  variant `Accepted`, `Fallback`, `Stalled` with the stall overflow,
+  `Closed`; `ListenerStats` and `AdmissionStats` hold no map and stay
+  comparable), and on
   acceptance the `PipeIO.Variant` that `WrapPipe` receives (a result
-  without one keeps it).
+  without one keeps it). A variant is one of a few constants of the host,
+  never derived from the peer's bytes: at most `MaxAdmissionVariants` (64)
+  labels are counted apart, and further ones share one bucket
+  (`VariantStat.Overflow`), listed last.
 - `ClassifyFirstBytes(b, framing) (FirstBytes, need int)` is the one
   syntax authority for the start of a first record (at most
   `MaxFirstBytes`, 5, bytes): hosts tell zmux records from other content
@@ -906,7 +914,10 @@ interfaces: `CloseWriter`, `Aborter`, `UnsentReporter`, `RetransReporter`,
 handshake the listener runs within the handshake timeout before
 admission), `KeyingMaterialExporter`, `EarlyClientCarrier`,
 `EarlyServerCarrier`, `MessageBatchWriter`, `BuffersWriter`,
-`ResponseHeaderer` (a client HTTP carrier's outer response header, a copy).
+`ResponseHeaderer` (a client HTTP carrier's outer response header, a copy;
+unauthenticated, since plain HTTP and WebSocket paths and TLS-terminating
+proxies can write it: never an authentication input, and a `Date` taken
+as a clock hint is bounded by the host).
 The session looks only at the halves it is given and never unwraps them. A
 transform forwards a lower capability only where its meaning survives:
 `CloseWriter` and `Aborter` may be forwarded; `UnsentReporter` and
@@ -927,7 +938,9 @@ only when every lane is wrapped alike.
 - `ReplayFilter` (`NewReplayFilter(ReplayConfig{Window, Max, NotBefore,
   Clock})`, `Check(key []byte, stampUnixMs int64) ReplayVerdict`: `Fresh`,
   `Seen`, `Outside`, `Full`) is the single-use cache of the exchange
-  carrier, the prefix credential and transforms. Vectors: zmux-go
+  carrier, the prefix credential and transforms. The key and its stamp are
+  authenticated together before `Check`: unauthenticated input could
+  choose a fresh stamp for a replay, or fill the filter (`Full`). Vectors: zmux-go
   `testdata/replay.json`.
 - `PipeIO.Variant` and `Candidate.Variant` label a transform's carriers;
   they are reported in pipe events, `PipeStats.Variant`,
