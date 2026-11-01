@@ -1270,7 +1270,7 @@
     "pipe_join_standby": "0x08",
     "pipe_join_reserved_mask": "0xf0",
     "multipath_secret_flags": {
-      "0x01": "E (TLS exporter)",
+      "0x01": "E (exporter)",
       "0x04": "P (pre-shared key)",
       "0x08": "I (insecure join allowed)"
     },

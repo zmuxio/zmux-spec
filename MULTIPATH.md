@@ -110,7 +110,7 @@ adapter interface (API.md Section 4) is:
 - inbound pipe: `read(buffer) -> n | end | error`, `close()`;
 - outbound pipe: `write(bytes) -> n | error`, `shutdown()` (graceful end of
   writing), `abort()`;
-- optional: TLS exporter access (Section 10.2), unsent-byte and RTT
+- optional: exporter access (Section 10.1), unsent-byte and RTT
   information for the scheduler (SCHEDULER.md Section 4), out-of-band join
   delivery (Section 5.3), lanes (Section 2.5).
 
@@ -278,7 +278,8 @@ zmux_multipath Value {
 ```
 
 - **Secret Flags**: the secret sources the endpoint can provide (Section
-  10.1): 0x01 E (TLS exporter of the bootstrap carrier), 0x04 P (pre-shared
+  10.1): 0x01 E (exporter of the bootstrap carrier's innermost end-to-end
+  handshake), 0x04 P (pre-shared
   key), 0x08 I (insecure join allowed). Other bits, 0x02 included, are
   reserved; senders set them to 0 and receivers ignore them.
 - **Session Nonce**: 16 bytes chosen uniformly at random for this session.
@@ -518,9 +519,9 @@ PIPE_JOIN Frame {
   `zmux_multipath` parameter, 1 to 16 bytes.
 - **Pipe ID**: the new attachment's pipe ID (Section 4.1).
 - **Flags**: bits 0-1 (mask 0x03) direction: 0 up, 1 down, 2 bidi, 3 invalid.
-  Bit 2 (0x04) carrier-bound: the token covers the TLS exporter of the
-  handshake that carries the new carrier, its TLS connection or the QUIC
-  connection whose stream it is (Section 10.5). Bit 3 (0x08) standby. Bits 4-7 (mask 0xf0) are
+  Bit 2 (0x04) carrier-bound: the token covers the exporter of the
+  innermost end-to-end handshake that carries the new carrier, such as its
+  TLS connection or the QUIC connection whose stream it is (Section 10.5). Bit 3 (0x08) standby. Bits 4-7 (mask 0xf0) are
   reserved and MUST be 0.
 - **Fate Group**: Section 2.2.
 - **Priority** and the standby flag: the joiner's initial request for the
@@ -631,8 +632,8 @@ most one record (in-band) or 64 bytes (out-of-band) of it.
    reason says whether the token was carrier-bound (ZMUX_PIPE_AUTH_FAILED is
    its local code). Nothing is sent to the peer: the joiner learns only that
    the carrier closed. A stream of such failures for a session whose secret
-   comes from a TLS exporter usually means that an intermediary terminates
-   TLS (Section 10.7).
+   comes from an exporter usually means that an intermediary terminates
+   the handshake it was taken from (Section 10.7).
 6. If the Pipe ID has the joiner's parity and has attachment state, its bit
    is set, or it is stale (Section 4.3), close the carrier: the join is a
    replay or arrived too late. Count it in the statistic `join_replays`. A
@@ -2059,11 +2060,15 @@ When both endpoints set E and P, both enter the session secret.
 
 An endpoint sets E only when the application has explicitly asserted that
 the innermost end-to-end handshake of pipe 0's bootstrap carriers
-terminates at the peer and offers an RFC 8446 Section 7.5 style exporter;
-today that handshake is TLS 1.3 terminated by the endpoint (a TLS
-connection, a QUIC connection whose stream is the carrier, RFC 9001
-Section 4, or another channel with such an exporter) (API.md Section 4.3,
-`PipeAuth.exporter(...)`); an implementation never sets E on its own, because it
+terminates at the peer and offers an RFC 8446 Section 7.5 style exporter
+(API.md Section 4.3, `PipeAuth.exporter(...)`). That handshake is either
+TLS 1.3 or QUIC terminated by the endpoint's own process (a TLS
+connection, or a QUIC connection whose stream is the carrier, RFC 9001
+Section 4), or the handshake of a carrier layer that runs its own
+authenticated key exchange end to end with the peer and exports keying
+material in the same way. When such handshakes are nested, the innermost
+one that terminates at both endpoints is used; a handshake below it may be
+terminated by an intermediary. An implementation never sets E on its own, because it
 cannot tell whether a CDN or a TLS-intercepting proxy sits in the path, and
 then the two ends export different values. It sets P only when the
 application supplied a PSK; I only when the application explicitly allowed
@@ -2076,11 +2081,16 @@ plaintext session can join pipes.
 
 ### 10.2 Inputs
 
-- **Exporter value**: TLS-Exporter("EXPORTER-zmux-session", "", 32) on the
-  carrier of pipe 0 up ([RFC8446] Section 7.5); both endpoints export from
-  that same carrier, which is the initiator's outbound and the responder's
-  inbound carrier. A carrier that is a stream of a connection (a QUIC
-  stream) exports from that connection's TLS handshake. For a split bootstrap (SPEC.md Section 6.1.1) the exporter
+- **Exporter value**: Exporter("EXPORTER-zmux-session", "", 32) of the
+  innermost end-to-end handshake (Section 10.1) of the carrier of pipe 0
+  up, with the interface of [RFC8446] Section 7.5; both endpoints export
+  from that same carrier, which is the initiator's outbound and the
+  responder's inbound carrier. A carrier that is a stream of a connection
+  (a QUIC stream) exports from that connection's TLS handshake. An
+  endpoint reads the value when it processes the peer's transport
+  parameters: they arrive through that carrier, so its handshake has
+  completed by then even when early data preceded it. A failed read closes
+  the session with INTERNAL_ERROR. For a split bootstrap (SPEC.md Section 6.1.1) the exporter
   value is the 64-byte concatenation of the exporters of the uplink carrier
   and the downlink carrier, in that order, so that the session secret binds
   both carriers of the pair.
@@ -2117,7 +2127,7 @@ are ASCII without a terminating zero.
 
 ### 10.5 Join token
 
-    carrier_binding = TLS-Exporter("EXPORTER-zmux-pipe", "", 32) of the new carrier   if the carrier-bound flag is set
+    carrier_binding = Exporter("EXPORTER-zmux-pipe", "", 32) of the new carrier      if the carrier-bound flag is set
                     = empty                                                             otherwise
     token = first 16 bytes of HMAC-SHA256(join_key of the joiner's role,
                                           PIPE_JOIN bytes from Type through Priority || carrier_binding)
@@ -2126,12 +2136,16 @@ The MAC input is the frame exactly as sent, so varint encodings are covered
 as transmitted. The acceptor computes the token with the join key of the
 peer's role, never with a role inferred from the Pipe ID (Section 5.4 step
 5), and compares in constant time. A joiner sets the carrier-bound flag only
-when the new carrier is carried by a TLS 1.3 handshake that terminates at
-the peer and both ends can export from it: a TLS connection, or a stream of
-a QUIC connection (RFC 9001 Section 4), whose exporter is the connection's;
-then a token that is copied to another connection does not verify. A
-carrier without such a handshake (plain TCP, KCP, a TLS or QUIC connection
-that an intermediary terminates) is never carrier-bound.
+when the new carrier is carried by an end-to-end handshake in the sense of
+Section 10.1 that terminates at the peer and both ends can export from it:
+a TLS connection, a stream of a QUIC connection (RFC 9001 Section 4),
+whose exporter is the connection's, or a carrier layer with its own such
+handshake; then a token that is copied to another connection does not
+verify. The binding is the exporter of the new carrier's innermost such
+handshake, read by the joiner when it sends the join and by the acceptor
+when the join arrives. A carrier without such a handshake (plain TCP, KCP,
+a TLS or QUIC connection that an intermediary terminates) is never
+carrier-bound.
 
 Several pipes may be streams of one QUIC connection: they then share one
 exporter and one carrier_binding value. This holds only where the
@@ -2160,8 +2174,10 @@ streams of the connection, and need not:
 - such pipes fail together with their connection, and those that one
   endpoint joins SHOULD be in one non-zero fate group (Section 2.2);
 - the exporter is the one of the completed handshake, never an early
-  exporter: a carrier-bound join is not sent as TLS or QUIC early data
-  (0-RTT), whose exporter differs and whose bytes an attacker can replay.
+  exporter: a carrier-bound join is not sent as carrier early data (TLS or
+  QUIC early data, 0-RTT, or a carrier layer's first message), whose
+  exporter differs or does not yet exist and whose bytes an attacker can
+  replay.
 
 ### 10.6 Properties
 

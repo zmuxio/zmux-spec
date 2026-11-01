@@ -600,7 +600,8 @@ Rules:
    frames, preceded by a PIPE_ACK fence toward a zmux peer, sent under
    remembered parameters in carrier early data as QMux-02 Sections 4.2 and
    8.2 allow, or under the zmux floor toward a peer that its application
-   declares to be a zmux endpoint. It sends no other stream data before it
+   declares to be a zmux endpoint, after the carrier's handshake or in
+   carrier early data. It sends no other stream data before it
    knows the peer's flow-control limits.
 
 ### 5.2 Processing rules
@@ -816,7 +817,11 @@ most one of them in a session:
    0-RTT for a pipe on a QUIC stream), a client MAY send its first records
    as carrier early data, under the server's parameters remembered from the
    session that issued the ticket, exactly as RFC 9000 Section 7.4.1
-   describes. A client whose TLS library cannot store data with a ticket
+   describes. **Carrier early data** is data a carrier delivers before its
+   own handshake has confirmed the peer and on which the carrier reports a
+   verdict to the sender, accepted or rejected: TLS 1.3 early data, QUIC
+   0-RTT, or the first message of a carrier layer whose own handshake
+   carries the client's first records (API.md Section 4.1). A client whose TLS library cannot store data with a ticket
    MAY instead remember the parameters of the most recent session with the
    same server identity (the name it verified) and use them with any
    ticket of that identity, in place of RFC 9000 Section 7.4.1's values of
@@ -826,7 +831,9 @@ most one of them in a session:
    nothing more. Remembered values are never used outside carrier early
    data: a carrier without early data of its own (plain TCP, WebSocket, a
    full TLS handshake) cannot reject data sent on values that have changed
-   since.
+   since. A carrier with early data of its own but no remembered
+   parameters (a carrier layer whose first message has no ticket of an
+   earlier session) uses the floor.
 2. **The zmux floor**: when the endpoint uses no remembered parameters and
    its application declares the peer to be a zmux endpoint, it MAY send
    early data under the floor below, which every zmux endpoint advertises
@@ -842,7 +849,14 @@ most one of them in a session:
    wrong (for example behind a load balancer whose fleet mixes zmux and
    plain QMux servers); it then fails as a wrong declaration does, and an
    implementation forgets the guess for that peer identity on "early data
-   rejected".
+   rejected". Early data under the floor normally follows the carrier's
+   handshake. On a carrier with carrier early data, a client whose
+   application allows its early streams to be replayed (Replay, below) MAY
+   send it as carrier early data instead; the carrier's verdict then
+   applies to it exactly as under remembered parameters (below), and a
+   client whose application does not allow replay sends no early data
+   under the floor on such a carrier before the carrier's handshake has
+   completed.
 
 **The floor.** Every zmux endpoint, that is every endpoint that sends a
 parameter of Section 5.4, MUST send `zmux_preamble`, `zmux_pipe_ack` and
@@ -963,14 +977,16 @@ early data:
 
 Until it knows that its early data stands (the peer's parameters are
 processed, and carrier early data was accepted), an endpoint keeps the
-early frames' content. If the carrier rejects its early data (TLS 1.3
-early data or QUIC 0-RTT not accepted), none of it reached the peer: the
+early frames' content. If the carrier rejects its early data, under
+either assumed set, none of it reached the peer: the
 endpoint treats everything it sent as early data, stream data, FIN bits
 and stream resets alike, as never sent, writes
 QX_TRANSPORT_PARAMETERS again as the first record once the handshake is
 complete, and sends the early streams' data again from offset 0 only after
-it has processed the peer's parameters (no floor: they arrive with the
-handshake); the streams do not fail. The same holds for everything sent
+it has processed the peer's parameters (not under the floor again); the
+streams do not fail. A verdict "rejected" that arrives after the peer's
+parameters contradicts the carrier and closes the session with
+INTERNAL_ERROR. The same holds for everything sent
 between the rejection and that point: nothing is final until it has been
 sent again after the peer's parameters (API.md Section 4.1).
 An endpoint that sent `zmux_multipath` keeps its early frames as
@@ -982,12 +998,13 @@ guarantee about what the peer processed.
 
 **Replay.** Carrier early data can be replayed by an attacker (RFC 8446
 Section 8): a replayed open, for example a proxied connection with
-OPEN_INFO, would be repeated. Early data under the floor travels after the
-carrier handshake and is never replayed. Therefore:
+OPEN_INFO, would be repeated. Early data under the floor that travels
+after the carrier handshake is never replayed; sent as carrier early data,
+it can be, as under remembered parameters. Therefore:
 
-- a client sends carrier early data only when its application allows its
-  early streams to be replayed (API.md Section 6, `early_data`), and never
-  under the floor;
+- a client sends carrier early data, under either assumed set, only when
+  its application allows its early streams to be replayed (API.md Section
+  6, `early_data`);
 - a server accepts carrier early data only when its application allows it,
   and then reports every stream whose opening frame arrived as carrier
   early data as replayable until the handshake has completed (API.md
@@ -2156,7 +2173,7 @@ Multipath is part of the core protocol and is specified in
   unacknowledged information of a failed or suspect pipe is re-sent on the
   other pipes following RFC 9000 Section 13.3; there are no retransmission
   timers;
-- joins are authenticated with keys derived from the bootstrap TLS exporter
+- joins are authenticated with keys derived from the bootstrap carrier's exporter
   or a pre-shared key, or both.
 
 Multipath changes two rules of this document, and only in multipath
@@ -2342,7 +2359,7 @@ against existing QMux implementations.
 | legitimate churn closed as abuse (legacy zmux libraries) | closed chargeable list, crossing-frame exemption and compliant floor (9.4) |
 | close code lost, abortive close before CLOSE (legacy zmux libraries) | close procedure and error precedence (6.5) |
 | TCP-over-TCP meltdown | no retransmission timers (MULTIPATH.md 7.5) |
-| MPTCP keys in the clear (RFC 8684, RFC 7430) | join keys from the TLS exporter or a PSK; no join on plaintext without a PSK (MULTIPATH.md 10) |
+| MPTCP keys in the clear (RFC 8684, RFC 7430) | join keys from the end-to-end handshake's exporter or a PSK; no join on plaintext without a PSK (MULTIPATH.md 10) |
 | Terrapin (CVE-2023-48795) | implicit counters are never authentication inputs; joins and resume MAC explicit fields (MULTIPATH.md 10, RESUME.md 5) |
 | crashes and memory exhaustion from datagram fragmentation over reliable streams (seen in a QUIC-based proxy protocol) | no datagram fragmentation (EXTENSIONS.md 6) |
 

@@ -275,7 +275,7 @@ PIPE_DIRECTIONS = {0: "up", 1: "down", 2: "bidi"}
 PIPE_JOIN_FLAG_CARRIER_BOUND = 0x04
 PIPE_JOIN_FLAG_STANDBY = 0x08
 PIPE_JOIN_RESERVED_MASK = 0xF0
-MULTIPATH_SECRET_FLAGS = {0x01: "E (TLS exporter)", 0x04: "P (pre-shared key)",
+MULTIPATH_SECRET_FLAGS = {0x01: "E (exporter)", 0x04: "P (pre-shared key)",
                           0x08: "I (insecure join allowed)"}
 PIPE_STATUS_VALUES = {0: "available", 1: "standby"}
 PIPE_PRIORITY_DEFAULT = 0

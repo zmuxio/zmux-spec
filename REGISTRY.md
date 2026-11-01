@@ -306,7 +306,7 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 | PIPE_JOIN Flags | 0x04 | carrier-bound |
 | PIPE_JOIN Flags | 0x08 | standby (initial request for the acceptor's outbound direction) |
 | PIPE_JOIN Flags reserved mask | 0xf0 | must be 0 |
-| zmux_multipath Secret Flags | 0x01 | E (TLS exporter) |
+| zmux_multipath Secret Flags | 0x01 | E (exporter) |
 | zmux_multipath Secret Flags | 0x04 | P (pre-shared key) |
 | zmux_multipath Secret Flags | 0x08 | I (insecure join allowed) |
 | PIPE_STATUS Status | 0 | available |

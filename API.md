@@ -178,9 +178,10 @@ least one of them, each closed by zmux exactly once:
   share one carrier connection it is that connection's count. The
   built-in TCP adapters implement it where the platform has the query; it
   feeds only `bytes_retransmitted` and `loss_rate` (Section 7.2).
-- Optional metadata: TLS exporter (of the TLS 1.3 handshake that carries
-  the pipe: its TLS connection, or the QUIC connection whose stream it is;
-  MULTIPATH.md Section 10.5), addresses, socket statistics (`TCP_INFO`),
+- Optional metadata: exporter (of the innermost end-to-end handshake that
+  carries the pipe: its TLS connection, the QUIC connection whose stream it
+  is, or a carrier layer's own handshake; MULTIPATH.md Sections 10.1 and
+  10.5), addresses, socket statistics (`TCP_INFO`),
   label.
 - Optional lanes (MULTIPATH.md Sections 2.5 and 5.8), for a pipe input that
   is one stream of a multi-stream carrier connection. The adapter reports
