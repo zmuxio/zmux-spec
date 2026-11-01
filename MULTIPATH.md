@@ -315,6 +315,13 @@ two parameter values, and the API reports "join security unavailable"
 `zmux_multipath`; zmux implementations send it when the application enables
 more than one pipe or enables resume (API.md Section 6).
 
+When the selection includes a PSK that the application supplies only after
+establishment (a deferred PSK, Section 10.2), multipath is in use but the
+session is **join-secret pending** until it does: there are no join keys,
+the endpoint starts no join and holds the peer's (Section 5.4 step 4), and
+the API reports the state (API.md Section 5.4). It ends when the
+application supplies the PSK, and never begins again.
+
 ### 3.4 What changes in a multipath session
 
 Only in multipath sessions:
@@ -623,7 +630,12 @@ most one record (in-band) or 64 bytes (out-of-band) of it.
    session.
 4. If the session is not yet established (the joiner's transport parameters
    are still in flight), hold the join until establishment completes or the
-   handshake timeout expires.
+   handshake timeout expires. Likewise, if the session is join-secret
+   pending (Section 3.3), hold the join, still without session state and
+   within the limits of Section 5.6, until the join keys are derived or the
+   handshake timeout expires; then close the carrier silently (no
+   ZMUX_RESUME_FAILED; it is not a join authentication failure, and an
+   implementation counts it separately).
 5. Verify the Join Token in constant time (Section 10.5), always with the
    join key of the peer's role (the session knows which role the peer has),
    never with a role inferred from the Pipe ID's parity. On failure, close
@@ -2071,9 +2083,10 @@ one that terminates at both endpoints is used; a handshake below it may be
 terminated by an intermediary. An implementation never sets E on its own, because it
 cannot tell whether a CDN or a TLS-intercepting proxy sits in the path, and
 then the two ends export different values. It sets P only when the
-application supplied a PSK; I only when the application explicitly allowed
+application supplied a PSK or will supply one after establishment (a
+deferred PSK, Section 10.2); I only when the application explicitly allowed
 insecure joins (API.md Section 6). An endpoint MUST NOT set I together with
-P: on a plaintext
+P, deferred or not: on a plaintext
 bootstrap an attacker could strip the stronger flag from the parameters and
 select insecure mode. Stripping a flag then only disables multipath, which
 an on-path attacker of a plaintext session can do anyway. By default no
@@ -2102,7 +2115,14 @@ plaintext session can join pipes.
   such as Python's `ssl` module, and carriers whose security comes from
   another layer). A per-session value confines the effect of its disclosure
   to that session. An application with both kinds derives one PSK from them,
-  for example with HKDF.
+  for example with HKDF. The application may supply the PSK after
+  establishment (deferred), for example once it authenticated the peer
+  over the session; P is sent from the start, the flags do not change, and
+  the endpoint has no join keys until then (Section 3.3). The peer cannot
+  tell a deferred PSK from a static one: one end may defer while the other
+  has the same bytes configured. When the exporter is also selected, its
+  value is read as always, when the peer's parameters arrive, and kept
+  until the PSK enters the session secret with it (Section 10.3).
 
 ### 10.3 Session secret
 

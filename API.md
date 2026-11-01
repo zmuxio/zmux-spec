@@ -417,7 +417,13 @@ Today its source is the bootstrap TLS 1.3 handshake that this process
 terminates (a TLS connection, or the QUIC connection whose stream is pipe 0;
 Go, Rust with rustls, Java 25 `ExtendedSSLSession`); `PSK(key)` supplies a pre-shared key, static or
 derived per session by the application (MULTIPATH.md Section 10.2), alone or
-together with the exporter; `AllowInsecure` is for plaintext deployments
+together with the exporter, or deferred: supplied after establishment
+with `SetJoinSecret` (MULTIPATH.md Sections 3.3 and 10.2), which derives
+the join keys then and releases the peer's held joins; until then local
+joins fail with `ErrJoinSecretPending` and none can resume the session.
+A deferred PSK excludes a static one and `AllowInsecure`; it can be set
+once, of at least 16 bytes, and fails when the negotiation did not select
+the PSK (the peer sent no P). `AllowInsecure` is for plaintext deployments
 protected by other means. There is no default: the
 library never uses the exporter on its own, because a CDN or a
 TLS-intercepting proxy makes the two ends export different values, and
@@ -427,7 +433,7 @@ deployments (a PSK).
 
 | Language | Credentials |
 |---|---|
-| Go | `PipeAuth` value in `Config.PipeAuth` (`PSK`, `Exporter`, `AllowInsecure`); `zmux.Exporter(p) (KeyingMaterialExporter, bool)` is the one source of the exporter: a half implementing `KeyingMaterialExporter` (a carrier transform with its own handshake), else the TLS handshake this process runs, read from its state when the exporter is read (completed: `zmux.TerminatedTLS(p)`, which is no proof of an end-to-end handshake; or still running on a `*tls.Conn` or a carrier with early data such as QUIC 0-RTT, whose replacement connection after a rejection is the one read); a carrier-bound join arriving as early data is read once its handshake completed |
+| Go | `PipeAuth` value in `Config.PipeAuth` (`PSK`, `Exporter`, `AllowInsecure`, `DeferredPSK`); `Conn.SetJoinSecret(psk) error` supplies a deferred PSK (`ErrInvalidConfig`, `ErrJoinSecretSet`, `ErrNotNegotiated`); a listener's sessions may differ in it (`ListenerConfig.SessionConfig`, Section 4.4); `zmux.Exporter(p) (KeyingMaterialExporter, bool)` is the one source of the exporter: a half implementing `KeyingMaterialExporter` (a carrier transform with its own handshake), else the TLS handshake this process runs, read from its state when the exporter is read (completed: `zmux.TerminatedTLS(p)`, which is no proof of an end-to-end handshake; or still running on a `*tls.Conn` or a carrier with early data such as QUIC 0-RTT, whose replacement connection after a rejection is the one read); a carrier-bound join arriving as early data is read once its handshake completed |
 | Rust | `PipeAuth::none()`, `PipeAuth::exporter()`, `PipeAuth::psk(key)`, `PipeAuth::insecure()`, `.with_psk(key)`; `Config::pipe_auth` |
 | Java | `PipeAuth` in `ZmuxConfig`: `PipeAuth.exporter()`, `PipeAuth.psk(key)`, `PipeAuth.insecure()` |
 | Python | `zmux.PipeAuth`, immutable: `PipeAuth.exporter()`, `PipeAuth.psk(key: bytes)`, `PipeAuth.insecure()`, `auth.with_psk(key)` returning a new value; `Config(pipe_auth=...)`, `None` the default (no credentials). It replaces the keywords `psk` and `tls_auth` |
@@ -440,7 +446,9 @@ judged by `TerminatedTLS`). The session reads it once, when it processes
 the peer's parameters (they arrive through the carrier, whose handshake has
 then completed); a failed read closes the session with INTERNAL_ERROR. A
 carrier-bound join reads the exporter of its own carrier: the client when
-it adds the pipe, the acceptor when the join arrives. Built-in Go carriers
+it adds the pipe (Go `AddPipe` with `CarrierBound` first completes the
+carrier's TLS handshake, or a `Handshaker`'s, with its context), the
+acceptor when the join arrives. Built-in Go carriers
 with an exporter: TLS connections, QUIC streams (`zmuxquic`), WebTransport
 streams (`zmuxh3`) and wss (`zmuxws`). A Go WebSocket carrier (`zmuxws`) reports the TLS that
 the process itself terminates beneath it: a client's wss connection, or the
@@ -486,6 +494,20 @@ joiner ends a resumption at once instead of at the end of its grace
 period. It is for deployments in which a locator with this listener's
 instance identifier reaches no other instance; it is still counted as
 `rejected`.
+
+A listener may choose each new session's configuration (Go
+`ListenerConfig.SessionConfig(ctx, info, admitted) (*Config, error)`,
+called once per carrier that starts a session, never for a join, outside
+every lock), for example `PipeAuth.Exporter` where the process terminates
+TLS (`TerminatedTLS`) and a deferred PSK where an intermediary does, or
+per-session shaping limits; nil keeps the listener's configuration. Joins
+verify with the joined session's own configuration. What belongs to the
+listener stays its own: the memory budget, the carrier-level bounds
+before a session is known (split pairing, the handshake of a join in
+early data, carrier wrapping) and the clock, which the returned
+configuration must leave unset or equal. A configuration that breaks
+this or is invalid, an error and a failure of the callback close the
+carrier without a byte, counted as `rejected`.
 
 Listener options (not session knobs): `MaxSuspended`; the per-source and
 first-record limits of MULTIPATH.md Section 5.6 (`MaxPendingPerSource`,
@@ -887,7 +909,11 @@ and resumptions included, and no entry point bypasses it.
   `VerdictMore` is `VerdictClose`.
 - On a message-framed carrier with `Peek` above 0, the prefix is the first
   message, whole, of at most max(`Peek`, `MaxPeek`) bytes (a longer one is
-  closed); `Skip` is 0 (the message is replayed) or the message's length.
+  closed, counted once as closed); `Skip` is 0 (the message is replayed) or
+  the message's length. A receiving half with `MessageLimitReader`
+  (`ReadMessageLimit(limit)`, `ErrMessageTooLarge`) is read with that
+  bound, so that a longer message is not buffered whole; without it the
+  message is read up to the carrier's own limit and then checked.
 - `Decision.Variant` is a short label of the carrier for any verdict,
   counted in `Listener.VariantStats()` (a copy sorted by `Name`; per
   variant `Accepted`, `Fallback`, `Stalled` with the stall overflow,
@@ -1198,7 +1224,10 @@ pipe in a direction while the session has open streams.
 RESET_STREAM_AT support per side, whether multipath, pipe acknowledgement
 (MULTIPATH.md Section 3.5) and resume are in use,
 "join security unavailable" when both sides offered multipath but no secret
-source matched (MULTIPATH.md Section 3.3), suspension, and the received
+source matched (MULTIPATH.md Section 3.3), whether the session is
+join-secret pending (a deferred PSK not yet supplied, Go
+`JoinSecretPending`; held peer joins are counted in the statistic
+`join_secret_pending`, not as join authentication failures), suspension, and the received
 GOAWAY watermarks, and the largest datagram payload the peer currently
 accepts, for session datagrams and for a given stream (EXTENSIONS.md
 Section 6.6), which packet-carrying applications use as their MTU. The
@@ -1410,6 +1439,15 @@ padding-only record that the current allowance does not cover is deferred
 and sent at its full length once it is covered; only a hard limit, such as
 the padding byte limit, shortens one, and only such a cut counts as
 clamped.
+
+The limits are local and never sent, so a session's limits may be
+replaced while it runs (Go `Conn.SetShapingLimits(l) error`, read back
+with `ShapingLimits()`), tightened or loosened, with the same checks; an
+invalid value is the configuration error and changes nothing. Records
+planned afterwards follow the new limits, also when no shaper is
+installed yet; the padding and pauses already spent stay counted, so
+past a tightened limit nothing more is padded or paused, and nothing
+already sent is undone.
 
 A shaper factory receives each pipe's write overhead (Section 4.1). An
 executor of shaping configuration files takes the largest and the

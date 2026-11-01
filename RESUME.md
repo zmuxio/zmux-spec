@@ -123,7 +123,10 @@ An endpoint may be suspended in one direction only (Section 2):
 ### 4.3 Rejoining
 
 Either endpoint may join new pipes while suspended, using MULTIPATH.md
-Section 5 unchanged; in practice the endpoint that can reach the other's
+Section 5 unchanged; a session that is join-secret pending (MULTIPATH.md
+Section 3.3) has no join keys, so one that suspends before the
+application supplied its deferred PSK cannot rejoin and ends at the grace
+expiry (Section 8); in practice the endpoint that can reach the other's
 listener (usually the initiator) does it, possibly driven by an
 application-supplied redial hook (API.md Section 5.5). A rejoining endpoint
 joins a direction it lacks: an endpoint without a live inbound pipe joins a
