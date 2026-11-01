@@ -1393,6 +1393,17 @@ The stream index of a stream is its identifier shifted right by two bits.
    identifier at or above the watermark is never sent, and the stream fails
    locally as rejected (EXTENSIONS.md Section 3.5 rule 3).
 
+   The first frame need not be a STREAM frame: once the identifier is
+   allocated, the stream's control frames (RESET_STREAM, STOP_SENDING,
+   MAX_STREAM_DATA, STREAM_DATA_BLOCKED, PRIORITY_UPDATE) carry it and may
+   precede the stream's first STREAM frame, which opens the stream at the
+   receiver as rule 2 describes. A sender MUST NOT hold them back for a
+   STREAM frame that cannot be sent: a STREAM_DATA_BLOCKED for a preamble
+   that does not fit the stream's credit (Section 8.4), or a reset of a
+   stream whose data never left, would otherwise never be sent. Before the
+   identifier is allocated, a control frame has no identifier to carry
+   and waits for the allocation.
+
    An endpoint MUST NOT assign an identifier, by a first frame or by
    pinning, whose stream index is at or above the peer's current limit for
    that type (RFC 9000 Section 4.6). When the application asks for the

@@ -423,7 +423,10 @@ the join keys then and releases the peer's held joins; until then local
 joins fail with `ErrJoinSecretPending` and none can resume the session.
 A deferred PSK excludes a static one and `AllowInsecure`; it can be set
 once, of at least 16 bytes, and fails when the negotiation did not select
-the PSK (the peer sent no P). `AllowInsecure` is for plaintext deployments
+the PSK (the peer sent no P). Supplied before establishment, it is kept
+for the negotiation and dropped when that does not select the PSK: the
+session is then not join-secret pending (Section 5.4) and a later call
+fails as not negotiated. `AllowInsecure` is for plaintext deployments
 protected by other means. There is no default: the
 library never uses the exporter on its own, because a CDN or a
 TLS-intercepting proxy makes the two ends export different values, and
@@ -462,6 +465,25 @@ trust an outer TLS. Only the exporter binding, or a client that pins the
 server, proves that the TLS runs end to end. HTTP split and exchange
 carriers expose no TLS state, because their requests need not share one
 TLS connection.
+
+The application reads the same exporter with the session's
+`ExportKeyingMaterial(label, context, length)` (Go `Conn`; Rust, Java and
+Python will provide the same capability under the same name): the
+bootstrap carrier's exporter found by the one rule above, for a split
+bootstrap over two connections the uplink's value followed by the
+downlink's (2 × length bytes, as for `pipe_auth`). It fails with
+"no exporter" (Go `ErrNoExporter`) when the carrier has none, refuses the
+labels zmux itself uses (`EXPORTER-zmux-` prefix, which key the joins),
+and returns the carrier's error while its handshake is incomplete. Both
+ends obtain the same value.
+
+`SessionBinding()` (Go `Conn`; the other languages will follow under the
+same name) returns the session binding value of MULTIPATH.md Section 10.3,
+32 bytes, the same at both ends and different for every session, which an
+application includes in an authentication transcript to bind it to this
+session. It is public, not a secret. It is absent (Go nil) before
+establishment and when multipath is not in use, since the Session Nonces
+travel in `zmux_multipath`.
 
 A token that fails verification at the acceptor is reported as the event
 `JoinAuthFailed{reason}` (Go `Event` of kind `EventJoinAuthFailed`, Rust
@@ -1033,6 +1055,7 @@ would.
 | request the peer's priority (receiving side) | `SetPeerPriority(u, inc)` | `set_peer_priority(Priority)` | `setPeerPriority(Priority)` | `RecvStream.set_peer_priority(Priority)`, or `peer_priority=` of `open_bi` | PRIORITY TLV of a local stream's preamble before its first frame, PRIORITY_UPDATE otherwise (EXTENSIONS.md Section 5) |
 | replayable | `Replayable()` | `is_replayable()` | `isReplayable()` | `RecvStream.is_replayable` (property) | true while the stream's opening frame arrived as carrier early data and the carrier handshake has not completed (SPEC.md Section 6.1.2, Replay); the application treats such a stream's request as one an attacker may have repeated |
 | stream identifier | `StreamID()` | `id()` | `id()` | `id` (property) | before the first frame: pins the identifier and sends the opening frame (the preamble) as soon as flow control and the retransmit budget allow, before any later stream's first frame (SPEC.md Section 7.2) |
+| flush (open now) | `Flush() error` on `Stream` and `SendStream` | to follow | to follow | to follow | sends what was written: the opening frame at once if the stream has none (the preamble, and the data written before the call in the same STREAM frame; data written afterwards goes in later frames), then the buffered data as flow control allows; waits until they were sent, bounded by the write deadline, and fails as a write does on a reset or closed stream or session. It is the same pinning as the identifier accessor (SPEC.md Section 7.2), and the explicit way to open a stream whose peer speaks first. Before establishment the opening frame goes as soon as the stream may open (in early data when in use); while the first flight is held (Go `EarlyData.HoldFirstFlight`) the call returns at once and the frames leave with the flight. Rust, Java and Python will provide the same capability under the same name |
 | stream datagrams (bidirectional streams, datagram flows in use) | `SendDatagram(context, p)`, `ReceiveDatagram(ctx)` on `Stream` | `send_datagram(context, Bytes)` on `SendStream`, `read_datagram()` on `RecvStream` | `sendDatagram(context, ByteBuffer)`, `receiveDatagram()` on `ZmuxStream` | `send_datagram(payload, context=0)` on `SendStream`, `await read_datagram()` on `RecvStream` | DATAGRAM with Flow = stream ID + 1 (EXTENSIONS.md Section 6.3) |
 | per-stream windows | `SetReceiveWindow(initial, max)`, `SetSendBuffer(n)` | `set_receive_window`, `set_send_buffer` | `setReceiveWindow`, `setSendBuffer` | `RecvStream.set_receive_window(initial, max)`, `SendStream.set_send_buffer(n)` | MAX_STREAM_DATA (IMPLEMENTATION.md Section 6.4) |
 | per-stream scheduler | `SetScheduler(s)` | `set_scheduler` | `setScheduler` | `SendStream.set_scheduler(s)` | none |
@@ -1119,7 +1142,9 @@ would.
   without it), so `StreamID()` always returns at once with an identifier
   below the peer's limit. Settings that go into the
   preamble (open info, peer priority) must therefore be made before the
-  identifier is read.
+  identifier is read. To open a stream on the wire on purpose (a
+  protocol whose server speaks first), `Flush` is the explicit call: it
+  pins the same way and waits until the opening frame was sent.
 - `Reject()` is for accepted streams whose data the application has not
   read; on a bidirectional stream it ends both directions (Rust and Python:
   on `RecvStream`, which also resets the paired `SendStream` if it has not

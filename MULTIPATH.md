@@ -635,7 +635,9 @@ most one record (in-band) or 64 bytes (out-of-band) of it.
    within the limits of Section 5.6, until the join keys are derived or the
    handshake timeout expires; then close the carrier silently (no
    ZMUX_RESUME_FAILED; it is not a join authentication failure, and an
-   implementation counts it separately).
+   implementation counts it separately). A held join occupies a pending
+   slot, so this wait is finite even when the application configured no
+   handshake timeout: the default handshake timeout bounds it then.
 5. Verify the Join Token in constant time (Section 10.5), always with the
    join key of the peer's role (the session knows which role the peer has),
    never with a role inferred from the Pipe ID's parity. On failure, close
@@ -2136,6 +2138,14 @@ or 64 for a split bootstrap), so the concatenation is unambiguous.
 In insecure mode IKM is empty, so anyone who observed the bootstrap
 parameters can compute the secret. That mode offers MPTCP-level protection
 (RFC 7430) and is only for deployments that are protected by other means.
+
+The **session binding** value identifies the session to the application
+(API.md Section 4.3) and is no secret:
+
+    session_binding = HKDF-Extract(salt = "zmux session binding",
+                                   IKM = initiator Session Nonce || responder Session Nonce)   SHA-256, 32 bytes
+
+It enters no key derivation of this specification.
 
 ### 10.4 Keys
 
