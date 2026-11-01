@@ -341,6 +341,14 @@ preferred, default 0; and a weight, also unbounded, default 1:
 | `Weight` | the outbound direction's share for `spread-round-robin`, and the factor applied to its measured rate by `spread-rate-weighted`; local, never sent | 1 |
 | `Probation` | base of the probation of a pipe that joins or returns from suspicion; 0 disables probation | 4 x SRTT for the first join of a path without history, otherwise max(1 s, 4 x SRTT), doubled for a pipe that keeps failing, but never beyond max(base, twice the longest up period it has shown) (SCHEDULER.md Section 11) |
 
+In Go, `Probation` zero is the default and `NoProbation` turns probation
+off, for `PipeOptions` (where zero is the session's) and for the scheduler
+parameter alike; a negative `Probation`, or one set together with
+`NoProbation`, is the configuration error. The `Send` fields and `Weight`
+stay pointers there: an unset `Send` field follows the peer's request, which
+an explicit zero must be able to override, and a `Weight` of zero excludes
+the pipe.
+
 All six can be changed at any time with the methods above, and the two
 `Send` fields can be cleared again; changes apply from the next scheduling
 decision, and a changed request is sent to the peer at once. New stream
@@ -834,7 +842,11 @@ kind name, an unknown one skips its entry; the times are RFC 3339 in UTC,
 empty for none; `backoff_ms` is a non-negative integer; unknown members
 are ignored; a wrong type fails the whole import; expired entries (both
 times and the fail time plus the maximum backoff past) are dropped; an
-entry replaces one of the same key and kind only if it is newer.
+entry replaces one of the same key and kind only if it is newer; a
+`good_until` further ahead than the success TTL or a `fail_until` further
+ahead than the maximum backoff is brought back to that bound, so that an
+import cannot hold a kind usable or failed for longer than the cache itself
+would.
 
 ---
 
