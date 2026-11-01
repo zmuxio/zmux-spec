@@ -98,6 +98,7 @@ version with new ALPN identifiers (ARCHITECTURE.md Section 5.4).
 - [zmux-go](https://github.com/zmuxio/zmux-go) (Go, reference implementation)
 - [zmux-rs](https://github.com/zmuxio/zmux-rs) (Rust)
 - [zmux-python](https://github.com/zmuxio/zmux-python) (Python, bindings to zmux-rs)
+- [zmux-java](https://github.com/zmuxio/zmux-java) (Java)
 
 [draft-ietf-quic-qmux-02]: https://datatracker.ietf.org/doc/draft-ietf-quic-qmux/02/
 [RFC 9000]: https://www.rfc-editor.org/rfc/rfc9000
