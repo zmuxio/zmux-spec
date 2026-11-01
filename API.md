@@ -349,6 +349,28 @@ stay pointers there: an unset `Send` field follows the peer's request, which
 an explicit zero must be able to override, and a `Weight` of zero excludes
 the pipe.
 
+In Go the liveness settings can be replaced while the session runs.
+`c.SetLiveness(Liveness) error` replaces the session-wide values as a
+whole: `KeepAlivePeriod`, `SuspectFloor`, `DeadTimeout`, `StandbyProbe`,
+`ProbeInterval`, `ProbeJitter` and `NoProbeJitter`, which have the meanings,
+defaults and bounds of the knobs of Section 6. A zero field is the default,
+not the value the session was started with. An invalid value is the
+configuration error and changes nothing. `c.Liveness() Liveness` returns
+the values in effect, defaults filled in and a setting that is off
+negative, so the result passed back changes nothing. The timers are
+rearmed at once. The keep-alive period stays capped at half the effective
+idle timeout. The probe intervals and the suspicion floor apply to the
+waits in progress, a jitter from the next draw. A new `DeadTimeout`
+applies to pipes that turn suspect from then on; a pipe already suspect
+keeps the `SuspectFloor` and `DeadTimeout` it turned suspect under, so
+that a change never fails it retroactively. Pipes without settings of
+their own, those joined later included, follow the new values.
+`p.SetLiveness(PipeLiveness) error` replaces a pipe's own `SuspectFloor`,
+`DeadTimeout`, `ProbeInterval`, `ProbeJitter` and `NoProbeJitter` (the
+`PipeOptions` fields of the same names, zero following the session's) on
+the same terms, and `p.ClearLiveness()` returns the pipe to the session's.
+Nothing is sent for either.
+
 All six can be changed at any time with the methods above, and the two
 `Send` fields can be cleared again; changes apply from the next scheduling
 decision, and a changed request is sent to the peer at once. New stream
@@ -397,6 +419,20 @@ deployments (a PSK).
 | Rust | `PipeAuth::none()`, `PipeAuth::tls()`, `PipeAuth::psk(key)`, `PipeAuth::insecure()`, `.with_psk(key)`; `Config::pipe_auth` |
 | Java | `PipeAuth` in `ZmuxConfig` |
 | Python | `zmux.PipeAuth`, immutable: `PipeAuth.tls()`, `PipeAuth.psk(key: bytes)`, `PipeAuth.insecure()`, `auth.with_psk(key)` returning a new value; `Config(pipe_auth=...)`, `None` the default (no credentials). It replaces the keywords `psk` and `tls_auth` |
+
+The exporter is taken from the carrier's TLS state (in Go its
+`ConnectionState`). A Go WebSocket carrier (`zmuxws`) reports the TLS that
+the process itself terminates beneath it: a client's wss connection, or the
+TLS connection of a server's request. The WebSocket streams of one HTTP/2
+connection (extended CONNECT) share that connection's TLS, and so its
+exporters. `PipeAuth.TLS` and carrier-bound joins therefore work over wss.
+Where TLS ends elsewhere (a ws URL, or a server behind a TLS-terminating
+proxy) the state is reported without a completed handshake, and both fail
+rather than bind to TLS that is not the peer's. There is no switch to
+trust an outer TLS. Only the exporter binding, or a client that pins the
+server, proves that the TLS runs end to end. HTTP split and exchange
+carriers expose no TLS state, because their requests need not share one
+TLS connection.
 
 A token that fails verification at the acceptor is reported as the event
 `JoinAuthFailed{reason}` (Go `Event` of kind `EventJoinAuthFailed`, Rust
@@ -1303,6 +1339,16 @@ allowance). A library maps the file onto its own limits in its own idiom.
 Lengths and counts drawn from a file's values are rounded half away from
 zero.
 
+**Raising the stream limits (Go).** `c.RaiseIncomingStreams(bidi, uni
+int64) error` raises `max_incoming_streams` and `max_incoming_uni_streams`
+while the session runs, for example once the application has
+authenticated its peer, and sends MAX_STREAMS. The credit only grows
+(SPEC.md Section 8.5): a value at or below the current one leaves that type
+unchanged, so 0 raises nothing. While the unidirectional credit is still
+staged, `uni` raises the target the first accept moves it to. After GOAWAY
+no credit is sent. A negative value, or one above 2^60, is the
+configuration error and changes nothing.
+
 **Exported defaults.** Each library exports these defaults as public
 constants, named in its own conventions, and uses only these constants
 for them: the keep-alive period (15 s), the idle timeout (30 s), the record
@@ -1675,6 +1721,10 @@ conformance requirement beyond the tests of CONFORMANCE.md Section 4.7
 for the libraries that offer them (CONFORMANCE.md Section 1). Anything
 they do, an application can do with the public API alone.
 
+- **Backoff.** `PipePool.MinBackoff` and `MaxBackoff` bound the redial
+  backoff of `MaintainPipes` (1 s and 60 s when unset). A `MinBackoff`
+  above `MaxBackoff`, the defaults filled in, is the configuration error,
+  as a negative one is.
 - **Rotation.** `PipePool.Rotate` (`MaxBytes`, `MaxAge`, `Jitter`; unset
   by default), for the pipes that `MaintainPipes` keeps up (below): only the
   pool's `Dial` knows which path a pipe runs over, so rotation is a pool
