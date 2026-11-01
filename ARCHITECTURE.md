@@ -191,8 +191,10 @@ follows.
 
 REGISTRY.md Section 7 lists extension points whose codepoints and frameworks
 are fixed now and whose specifications come later: the DEADLINE TLV,
-implicit acknowledgements from carriers, the qlog schema and record protection for carriers
-without end-to-end TLS. Redundant scheduling of urgent data is part of the
+implicit acknowledgements from carriers and the qlog schema. End-to-end
+protection for carriers without end-to-end TLS is a carrier transform
+below the session (SECURE-CARRIER.md), not a session feature, and needs no
+codepoint. Redundant scheduling of urgent data is part of the
 scheduler (SCHEDULER.md Section 4.1), and early data toward a known zmux
 peer is part of establishment (SPEC.md Section 6.1.2).
 

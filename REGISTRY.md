@@ -186,7 +186,6 @@ multipath reinjection rule of MULTIPATH.md Section 7.4.
 | zmux_max_ack_delay | 0x17fa1ed6 | zmux, varint | 25 | omitted (25) | MULTIPATH.md#3 |
 | zmux_max_lanes | 0x27856ef0 | zmux, lanes | 1 lane (no lanes) | always: Max Lanes 258 (max_lanes) and a random 16-byte Lane Key | MULTIPATH.md#3.6 |
 | zmux_resume | 0x0d5778ce | zmux, varint | not supported | resume_timeout in ms when enabled | RESUME.md#3 |
-| zmux_record_protection | 0x1dbe26bc | zmux (reserved), opaque | not supported | never (reserved) | REGISTRY.md#7 |
 <!-- END GENERATED: transport_parameters -->
 
 "zmux endpoints send" is the RECOMMENDED value of a general-purpose
@@ -273,7 +272,6 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 
 | Item | Codepoint | Status |
 |---|---|---|
-| record protection | transport parameter `zmux_record_protection` 0x1dbe26bc | reserved; MUST NOT be sent; ignored on receipt |
 | DEADLINE preamble TLV | TLV type 0x03 | reserved; MUST NOT be sent; ignored on receipt |
 | carrier implicit acknowledgement | none (adapter behaviour) | reserved; carrier events are not acknowledgements yet |
 | qlog event schema | none | informative (IMPLEMENTATION.md Section 11) |

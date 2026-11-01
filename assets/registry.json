@@ -900,18 +900,6 @@
         "value": 223836366,
         "hex": "0x0d5778ce"
       }
-    },
-    {
-      "name": "zmux_record_protection",
-      "scope": "zmux-reserved",
-      "format": "opaque",
-      "absent_default": "not supported",
-      "zmux_sends": "never (reserved)",
-      "spec": "REGISTRY.md#7",
-      "id": {
-        "value": 499001020,
-        "hex": "0x1dbe26bc"
-      }
     }
   ],
   "transport_errors": [

@@ -202,8 +202,6 @@ TRANSPORT_PARAMETERS = [
     dict(name="zmux_resume", id=0x0D5778CE, scope="zmux", format="varint",
          absent_default="not supported", zmux_sends="resume_timeout in ms when enabled",
          spec="RESUME.md#3"),
-    dict(name="zmux_record_protection", id=0x1DBE26BC, scope="zmux-reserved", format="opaque",
-         absent_default="not supported", zmux_sends="never (reserved)", spec="REGISTRY.md#7"),
 ]
 
 ALLOCATION_SUFFIX = {

@@ -2476,6 +2476,6 @@ Section 8.5 lists the trade-offs.
   9.8).
 - Spreading exposes per-pipe traffic volumes to observers of each carrier.
 - A CDN or other intermediary that terminates the carrier's TLS sees the
-  pipe's content and locators; end-to-end protection then needs the reserved
-  record protection feature (REGISTRY.md Section 7) or application-level
-  encryption.
+  pipe's content and locators; end-to-end protection then needs a carrier
+  transform with its own handshake (SECURE-CARRIER.md), whose exporter is
+  the innermost one (Section 10.1), or application-level encryption.

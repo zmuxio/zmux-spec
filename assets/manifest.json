@@ -15,7 +15,7 @@
     "wire_invalid": 92
   },
   "sha256": {
-    "assets/registry.json": "b811fa21daa515a308aea525865476e94c3a35f56f1676615978599299b67580",
+    "assets/registry.json": "d757df16e4e3d3a9b3abbbb0967ec975c4116d492f621a1104c0e51cf6fd74ea",
     "fixtures/profiles.json": "3c80e2960070593fa6630ab027bb8f2be142546e91f9487ba1489833363462a4",
     "fixtures/wire/valid.ndjson": "bd0aa9bd9644e20c27c6fea55e35d65d59648e6c7ab479cc3894dd40da852cc5",
     "fixtures/wire/invalid.ndjson": "41479aba13b4d23daa5b149dee1c120035c67452b6311de94d2dbc7cad08ac84",

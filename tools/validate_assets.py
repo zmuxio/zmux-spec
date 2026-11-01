@@ -163,7 +163,7 @@ def check_registry():
                 if f"Type (i) = {hexv}" not in read(doc):
                     fail(f"registry: {doc} does not define {name} with Type (i) = {hexv}")
             elif kind == "transport_parameter":
-                if name != "zmux_record_protection" and f"| {name} | {hexv} |" not in spec:
+                if f"| {name} | {hexv} |" not in spec:
                     fail(f"registry: SPEC.md Section 5.4 does not list {name} = {hexv}")
                 doc = R.tp_by_name(name)["spec"].split("#")[0]
                 if hexv not in read(doc):

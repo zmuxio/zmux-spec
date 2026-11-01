@@ -999,6 +999,74 @@ only when every lane is wrapped alike.
   (`CacheUsable`, `CacheFailed`, `CacheRejected`: skipped for the maximum
   backoff).
 
+### 4.7.3 Protected carriers (Go `seal`, experimental)
+
+`github.com/zmuxio/zmux-go/seal` is a separate module implementing
+SECURE-CARRIER.md with the public transform hooks only; its API
+and wire format are experimental.
+
+```go
+type PrivateKey [32]byte // X25519
+type PublicKey  [32]byte
+func GenerateKey() (PrivateKey, error)
+func (k PrivateKey) Public() PublicKey
+func KeyFromSecret(secret []byte, label string) PrivateKey
+func X25519FromEd25519Private(k ed25519.PrivateKey) PrivateKey
+func X25519FromEd25519Public(k ed25519.PublicKey) (PublicKey, error)
+
+type ClientConfig struct {
+    Peers  []PublicKey // pinned server keys, first used; none: bootstrap
+    Key    PrivateKey  // regular handshake
+    PSK    []byte      // >= 16 bytes; required by the bootstrap handshake
+    OnPeer func(PublicKey) // the server key a bootstrap learnt
+    Skew   *ClockSkew  // nil: one shared process-wide
+    Clock  timeshim.Clock
+}
+func Client(p zmux.PipeIO, c *ClientConfig) (zmux.PipeIO, error)
+func WrapCandidate(cand zmux.Candidate, c *ClientConfig) zmux.Candidate
+func Dial(ctx context.Context, network, addr string, c *ClientConfig, cfg *zmux.Config) (*zmux.Conn, error)
+func EarlyDataAccepted(p zmux.PipeIO) (accepted, known bool)
+type ClockSkew struct{ /* … */ }
+func (s *ClockSkew) Offset(clk timeshim.Clock) (time.Duration, bool)
+
+type Mode uint8 // SealedOnly, Auto
+type ServerConfig struct {
+    Keys        []PrivateKey // current first, then rotating
+    Authorize   func(ctx context.Context, peer PublicKey, src netip.AddrPort) (psk []byte, value any, ok bool)
+    Bootstrap   *TagTable
+    Window      time.Duration // 0: 60 s
+    ReplayMax   int           // 0: 1<<18
+    Stall       bool          // stall failures instead of closing
+    PeekTimeout time.Duration
+    Clock       timeshim.Clock
+}
+func NewServer(c *ServerConfig) (*Server, error)
+func (s *Server) Admission(m Mode) *zmux.Admission
+func (s *Server) WrapPipe(ctx context.Context, p zmux.PipeIO, h zmux.JoinHint) (zmux.PipeIO, error)
+func (s *Server) Stats() Stats
+type Peer struct { Value any; Static PublicKey; Bootstrap bool; ID string; Plain, EarlyAccepted bool }
+func NewTagTable(clock timeshim.Clock) *TagTable
+func (t *TagTable) Set(id string, psk []byte, value any) error
+func (t *TagTable) Delete(id string)
+const VariantSealed, VariantBootstrap, VariantPlain = "sealed", "sealed-boot", "plain"
+```
+
+- The client end is a message carrier; its first write sends msg1 with
+  that write's records, so `EarlyData{ZmuxPeer, Replayable,
+  HoldFirstFlight}` with `Conn.ReleaseFirstFlight` puts the first streams
+  in msg1. Its halves are `EarlyClientCarrier` (`EarlyAccepted` is always
+  true: a refused flight is resent under the transport keys),
+  `KeyingMaterialExporter` (after msg2), `Handshaker` (for carrier-bound
+  joins), `MessageBatchWriter`, `CloseWriter` and `Aborter`.
+- The server's `Admission` verifies msg1 (byte streams) and returns a
+  `*Peer` as `Decision.Value`, which `Conn.Admitted` returns; carriers
+  decided on a request head (WebSocket) are verified in `WrapPipe`.
+  `Authorize` runs on the admission goroutine and must not block. Failures
+  close (or stall) the carrier and are counted in `Stats`. `Auto` accepts
+  plain carriers on TLS this process terminates (`TerminatedTLS`).
+- The server end is `EarlyServerCarrier`: streams of an accepted first
+  flight are replayable until the client's first transport frame.
+
 ### 4.8 HTTP carrier selection
 
 HTTP-type carriers may share one server endpoint. A client may name the

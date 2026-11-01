@@ -784,7 +784,6 @@ The codepoints and frameworks below are fixed now and implemented later
 | DEADLINE preamble TLV | TLV type 0x03 | relative deadline in milliseconds (variable-length integer), relative because clocks differ |
 | carrier implicit acknowledgement | behaviour only | adapters such as HTTP POST, whose 2xx response proves full delivery, may later report it as an acknowledgement; endpoints MUST NOT treat carrier events as acknowledgements yet |
 | qlog event schema | none | QUIC qlog events plus pipe events (IMPLEMENTATION.md Section 11) |
-| record protection | transport parameter 0x1dbe26bc | AEAD protection of records for carriers that cannot protect end to end, with keys from the session secret; receivers ignore the parameter until it is specified |
 
 ---
 

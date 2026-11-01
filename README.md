@@ -53,6 +53,7 @@ parameters at codepoints of 2^14 and above.
 | [EXTENSIONS.md](./EXTENSIONS.md) | roles, GOAWAY, stream preamble, priorities, datagrams, application error codes, nested sessions and relays, duplicate sessions |
 | [STATE_MACHINE.md](./STATE_MACHINE.md) | stream, pipe and session state machines |
 | [REGISTRY.md](./REGISTRY.md) | every codepoint, GREASE, registration policy |
+| [SECURE-CARRIER.md](./SECURE-CARRIER.md) | experimental: end-to-end protected carriers through TLS-terminating intermediaries |
 | [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md) | byte-exact examples, generated and machine-checked |
 | [CONFORMANCE.md](./CONFORMANCE.md) | conformance requirements, invalid inputs, test vectors, QMux interoperability |
 | [TRACES.md](./TRACES.md) | the executable trace format and the trace runner |
