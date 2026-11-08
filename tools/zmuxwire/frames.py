@@ -81,7 +81,19 @@ def encode_tp_value(name_or_id, value):
         return bytes([value["flags"]]) + nonce + bytes([len(loc)]) + loc
     if fmt == "lanes":
         return _v(value["max_lanes"]) + _lane_key(value["lane_key"])
+    if fmt == "session_crypto":
+        return encode_session_crypto(value)
     return _bytes(value)
+
+
+def encode_set(values):
+    """Count(varint) followed by each value (varint)."""
+    return _v(len(values)) + b"".join(_v(s) for s in values)
+
+
+def encode_session_crypto(value):
+    """Value of zmux_session_crypto (MULTIPATH.md Section 3.7): SuiteSet || GroupSet."""
+    return encode_set(value["suites"]) + encode_set(value["groups"])
 
 
 def _lane_key(k):
@@ -139,8 +151,6 @@ def decode_tp_value(num, raw):
         flags = raw[0]
         nonce = raw[1:17]
         ln = raw[17]
-        if ln > R.LIMITS["max_locator_bytes"]:
-            raise DecodeError(TPE, "zmux_multipath: locator longer than 16 bytes")
         if len(raw) != 18 + ln:
             raise DecodeError(TPE, "zmux_multipath: length mismatch")
         return {"id": name, "value": {"flags": flags, "nonce": bytes(nonce),
@@ -152,6 +162,25 @@ def decode_tp_value(num, raw):
         if n == 0:
             raise DecodeError(TPE, "zmux_max_lanes: Max Lanes is 0")
         return {"id": name, "value": {"max_lanes": n, "lane_key": bytes(raw[pos:])}}
+    if fmt == "session_crypto":
+        pos = 0
+        sets = []
+        for required in (1, 2):
+            count, pos, n = decode_varint(raw, pos, TPE)
+            if n != len(encode_varint(count)):
+                raise DecodeError(TPE, "zmux_session_crypto: not shortest")
+            vals = []
+            for _ in range(count):
+                v, pos, n = decode_varint(raw, pos, TPE)
+                if n != len(encode_varint(v)):
+                    raise DecodeError(TPE, "zmux_session_crypto: not shortest")
+                vals.append(v)
+            if required not in vals or 0 in vals or vals != sorted(set(vals)):
+                raise DecodeError(TPE, "zmux_session_crypto: invalid set")
+            sets.append(vals)
+        if pos != len(raw):
+            raise DecodeError(TPE, "zmux_session_crypto: trailing bytes")
+        return {"id": name, "value": {"suites": sets[0], "groups": sets[1]}}
     return {"id": num, "raw": raw}
 
 
@@ -208,6 +237,8 @@ def validate_tps(params, local_max_record_size=None):
     for k in ("zmux_ack_threshold", "zmux_max_ack_delay", "zmux_max_lanes"):
         if k in d and "zmux_multipath" not in d and "zmux_pipe_ack" not in d:
             raise DecodeError(TPE, f"{k} requires zmux_multipath or zmux_pipe_ack")
+    if ("zmux_session_crypto" in d) != ("zmux_multipath" in d):
+        raise DecodeError(TPE, "zmux_session_crypto goes with zmux_multipath, and only then")
     if "zmux_resume" in d and "zmux_multipath" not in d:
         raise DecodeError(TPE, "zmux_resume requires zmux_multipath")
     if "zmux_ack_threshold" in d and d["zmux_ack_threshold"] < 1024:
@@ -278,8 +309,6 @@ def encode_frame(f, type_width=None):
         out += _v(f["max_bidi"]) + _v(f["max_uni"]) + _v(f["code"])
     elif t == "PRIORITY_UPDATE":
         out += _v(f["id"]) + _v(f["seq"]) + bytes([priority_byte(f)])
-    elif t == "PIPE_JOIN":
-        out += encode_join_body(f)
     elif t == "PIPE_ACK":
         out += _v(len(f["entries"]))
         for e in f["entries"]:
@@ -295,9 +324,23 @@ def encode_frame(f, type_width=None):
         out += _v(f["pipe"]) + _v(f["seq"]) + _v({"available": 0, "standby": 1}.get(st, st)
                                                  if isinstance(st, str) else st)
         out += _v(f.get("priority", R.PIPE_PRIORITY_DEFAULT))
+    elif t == "SESSION_EPOCH":
+        out += epoch_body(f)
     else:
         raise ValueError(f"cannot encode frame type {t}")
     return bytes(out)
+
+
+EPOCH_PHASE_CODES = {v: k for k, v in R.EPOCH_PHASES.items()}
+
+
+def epoch_body(f):
+    """A SESSION_EPOCH frame from Phase through Locator (MULTIPATH.md Section 10.7)."""
+    ph = f["phase"]
+    code = EPOCH_PHASE_CODES[ph] if isinstance(ph, str) else ph
+    share = _bytes(f.get("share"))
+    loc = _bytes(f.get("locator"))
+    return bytes([code]) + _v(f["epoch"]) + _v(len(share)) + share + bytes([len(loc)]) + loc
 
 
 def priority_byte(f):
@@ -305,25 +348,6 @@ def priority_byte(f):
     if not 0 <= u <= 7:
         raise ValueError("urgency out of range")
     return (u << 5) | (0x10 if f.get("incremental") else 0)
-
-
-def encode_join_body(f):
-    loc = _bytes(f["locator"])
-    flags = {"up": 0, "down": 1, "bidi": 2}[f["direction"]] if isinstance(
-        f["direction"], str) else f["direction"]
-    if f.get("carrier_bound"):
-        flags |= R.PIPE_JOIN_FLAG_CARRIER_BOUND
-    if f.get("standby"):
-        flags |= R.PIPE_JOIN_FLAG_STANDBY
-    flags |= f.get("reserved_flags", 0)
-    return (bytes([len(loc)]) + loc + _v(f["pipe"]) + bytes([flags]) + _v(f["fate_group"])
-            + _v(f.get("priority", R.PIPE_PRIORITY_DEFAULT)) + _bytes(f["token"]))
-
-
-def join_bytes_without_token(f):
-    """PIPE_JOIN encoding from Type through Priority (the MAC input prefix)."""
-    full = encode_frame(f)
-    return full[:-16]
 
 
 def _need(buf, pos, n, end):
@@ -456,34 +480,6 @@ def decode_frame(buf, pos, end, enabled=None, limits=None):
             raise DecodeError(FE, "PRIORITY_UPDATE reserved bits set")
         f["urgency"] = b >> 5
         f["incremental"] = bool(b & 0x10)
-    elif name == "PIPE_JOIN":
-        _need(buf, pos, 1, end)
-        ln = buf[pos]
-        pos += 1
-        if ln < 1 or ln > R.LIMITS["max_locator_bytes"]:
-            raise DecodeError(FE, "PIPE_JOIN locator length out of range")
-        _need(buf, pos, ln, end)
-        f["locator"] = bytes(buf[pos:pos + ln])
-        pos += ln
-        f["pipe"] = v()
-        _need(buf, pos, 1, end)
-        flags = buf[pos]
-        pos += 1
-        d = flags & 0x03
-        if d == 3:
-            raise DecodeError(FE, "PIPE_JOIN invalid direction")
-        if flags & R.PIPE_JOIN_RESERVED_MASK:
-            raise DecodeError(FE, "PIPE_JOIN reserved flag set")
-        f["direction"] = R.PIPE_DIRECTIONS[d]
-        f["carrier_bound"] = bool(flags & R.PIPE_JOIN_FLAG_CARRIER_BOUND)
-        f["standby"] = bool(flags & R.PIPE_JOIN_FLAG_STANDBY)
-        f["fate_group"] = v()
-        f["priority"] = v()
-        _need(buf, pos, 16, end)
-        f["token"] = bytes(buf[pos:pos + 16])
-        pos += 16
-        if pos - start > R.LIMITS["max_join_frame_bytes"]:
-            raise DecodeError(FE, "PIPE_JOIN longer than 64 bytes")
     elif name == "PIPE_ACK":
         n = v()
         if n == 0:
@@ -513,6 +509,24 @@ def decode_frame(buf, pos, end, enabled=None, limits=None):
         if st not in R.PIPE_STATUS_VALUES:
             raise DecodeError(FE, "PIPE_STATUS invalid status")
         f["status"] = R.PIPE_STATUS_VALUES[st]
+    elif name == "SESSION_EPOCH":
+        _need(buf, pos, 1, end)
+        ph = buf[pos]
+        pos += 1
+        if ph not in R.EPOCH_PHASES:
+            raise DecodeError(PV, "SESSION_EPOCH invalid phase")
+        f["phase"] = R.EPOCH_PHASES[ph]
+        f["epoch"] = v()
+        ln = v()
+        _need(buf, pos, ln, end)
+        f["share"] = bytes(buf[pos:pos + ln])
+        pos += ln
+        _need(buf, pos, 1, end)
+        ln = buf[pos]
+        pos += 1
+        _need(buf, pos, ln, end)
+        f["locator"] = bytes(buf[pos:pos + ln])
+        pos += ln
     else:  # pragma: no cover - registry and decoder out of sync
         raise DecodeError(FE, f"no decoder for {name}")
     if pos > end:
@@ -600,10 +614,9 @@ def decode_stream(buf, max_record_size=R.LIMITS["default_max_record_size"], enab
 
 
 QX_TP_PREFIX = encode_varint(R.frame_by_name("QX_TRANSPORT_PARAMETERS")["first"])
-PIPE_JOIN_PREFIX = encode_varint(R.frame_by_name("PIPE_JOIN")["first"])
+JOIN_HELLO_BYTE = 0x02
 PIPE_LANE_PREFIX = encode_varint(R.frame_by_name("PIPE_LANE")["first"])
 MIN_TP_RECORD = len(QX_TP_PREFIX) + 1      # type + Length(0)
-MIN_JOIN_RECORD = len(PIPE_JOIN_PREFIX) + 1 + 1 + 1 + 1 + 1 + 1 + 16
 MIN_LANE_RECORD = len(PIPE_LANE_PREFIX) + R.LIMITS["lane_key_bytes"] + 1 + 1  # + Pipe ID, Lane
 
 
@@ -612,7 +625,7 @@ def classify_first_bytes(prefix, accept_join=True, accept_lane=False,
     """Incremental first-record check (SPEC.md Section 6.2, MULTIPATH.md 5.5).
 
     Returns "session" once ``prefix`` proves a QX_TRANSPORT_PARAMETERS first
-    record, "join" once it proves a PIPE_JOIN first record, "lane" once it
+    record, "join" at a first byte 02 (a Hello), "lane" once it
     proves a PIPE_LANE first record (only with ``accept_lane``: a carrier
     delivered as a stream of a known carrier connection), "need-more" while
     undecided, and "reject" as soon as no valid first record can start with
@@ -620,6 +633,8 @@ def classify_first_bytes(prefix, accept_join=True, accept_lane=False,
     """
     if not prefix:
         return "need-more"
+    if accept_join and prefix[0] == JOIN_HELLO_BYTE:
+        return "join"
     width = 1 << (prefix[0] >> 6)
     if len(prefix) < width:
         return "need-more"
@@ -628,8 +643,6 @@ def classify_first_bytes(prefix, accept_join=True, accept_lane=False,
     candidates = []
     if MIN_TP_RECORD <= size <= max_record_size:
         candidates.append(("session", QX_TP_PREFIX))
-    if accept_join and MIN_JOIN_RECORD <= size <= max_record_size:
-        candidates.append(("join", PIPE_JOIN_PREFIX))
     if accept_lane and MIN_LANE_RECORD <= size <= max_record_size:
         candidates.append(("lane", PIPE_LANE_PREFIX))
     alive = [(k, m) for k, m in candidates if m[:len(rest)] == rest[:len(m)]]
@@ -645,7 +658,7 @@ def classify_first_bytes(prefix, accept_join=True, accept_lane=False,
 # JSON helpers (hex for bytes)
 
 BYTES_FIELDS = {"data", "reason", "token", "locator", "mac", "raw", "bytes", "nonce_bytes",
-                "lane_key"}
+                "lane_key", "share"}
 
 
 def to_json(obj):

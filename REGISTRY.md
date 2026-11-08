@@ -19,7 +19,8 @@ the source agree, and that every zmux value obeys Section 2.
 | stream preamble TLV types | variable-length integer | none (zmux only) | 5 |
 | transport error codes | variable-length integer | QUIC transport error codes (IANA) | 6.1 |
 | application error-code conventions | variable-length integer | the application's own space | 6.2 |
-| PIPE_JOIN flags, multipath secret flags, PIPE_STATUS values, zmux_role values | fixed | none | 8 |
+| Join directions and Suites, multipath secret flags, PIPE_STATUS values, zmux_role values | fixed | none | 8 |
+| secure carrier Groups, KeyAlgs, CredTypes and other secure carrier values | fixed | none | 8.3 |
 | labels (TLS exporter, HKDF) | ASCII strings | none | 9 |
 
 ---
@@ -84,7 +85,7 @@ A new frame type or transport parameter MUST:
 3. state its retransmission rule for multipath sessions (MULTIPATH.md Section
    7.4), whether it is ack-eliciting, and its classification for the
    no-effect budget (SPEC.md Section 9.4): a new frame is never chargeable
-   unless the closed list is amended by a new version of SPEC.md;
+   unless SPEC.md amends the closed list;
 4. state the response state it creates and show that it is bounded (SPEC.md
    Section 9.2);
 5. not change the meaning of any existing codepoint.
@@ -132,12 +133,12 @@ between endpoints under common control. They are never registered.
 | QX_PING | 0x348c67529ef8c7bd-0x348c67529ef8c7be | QMux-02 | - | yes | never | SPEC.md#4.5 |
 | GOAWAY | 0x1911f43e | zmux | zmux_goaway | yes | current-value | EXTENSIONS.md#3 |
 | PRIORITY_UPDATE | 0x073d08cf | zmux | zmux_priority | yes | latest-per-stream | EXTENSIONS.md#5 |
-| PIPE_JOIN | 0x1a24de36 | zmux | zmux_multipath | yes | never | MULTIPATH.md#5 |
 | PIPE_ACK | 0x0b2b3eeb | zmux | zmux_multipath or zmux_pipe_ack | no | never | MULTIPATH.md#6 |
 | PIPE_LANE | 0x3a05a1c9 | zmux | zmux_max_lanes | yes | never | MULTIPATH.md#5.8 |
 | PIPE_PING | 0x269b43e6 | zmux | zmux_multipath | yes | never | MULTIPATH.md#6.4 |
 | PIPE_ABANDON | 0x23b35b74 | zmux | zmux_multipath | yes | until-acked | MULTIPATH.md#8 |
 | PIPE_STATUS | 0x227b2811 | zmux | zmux_multipath | yes | latest-per-pipe | MULTIPATH.md#9 |
+| SESSION_EPOCH | 0x024e93eb | zmux | zmux_multipath | yes | offer-until-answered-answer-until-acked | MULTIPATH.md#10.7 |
 <!-- END GENERATED: frames -->
 
 "Gate" names the transport parameter that must be in use (zmux features) or
@@ -181,6 +182,7 @@ multipath reinjection rule of MULTIPATH.md Section 7.4.
 | zmux_datagram_flows | 0x0af391ed | zmux, empty | not supported | when datagrams are enabled | EXTENSIONS.md#6 |
 | zmux_carrier_datagrams | 0x3d274c5f | zmux, empty | not supported | when datagrams are enabled and a pipe carrier can have a datagram channel | EXTENSIONS.md#6.8 |
 | zmux_multipath | 0x30dc2978 | zmux, multipath | not supported | when max_pipes > 1 or resume is enabled | MULTIPATH.md#3 |
+| zmux_session_crypto | 0x026f24b5 | zmux, session_crypto | not allowed with zmux_multipath | with zmux_multipath | MULTIPATH.md#3.7 |
 | zmux_pipe_ack | 0x34b47621 | zmux, empty | not supported | always | MULTIPATH.md#3.5 |
 | zmux_ack_threshold | 0x2762c7e5 | zmux, varint | 65536 | omitted (65536) | MULTIPATH.md#3 |
 | zmux_max_ack_delay | 0x17fa1ed6 | zmux, varint | 25 | omitted (25) | MULTIPATH.md#3 |
@@ -210,7 +212,7 @@ Types 0x1f x N + 0x21 are GREASE (Section 8), inside the application range
 too. Every TLV is ignorable by a receiver that does not know it
 (EXTENSIONS.md Section 4.3); application TLVs are delivered to the
 application, which may give its own types any meaning (EXTENSIONS.md
-Section 4.7 shows a convention).
+Section 4.6 shows a convention).
 
 ---
 
@@ -274,7 +276,7 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 |---|---|---|
 | DEADLINE preamble TLV | TLV type 0x03 | reserved; MUST NOT be sent; ignored on receipt |
 | carrier implicit acknowledgement | none (adapter behaviour) | reserved; carrier events are not acknowledgements yet |
-| qlog event schema | none | informative (IMPLEMENTATION.md Section 11) |
+| qlog event schema | none | informative; QUIC qlog events plus pipe events |
 
 ---
 
@@ -286,9 +288,9 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 |---|---|---|---|
 | transport parameter IDs | 31 x N + 27 | at least one per QX_TRANSPORT_PARAMETERS, random N, 0 to 16 random bytes (SPEC.md 5.2) | ignore |
 | stream preamble TLV types | 0x1f x N + 0x21 | at least one in the first preamble an endpoint sends in a session, 0 to 8 random bytes (EXTENSIONS.md 4.3) | ignore |
-| reserved bits of `zmux_multipath` Secret Flags (0xf2) | any | send 0 | ignore |
+| reserved bits of `zmux_multipath` Secret Flags (0xfa) | any | send 0 | ignore |
 | frame types | none | not greased: unknown frame types are fatal and new frames are negotiated (SPEC.md 9.7) | |
-| reserved bits of PIPE_JOIN Flags (0xf0), PRIORITY_UPDATE and PRIORITY TLV (low 4 bits) | none | send 0 | non-zero is an error (MULTIPATH.md 5.1; EXTENSIONS.md 4.3, 5.2) |
+| reserved bits of PRIORITY_UPDATE and PRIORITY TLV (low 4 bits) | none | send 0 | non-zero is an error (EXTENSIONS.md 4.3, 5.2) |
 
 ### 8.2 Fixed values
 
@@ -298,23 +300,49 @@ The block 0x5a4d0000 to 0x5a4d0fff is reserved for zmux conventions
 | zmux_role Role | 0 | initiator |
 | zmux_role Role | 1 | responder |
 | zmux_role Role | 2 | auto |
-| PIPE_JOIN Flags direction (mask 0x03) | 0 | up |
-| PIPE_JOIN Flags direction (mask 0x03) | 1 | down |
-| PIPE_JOIN Flags direction (mask 0x03) | 2 | bidi |
-| PIPE_JOIN Flags | 0x04 | carrier-bound |
-| PIPE_JOIN Flags | 0x08 | standby (initial request for the acceptor's outbound direction) |
-| PIPE_JOIN Flags reserved mask | 0xf0 | must be 0 |
+| Join Direction | 0 | up |
+| Join Direction | 1 | down |
+| Join Direction | 2 | bidi |
+| Join Suite | 1 | AES-256-GCM, SHA-256 |
+| Join Suite | 2 | ChaCha20-Poly1305, SHA-256 |
 | zmux_multipath Secret Flags | 0x01 | E (exporter) |
 | zmux_multipath Secret Flags | 0x04 | P (pre-shared key) |
-| zmux_multipath Secret Flags | 0x08 | I (insecure join allowed) |
 | PIPE_STATUS Status | 0 | available |
 | PIPE_STATUS Status | 1 | standby |
 | PIPE_STATUS Priority | 0 to 2^62 - 1 | lower preferred; default 0; every value is valid |
 <!-- END GENERATED: fixed_values -->
 
-The types that may be first frames, QX_TRANSPORT_PARAMETERS, PIPE_JOIN and
-PIPE_LANE, are encoded beginning with `ff`, `9a` and `ba`. A type added
+The types that may be first frames, QX_TRANSPORT_PARAMETERS and
+PIPE_LANE, are encoded beginning with `ff` and `ba`. A Join Hello begins with
+the byte `02` (secure-carrier/SPEC.md Section 3.3), which no first record can. A type added
 later that may be a first frame never begins with `03` (Section 2.4 item 6).
+
+### 8.3 Secure carrier values
+
+<!-- BEGIN GENERATED: secure_carrier -->
+| Space | Value | Name | Properties |
+|---|---|---|---|
+| Group | 1 | X25519 | priority 1; shares 32 / 32 bytes; components X25519 |
+| Group | 2 | X25519+MLKEM768 | priority 2; shares 1216 / 1120 bytes; components X25519, ML-KEM-768 |
+| KeyAlg | 1 | X25519 | key 32 bytes; signature -; PQ no; static key of Establish |
+| KeyAlg | 3 | ML-DSA-44 | key 1312 bytes; signature 2420; PQ yes; proof key |
+| CredType | 0 | no credential |  |
+| payload type | 0 | ignorable padding |  |
+| payload type | 1 | credential |  |
+| payload type | 2 | application data |  |
+| payload type | 3 | carrier first bytes |  |
+| payload type | 5 | join pipe |  |
+| payload type | 6 | frames |  |
+| payload type | 7 | join decision |  |
+| payload type | 8 | proof |  |
+| payload type | 9 | key share |  |
+| SESSION_EPOCH Phase | 0 | offer |  |
+| SESSION_EPOCH Phase | 1 | answer |  |
+| Profile, payload type, CredType, Suite, Group, KeyAlg | 2^30 to 2^31 - 1 | private | never assigned; not interpreted by implementations of the secure carrier |
+<!-- END GENERATED: secure_carrier -->
+
+These values are fixed by secure-carrier/SPEC.md, which defines what each one means and
+what a new one must define. They are not allocated with the method of Section 2.2.
 
 ---
 
@@ -324,13 +352,16 @@ later that may be a first frame never begins with `03` (Section 2.4 item 6).
 | Name | Value |
 |---|---|
 | tls_exporter_session | `EXPORTER-zmux-session` |
-| tls_exporter_pipe | `EXPORTER-zmux-pipe` |
+| tls_exporter_join | `EXPORTER-zmux-join` |
 | hkdf_salt_prefix | `zmux session` |
 | hkdf_join_initiator | `zmux join i` |
 | hkdf_join_responder | `zmux join r` |
-| max_join_frame_bytes | 64 |
-| max_locator_bytes | 16 |
-| join_token_bytes | 16 |
+| key_id | `zmux-seal key` |
+| hkdf_epoch | `zmux epoch` |
+| proof_responder | `zmux-seal proof r` |
+| proof_initiator | `zmux-seal proof i` |
+| join_first_batch_default_bytes | 8192 |
+| max_locator_bytes | 255 |
 | lane_key_bytes | 16 |
 | default_max_record_size | 16382 |
 | zmux_max_record_size | 65535 |
@@ -349,6 +380,7 @@ later that may be a first frame never begins with `03` (Section 2.4 item 6).
 | datagram_receive_bytes | 1048576 |
 | suspect_floor_min_ms | 50 |
 | probe_interval_ms | 15000 |
+| max_join_deadline_ms | 60000 |
 | busy_window_ms | 15000 |
 | ack_redundancy_ms | 50 |
 | unretired_attachments_extra | 8 |

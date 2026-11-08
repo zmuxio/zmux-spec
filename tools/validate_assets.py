@@ -11,7 +11,8 @@ Checks:
   4. traces: schema, byte consistency of peer records, references, index;
   5. documents: relative links and section references resolve.
 
-Exit status 0 when everything passes.
+Each --traces DIR adds a further trace directory in the format of
+fixtures/traces. Exit status 0 when everything passes.
 """
 
 import hashlib
@@ -27,11 +28,12 @@ from zmuxwire import frames as F, registry as R, render, crypto as C  # noqa: E4
 from zmuxwire.varint import DecodeError  # noqa: E402
 
 ERRORS = []
+EXTRA_TRACES = []  # further trace directories (--traces DIR), same format as fixtures/traces
 CHECKS = {"registry": 0, "examples": 0, "corpus": 0, "traces": 0, "steps": 0, "docs": 0}
 
-DOCS = ["README.md", "ARCHITECTURE.md", "SPEC.md", "MULTIPATH.md", "SCHEDULER.md", "RESUME.md", "EXTENSIONS.md",
-        "STATE_MACHINE.md", "REGISTRY.md", "CONFORMANCE.md", "TRACES.md", "WIRE_EXAMPLES.md",
-        "IMPLEMENTATION.md", "API.md"]
+# Every Markdown document at the top level of the tree. A reference to a
+# document that is not in the tree is not checked.
+DOCS = sorted(p.name for p in ROOT.glob("*.md"))
 
 
 def fail(msg):
@@ -80,20 +82,17 @@ def check_docs():
             if not (ROOT / target).exists():
                 fail(f"docs: {d} links to missing {target}")
         # textual references like "SPEC.md Section 9.4" or "MULTIPATH.md Section 5.4"
-        for m in re.finditer(r"\b([A-Z_]+\.md) Sections? (\d+(?:\.\d+)*)", flat):
+        for m in re.finditer(r"secure-carrier/SPEC\.md Sections? (\d+(?:\.\d+)*)", flat):
+            if not re.search(rf"^#+ {re.escape(m.group(1))}\.? ", read("secure-carrier/SPEC.md"), re.M):
+                fail(f"docs: {d} references secure-carrier/SPEC.md Section {m.group(1)}, "
+                     "which does not exist")
+        for m in re.finditer(r"(?<!/)\b([A-Z_]+\.md) Sections? (\d+(?:\.\d+)*)", flat):
             doc, sec = m.group(1), m.group(2)
             if doc in DOCS and not ref_ok(f"{doc}#{sec}"):
                 fail(f"docs: {d} references {doc} Section {sec}, which does not exist")
-        for m in re.finditer(r"\b([A-Z_-]+\.md)\b", flat):
-            if not (ROOT / m.group(1)).exists():
-                fail(f"docs: {d} mentions missing {m.group(1)}")
         CHECKS["docs"] += 1
     # unqualified "Section N" inside a document must exist in that document
-    for d in ["SPEC.md", "MULTIPATH.md", "SCHEDULER.md", "RESUME.md", "EXTENSIONS.md", "STATE_MACHINE.md",
-              "TRACES.md", "CONFORMANCE.md", "REGISTRY.md", "IMPLEMENTATION.md", "API.md",
-              "ARCHITECTURE.md"]:
-        if not (ROOT / d).exists():
-            continue
+    for d in DOCS:
         raw = read(d)
         secs = sections(raw)
         text = re.sub(r"\s+", " ", raw)
@@ -101,7 +100,8 @@ def check_docs():
             start = max(0, m.start() - 40)
             ctx = text[start:m.start()]
             if re.search(r"(RFC ?\d+|QMux-02|draft-[\w-]+|reliable-stream-reset-\d+|[A-Z_]+\.md|"
-                         r"multipath-21|webtrans[\w-]*|RFC\d+\]|\]|BCP 14|HTTP/2|FIPS)[^.]{0,30}$", ctx):
+                         r"multipath-21|webtrans[\w-]*|RFC\d+\]|\]|BCP 14|HTTP/2|FIPS|"
+                         r")[^.]{0,30}$", ctx):
                 continue
             if m.group(1) not in secs:
                 fail(f"docs: {d} mentions Section {m.group(1)}, which it does not have")
@@ -258,8 +258,9 @@ def check_examples():
     secret = C.session_secret(D.PEER_NONCE, D.LOCAL_NONCE, b"", D.PSK)
     expect = {
         "session_secret": secret.hex(),
-        "join_key_i": C.join_key(secret, "initiator").hex(),
-        "join_key_r": C.join_key(secret, "responder").hex(),
+        "session_crypto (Suite 1, Group 2 at each end)": C.session_crypto().hex(),
+        "join_psk_i, epoch 0, Suite 1": C.join_psk(secret, "initiator").hex(),
+        "join_psk_r, epoch 0, Suite 1": C.join_psk(secret, "responder").hex(),
     }
     for k, v in expect.items():
         if rows.get(k) != v:
@@ -275,15 +276,25 @@ def check_examples():
             okm.hex() != ("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
                           "34007208d5b887185865"):
         fail("examples: HKDF does not match RFC 5869 test case 1")
-    # the out-of-band frame decodes to a join whose token verifies
-    oob = rows.get("PIPE_JOIN frame, out-of-band form", "")
-    if not oob:
-        fail("examples: out-of-band PIPE_JOIN frame missing")
-    else:
-        raw = bytes.fromhex(oob)
-        f, _ = F.decode_frame(raw, 0, len(raw))
-        if not C.verify_join(secret, "initiator", f):
-            fail("examples: out-of-band join token does not verify")
+    # the join keys agree with the normative vectors of the secure carrier
+    derive = json.loads(read("secure-carrier/vectors/derive.json"))
+    incomplete = [v for v in derive["join_psk"] if not v.get("error") and
+                  ("crypto_i" not in v or "epoch_secret" not in v)]
+    if incomplete:
+        fail(f"examples: {len(incomplete)} join_psk entries of "
+             "secure-carrier/vectors/derive.json have no epoch_secret, crypto_i and crypto_r")
+    for v in derive["join_psk"]:
+        if v.get("error") or v in incomplete:
+            continue
+        sec = bytes.fromhex(v["epoch_secret"])
+        for role, key in (("initiator", "join_psk_i"), ("responder", "join_psk_r")):
+            if C.join_psk(sec, role, v["suite"], v["crypto_i"], v["crypto_r"],
+                          v.get("hash_len", 32)).hex() != v[key]:
+                fail(f"examples: {key} differs from secure-carrier/vectors/derive.json")
+            CHECKS["examples"] += 1
+    # a Hello is told by its first byte, and no record is mistaken for one
+    if F.classify_first_bytes(b"\x02") != "join":
+        fail("examples: first byte 02 is not a join")
 
 
 # =============================================================================
@@ -301,7 +312,7 @@ def check_corpus():
                 if end != len(b):
                     raise DecodeError("X", "trailing bytes")
                 if e.get("non_minimal"):
-                    # semantic equality (CONFORMANCE.md Section 4.1)
+                    # semantic equality (CONFORMANCE.md Section 4)
                     b2 = F.encode_frame(f)
                     f2, _ = F.decode_frame(b2, 0, len(b2), gates, limits)
                     if len(b2) >= len(b) or F.to_json(f2) != F.to_json(f) or \
@@ -355,8 +366,17 @@ def check_corpus():
 # traces
 
 OPS = {
-    "pipe_up": ({"dir"}, {"pipe", "carrier", "via", "oob_join", "carrier_binding", "pairing",
+    "pipe_up": ({"dir"}, {"pipe", "carrier", "via", "carrier_binding", "pairing",
                           "framing", "source", "conn"}),
+    "peer_join": ({"carrier", "pipe", "direction", "fate_group", "priority", "standby", "locator",
+                   "mode", "outcome"}, {"batch", "bad_key", "confirm", "hold", "binding", "group",
+                                        "key_share", "phase"}),
+    "peer_join_finish": ({"carrier", "outcome"}, set()),
+    "peer_epoch": ({"pipe", "phase", "epoch"}, {"locator", "share_len", "repeat"}),
+    "peer_confirm": ({"carrier"}, set()),
+    "expect_join_hello": ({"pipe", "direction", "fate_group", "priority", "standby", "locator",
+                           "mode"}, {"batch", "group", "phase"}),
+    "peer_join_reply": ({"pipe", "decision"}, {"leading_parameters"}),
     "pipe_down": ({"dir", "how"}, {"pipe", "carrier", "lane"}),
     "set_writable": ({"pipe", "writable"}, set()),
     "peer_send": (set(), {"pipe", "carrier", "records", "hex", "chunks", "invalid", "messages",
@@ -378,9 +398,9 @@ CALLS = {"open_bidi", "open_uni", "accept_bidi", "accept_uni", "write", "finish"
          "read", "release", "reject", "set_priority", "set_peer_priority", "send_datagram",
          "recv_datagram", "ping", "shutdown", "close", "add_pipe", "remove_pipe",
          "set_pipe_status", "set_scheduler", "stream_id", "set_reliable_boundary",
-         "revalidate_pipes", "set_redundant"}
+         "revalidate_pipes", "set_redundant", "advance_epoch"}
 EVENTS = {"established", "goaway_received", "pipe_state", "join_auth_failed", "suspended",
-          "resumed", "datagram_dropped", "closed", "oob_join"}
+          "resumed", "datagram_dropped", "closed"}
 LOCAL_REASONS = {"HANDSHAKE_TIMEOUT", "IDLE_TIMEOUT", "PIPES_LOST", "EARLY_DATA_REJECTED"}
 FEATURES = {"role", "goaway", "preamble", "priority", "datagram_flows", "multipath", "pipe_ack", "resume"}
 SESSION_STATES = {"ESTABLISHING", "ACTIVE", "DRAINING", "SUSPENDED", "CLOSING", "CLOSED"}
@@ -427,13 +447,20 @@ def check_traces():
             F.decode_tps(body)
         except Exception as ex:  # noqa: BLE001
             fail(f"profile {name}: invalid transport parameters: {ex}")
-    index = json.loads((ROOT / "fixtures/traces/index.json").read_text())["traces"]
+    check_trace_dir("fixtures/traces", profiles, minimum=100)
+    for extra in EXTRA_TRACES:
+        check_trace_dir(extra, profiles)
+
+
+def check_trace_dir(base, profiles, minimum=1):
+    index = json.loads((ROOT / base / "index.json").read_text())["traces"]
     listed = {t["file"] for t in index}
-    files = {str(p.relative_to(ROOT)) for p in (ROOT / "fixtures/traces").rglob("*.ndjson")}
+    files = {str(p.relative_to(ROOT)) for p in (ROOT / base).rglob("*.ndjson")}
     for missing in files - listed:
         fail(f"traces: {missing} not in index.json")
     for missing in listed - files:
         fail(f"traces: index.json lists missing {missing}")
+    conformance = read("CONFORMANCE.md")
     for entry in index:
         path = ROOT / entry["file"]
         if not path.exists():
@@ -442,10 +469,10 @@ def check_traces():
         head = json.loads(lines[0])
         tid = head.get("id")
         CHECKS["traces"] += 1
-        expected_id = ".".join(Path(entry["file"]).relative_to("fixtures/traces").with_suffix("").parts)
+        expected_id = ".".join(Path(entry["file"]).relative_to(base).with_suffix("").parts)
         if tid != expected_id or entry["id"] != tid:
             fail(f"traces: id {tid} does not match path {entry['file']}")
-        for k in ("kind", "id", "title", "profile", "local_role", "refs", "groups"):
+        for k in ("kind", "id", "title", "profile", "local_role", "refs", "findings", "groups"):
             if k not in head:
                 fail(f"trace {tid}: header lacks {k}")
         if head.get("profile") not in profiles:
@@ -455,6 +482,9 @@ def check_traces():
         for r in head.get("refs", []):
             if not ref_ok(r):
                 fail(f"trace {tid}: reference {r} does not resolve")
+        for fnd in head.get("findings", []):
+            if f"`{fnd}`" not in conformance:
+                fail(f"trace {tid}: finding {fnd} is not in CONFORMANCE.md Section 6")
         binds = set()
         for i, line in enumerate(lines[1:], 1):
             s = json.loads(line)
@@ -521,6 +551,32 @@ def check_traces():
                     total = len(bytes.fromhex(s["hex"])) if "hex" in s else None
                     if total is not None and sum(s["chunks"]) != total:
                         fail(f"trace {tid} step {i}: chunks do not add up")
+            if op == "peer_join":
+                if s["direction"] not in ("up", "down", "bidi"):
+                    fail(f"trace {tid} step {i}: bad join direction")
+                if s["mode"] not in ("sealed", "bound", "trusted"):
+                    fail(f"trace {tid} step {i}: bad join mode")
+                if s["outcome"] not in ("accept", "refuse", "reject", "fatal"):
+                    fail(f"trace {tid} step {i}: bad join outcome")
+                if s.get("key_share") not in (None, "missing", "bad_length", "low_order"):
+                    fail(f"trace {tid} step {i}: bad key_share")
+            if op in ("peer_join", "expect_join_hello"):
+                if s.get("group", 1) not in {g["value"] for g in R.GROUPS}:
+                    fail(f"trace {tid} step {i}: bad group")
+                if s.get("phase", 0) not in (0, 1):
+                    fail(f"trace {tid} step {i}: bad phase")
+            if op == "peer_epoch":
+                if s["phase"] not in ("offer", "answer"):
+                    fail(f"trace {tid} step {i}: peer_epoch writes an offer or an answer")
+                if len(F.from_json({"locator": s.get("locator", "")})["locator"]) > 255:
+                    fail(f"trace {tid} step {i}: locator longer than 255 bytes")
+            if op == "peer_join" and "batch" in s:
+                for fr in F.from_json(s["batch"]):
+                    if fr.get("type") != "STREAM":
+                        fail(f"trace {tid} step {i}: a first batch holds STREAM frames only")
+            if op == "expect_join_hello" and "batch" in s:
+                for p in s["batch"]:
+                    check_pattern(tid, i, p)
             if op == "api":
                 if s["call"] not in CALLS:
                     fail(f"trace {tid} step {i}: unknown call {s['call']}")
@@ -572,8 +628,8 @@ def check_traces():
                 fail(f"trace {tid} step {i}: bad advance")
         if len(lines) < 3:
             fail(f"trace {tid}: too short")
-    if len(index) < 100:
-        fail(f"traces: only {len(index)} traces")
+    if len(index) < minimum:
+        fail(f"traces: only {len(index)} traces in {base}")
 
 
 # =============================================================================
@@ -588,6 +644,13 @@ def check_manifest():
 
 
 def main():
+    args = sys.argv[1:]
+    while args:
+        if args[0] == "--traces" and len(args) > 1:
+            EXTRA_TRACES.append(args[1].rstrip("/"))
+            args = args[2:]
+        else:
+            sys.exit("usage: validate_assets.py [--traces DIR]...")
     for fn in (check_docs, check_registry, check_examples, check_corpus, check_traces,
                check_manifest):
         try:

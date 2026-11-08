@@ -43,7 +43,7 @@ receiving part: Recv -> Size Known -> Data Recvd -> Data Read
 | D4 | After both parts are terminal, the stream waits for the application's release before its state is discarded and its credit returns. | SPEC 7.6, 8.5 |
 | D5 | Once a sending part has received STOP_SENDING, it sends no new data and no FIN; it answers with RESET_STREAM or RESET_STREAM_AT. | SPEC 4.3 |
 | D6 | PRIORITY_UPDATE is permitted in every state of a part the receiver sends on and opens peer-initiated bidirectional streams. | EXTENSIONS 5.4 |
-| D7 | A peer stream at or above a GOAWAY watermark the endpoint sent, or a new peer stream arriving while the listener is under memory pressure (API 4.4), is rejected by the stack and never offered; a stream the application rejects was offered, but none of its data was read. Either way the endpoint sends RESET_STREAM(ZMUX_REJECTED) on its sending part (bidirectional streams), which moves that part to Reset Sent, and STOP_SENDING(ZMUX_REJECTED) on its receiving part, which then waits for the peer's reset or FIN. | EXTENSIONS 3.4, 7.2 |
+| D7 | A peer stream at or above a GOAWAY watermark the endpoint sent, or a new peer stream arriving while the listener is under local resource pressure, is rejected by the stack and never offered; a stream the application rejects was offered, but none of its data was read. Either way the endpoint sends RESET_STREAM(ZMUX_REJECTED) on its sending part (bidirectional streams), which moves that part to Reset Sent, and STOP_SENDING(ZMUX_REJECTED) on its receiving part, which then waits for the peer's reset or FIN. | EXTENSIONS 3.4, 7.2 |
 | D8 | In multipath sessions, every frame may be duplicated or reordered. A frame that does not advance a state is ignored. | MULTIPATH 7.6 |
 
 ### 2.3 Life cycle of a stream record
@@ -89,8 +89,8 @@ Frames for a DISCARDED stream are ignored (SPEC 7.6).
 
 ### 2.5 Application-visible outcomes
 
-These outcomes are normative for traces (TRACES.md) and for API error mapping
-(API.md Section 5). "Remote" means the peer caused it.
+These outcomes are normative for traces (TRACES.md) and for the errors an
+implementation reports to its application. "Remote" means the peer caused it.
 
 | Situation | Read returns | Write returns |
 |---|---|---|
@@ -117,13 +117,13 @@ with the session error as soon as the session ends.
 ### 3.1 Outbound pipe (the local endpoint writes)
 
 ```text
-                    join sent or handed off
+                     Hello sent
    (none) ---------------------------------> JOINING ---------------------------+
-                                               |   \  stall > T_suspect          | carrier error,
-              first PIPE_ACK > 0 (up) or       |    +----------------+           | join not confirmed
-              first record received (down)     v                     v           v within the handshake timeout
+                                               |                                 | carrier error, failed Reply,
+              Reply verified, decision accept  |                                 | no Reply within the
+                                               v                                 v join timeout
    session established (pipe 0) ---------> ACTIVE <------------> SUSPECT ----------> FAILED
-   acceptor verified a down/bidi join -------^   stall > T_suspect /  |  T_fail with an  ^  ^
+   acceptor Confirmed a down/bidi join ------^   stall > T_suspect /  |  T_fail with an  ^  ^
                                                  ack advances and     |  ACTIVE alterna- |  |
                                                  writes resume        |  tive, T_dead as |  |
                                    graceful     |                     |  last pipe,      |  |
@@ -147,21 +147,21 @@ stall limit of the last pipe of a direction (MULTIPATH 7.1). All durations follo
 "longer than T" means one that has lasted T). A DRAINING pipe never returns
 to ACTIVE or SUSPECT: a stall of T_suspect only marks it suspect, which
 moves it to the end of the pipe choice of MULTIPATH 6.5 and reinjects its
-unacknowledged information. A pipe whose join was never confirmed fails
-only on a carrier error or the handshake timeout, never on T_fail or T_dead.
+unacknowledged information. A JOINING pipe has no stall clock: it fails only
+on a carrier error, a failed Reply or the join timeout (MULTIPATH 5.7, Join
+deadline), and t_ref starts when it becomes ACTIVE.
 
 | From | Event | To | Actions |
 |---|---|---|---|
 | (none) | session established: pipe 0 (both bootstrap carriers) | ACTIVE | t_ref starts at establishment; its RTT state starts from the initial values or the test hook |
-| (none) | joiner allocates pipe ID and sends or hands off PIPE_JOIN | JOINING | carries control frames; not usable until ACTIVE, so it never holds back failover to a standby pipe; new stream data only while no outbound pipe is usable (MULTIPATH 5.7, 11.1 rule S1; SCHEDULER 10) |
-| (none) | acceptor verified a join with a down or bidi direction | ACTIVE | acceptor writes a record carrying a complete PIPE_ACK snapshot (when it has an entry), PIPE_PING and its PIPE_STATUS request, if any, within max_ack_delay (MULTIPATH 5.4 step 8); probation starts (SCHEDULER 11) |
-| JOINING | PIPE_ACK acknowledges position > 0 (up), or a record arrives on the down direction | ACTIVE | probation starts (SCHEDULER 11) |
-| JOINING | stall longer than T_suspect | SUSPECT | stop new stream data; reinject; PIPE_PING (MULTIPATH 7.2) |
-| JOINING | graceful removal (local) or PIPE_ABANDON(NO_ERROR) received | DRAINING | stop new stream data; PIPE_ABANDON(NO_ERROR) if not yet sent |
-| JOINING, SUSPECT (never confirmed) | carrier error, or not confirmed within the handshake timeout | FAILED | reinject; PIPE_ABANDON(ZMUX_PIPE_FAILED) |
+| (none) | joiner allocates pipe ID and writes the Hello | JOINING | no record on it; not usable, so it never holds back failover to a standby pipe; stream data only in the first batch, while no outbound pipe is usable (MULTIPATH 5.2, 5.7, 11.1 rule S1) |
+| (none) | acceptor's join with a down or bidi direction becomes Confirmed | ACTIVE | acceptor writes a record carrying a complete PIPE_ACK snapshot (when it has an entry), PIPE_PING and its PIPE_STATUS request, if any, within max_ack_delay (MULTIPATH 5.4 step 8) |
+| JOINING | Reply verified with decision 0 | ACTIVE | writes the confirmation, then the first record (MULTIPATH 5.2, 5.7 step 4); stall clocks start |
+| JOINING | Reply verified with decision 1 | RETIRED | close carrier; no PIPE_ABANDON; refusal backoff (MULTIPATH 5.7 step 1) |
+| JOINING | carrier error, failed Reply, anything else read before the Reply, no Reply within the join timeout (MULTIPATH 5.7, Join deadline), or removal (local, or PIPE_ABANDON received) | FAILED | reinject the first batch; PIPE_ABANDON(ZMUX_PIPE_FAILED) on another pipe; never a session error |
 | ACTIVE | ack stall or write stall longer than T_suspect (ack stalls only while the endpoint has a live inbound pipe) | SUSPECT | stop new stream data; reinject; take back frames not yet handed to the adapter; PIPE_PING |
 | ACTIVE | another attachment of the same joiner and non-zero fate group failed abruptly, that attachment's graceful removal had not started (no PIPE_ABANDON(NO_ERROR) sent or received for it) and it was not abandoned with ZMUX_PIPE_RESOURCE_LIMIT (MULTIPATH 7.1), and this pipe has unacknowledged ack-eliciting bytes | SUSPECT | as above (an idle pipe is probed instead) |
-| SUSPECT | acknowledged position advances and the carrier accepts writes | ACTIVE | drop reinjections now acknowledged; probation starts, its backoff exponent raised if the pipe became suspect in probation or soon after its last one (SCHEDULER 11) |
+| SUSPECT | acknowledged position advances and the carrier accepts writes | ACTIVE | drop reinjections now acknowledged |
 | SUSPECT (confirmed) | stall longer than T_fail while another outbound pipe is ACTIVE; stall longer than T_dead while none is; in both cases ack stalls count only while the endpoint has a live inbound pipe | FAILED | close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED) |
 | SUSPECT | carrier error, abrupt removal, PIPE_ABANDON(error) received | FAILED | close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED) if not yet sent |
 | ACTIVE | carrier error, abrupt removal, PIPE_ABANDON(error) received | FAILED | reinject; close carrier; PIPE_ABANDON(ZMUX_PIPE_FAILED), or ZMUX_PIPE_RESOURCE_LIMIT for a removal for a local resource limit or a loop (MULTIPATH 8.3) |
@@ -175,26 +175,26 @@ only on a carrier error or the handshake timeout, never on T_fail or T_dead.
 
 Modifiers: the effective **priority** and **standby** flag of the outbound
 direction (local setting, else the peer's PIPE_STATUS request, else priority 0
-and available), **probation**, **saturation** and the **suspect mark** of a
-DRAINING pipe restrict scheduling (MULTIPATH 6.5, 8.2, 9; SCHEDULER 10, 11) without being
-states.
+and available) and the **suspect mark** of a DRAINING pipe restrict
+scheduling (MULTIPATH 6.5, 8.2, 9) without being states; so may local
+scheduler state.
 
-New stream data may be scheduled only in ACTIVE, and in JOINING,
-reinjected information first, while no outbound pipe is usable; control frames may use SUSPECT and DRAINING
+New stream data may be scheduled only in ACTIVE, and in a JOINING pipe's first
+batch, reinjected information first, while no outbound pipe is usable; control frames may use SUSPECT and DRAINING
 pipes as a last resort (MULTIPATH 11.1 rule S1).
 An outbound pipe is **live** in JOINING, ACTIVE, SUSPECT and DRAINING.
 The last pipe of a direction (no other outbound pipe ACTIVE) fails from a
-stall only after T_dead: by default T_fail with resume and max(T_fail, half
-the idle timeout) without (MULTIPATH 7.1).
+stall only after T_dead (MULTIPATH 7.1).
 
 ### 3.2 Inbound pipe (the local endpoint reads)
 
 | From | Event | To | Actions |
 |---|---|---|---|
-| (none) | bootstrap, or acceptor verified a join (up or bidi) | OPEN | count positions; acknowledge |
-| (none) | joiner sent or handed off a join with direction down or bidi | JOINING | not listed in PIPE_ACK yet; a QX_TRANSPORT_PARAMETERS record leading it is discarded (MULTIPATH 5.7 step 3) |
-| JOINING | first complete record arrives | OPEN | the attachment becomes ACTIVE (MULTIPATH 5.7) |
-| JOINING | carrier error, or not OPEN within the handshake timeout | ENDED (failed) | as for OPEN below |
+| (none) | bootstrap, or acceptor's join (up or bidi) becomes Confirmed | OPEN | count positions; acknowledge |
+| (none) | joiner wrote a Hello with direction down or bidi | JOINING | nothing read reaches the session; not listed in PIPE_ACK yet; one QX_TRANSPORT_PARAMETERS record before the Reply is consumed (MULTIPATH 5.7 step 3) |
+| JOINING | Reply verified with decision 0 | OPEN | the attachment becomes ACTIVE (MULTIPATH 5.7 step 4) |
+| JOINING | Reply verified with decision 1 | RETIRED | as for the outbound pipe |
+| JOINING | carrier error, failed Reply, or no Reply within the join timeout (MULTIPATH 5.7, Join deadline) | ENDED (failed) | as for OPEN below |
 | OPEN | graceful end at a record boundary after PIPE_ABANDON or CONNECTION_CLOSE was received, or after the endpoint sent PIPE_ABANDON(NO_ERROR) for the attachment | ENDED (graceful) | final position in next PIPE_ACK |
 | OPEN | linger timeout after the PIPE_ABANDON exchange completed | ENDED (graceful) | close carrier |
 | OPEN | carrier error, reset, end inside a record, or unexpected end | ENDED (failed) | discard incomplete record; fail own outbound direction of a pair; PIPE_ABANDON(ZMUX_PIPE_FAILED) (MULTIPATH 7.3) |
@@ -217,7 +217,7 @@ graceful end of every lane at a record boundary (MULTIPATH 7.3, 8.2); and
 "count positions; acknowledge" counts each lane's position (MULTIPATH 6.1).
 A lane that names no live pipe is closed without any transition, and a
 writer's lane that ends before it is confirmed (a PIPE_ACK position above 0
-on it, within the handshake timeout) is refused, also without any
+on it, within the join timeout, MULTIPATH 5.7) is refused, also without any
 transition (MULTIPATH 5.8); only confirmed lanes fail their pipe, and on
 the reader's side an inbound lane that ends before its second record is no
 event.
@@ -225,10 +225,25 @@ event.
 | Pipe state (outbound) | Lanes the writer may open |
 |---|---|
 | JOINING | none (lane 0 not yet acknowledged) |
+| any state of a Sealed pipe | none: a Sealed pipe has no lanes (MULTIPATH 5.8) |
 | ACTIVE, SUSPECT | new lanes once a position greater than 0 on lane 0 is acknowledged, none after a refused one; a lane carries only its PIPE_LANE until confirmed; SUSPECT pipes take only what rule S1 of MULTIPATH 11.1 allows, on any confirmed lane |
 | DRAINING, FAILED, CLOSED, RETIRED | none |
 
-### 3.4 Attachments without multipath
+### 3.4 Handshake of a join
+
+The Join states of secure-carrier/SPEC.md Section 11.5 lie around the pipe states. A
+carrier below has no attachment state on the acceptor until Confirmed:
+
+| Side | Join state | Pipe state |
+|---|---|---|
+| Joiner | Pending | none: the pipe ID is consumed (MULTIPATH 5.7 step 1), the carrier still connecting, or a pair still incomplete |
+| Joiner | HelloSent | JOINING |
+| Joiner | Proven, decision 0 | ACTIVE, inbound OPEN |
+| Acceptor | classified to step 6 of MULTIPATH 5.4 | none; holds a slot |
+| Acceptor | Unconfirmed | none; the Pipe ID's bit is set, the first batch applied; no cap check, no eviction, no effect on suspension |
+| Acceptor | Confirmed | ACTIVE and OPEN by direction; cap check and displacement happen here |
+
+### 3.5 Attachments without multipath
 
 Outside multipath sessions there is one attachment, pipe 0, with no
 JOINING, SUSPECT or DRAINING states: the failure of either direction, on any
@@ -282,3 +297,16 @@ zmux CLOSING. zmux DRAINING is the GOAWAY phase.
 
 The session error is the first of: a processed peer CONNECTION_CLOSE, a local
 close or detected violation, a timeout, a carrier failure (SPEC 6.5).
+
+### 4.4 Session epochs
+
+In a multipath session each endpoint also runs the epoch exchange of MULTIPATH 10.7,
+independently of the session states above; d is its last completed epoch:
+
+| End | Epoch state | New joins use | Epochs accepted |
+|---|---|---|---|
+| either | Stable(d) | d | d |
+| offering | Offering | d | d |
+| offering | committed, timer R running | d+1 | d, d+1 |
+| answering | answered, answer not yet acknowledged and no peer join of d+1 | d | d, d+1 |
+| answering | answer acknowledged or peer join of d+1 verified, timer R running | d+1 | d, d+1 |

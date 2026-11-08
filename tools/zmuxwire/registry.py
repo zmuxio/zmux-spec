@@ -111,9 +111,6 @@ FRAME_TYPES = [
     dict(name="PRIORITY_UPDATE", first=0x073D08CF, last=0x073D08CF, kind="zmux",
          gate="zmux_priority", spec="EXTENSIONS.md#5", ack_eliciting=True,
          retransmit="latest-per-stream"),
-    dict(name="PIPE_JOIN", first=0x1A24DE36, last=0x1A24DE36, kind="zmux",
-         gate="zmux_multipath", spec="MULTIPATH.md#5", ack_eliciting=True,
-         retransmit="never"),
     dict(name="PIPE_ACK", first=0x0B2B3EEB, last=0x0B2B3EEB, kind="zmux",
          gate=("zmux_multipath", "zmux_pipe_ack"), spec="MULTIPATH.md#6", ack_eliciting=False,
          retransmit="never"),
@@ -129,10 +126,13 @@ FRAME_TYPES = [
     dict(name="PIPE_STATUS", first=0x227B2811, last=0x227B2811, kind="zmux",
          gate="zmux_multipath", spec="MULTIPATH.md#9", ack_eliciting=True,
          retransmit="latest-per-pipe"),
+    dict(name="SESSION_EPOCH", first=0x024E93EB, last=0x024E93EB, kind="zmux",
+         gate="zmux_multipath", spec="MULTIPATH.md#10.7", ack_eliciting=True,
+         retransmit="offer-until-answered-answer-until-acked"),
 ]
 
 # --- Transport parameters ---------------------------------------------------
-# format: "varint" | "empty" | "role" | "multipath" | "lanes"
+# format: "varint" | "empty" | "role" | "multipath" | "lanes" | "session_crypto"
 # scope:  "qmux"   permitted by QMux-02 Section 5.1 or 5.2 (or a QMux extension)
 #         "zmux"   zmux-allocated
 #         "prohibited"  QUIC v1 parameter prohibited by QMux-02 Section 5.1
@@ -189,6 +189,9 @@ TRANSPORT_PARAMETERS = [
     dict(name="zmux_multipath", id=0x30DC2978, scope="zmux", format="multipath",
          absent_default="not supported", zmux_sends="when max_pipes > 1 or resume is enabled",
          spec="MULTIPATH.md#3"),
+    dict(name="zmux_session_crypto", id=0x026F24B5, scope="zmux", format="session_crypto",
+         absent_default="not allowed with zmux_multipath", zmux_sends="with zmux_multipath",
+         spec="MULTIPATH.md#3.7"),
     dict(name="zmux_pipe_ack", id=0x34B47621, scope="zmux", format="empty",
          absent_default="not supported", zmux_sends="always", spec="MULTIPATH.md#3.5"),
     dict(name="zmux_ack_threshold", id=0x2762C7E5, scope="zmux", format="varint",
@@ -268,13 +271,50 @@ PREAMBLE_TLVS = [
 APP_TLV_FIRST = 0x1000
 APP_TLV_LAST = 0x3FFF
 
-# --- PIPE_JOIN flags, multipath secret flags --------------------------------
+# --- Join directions, multipath secret flags --------------------------------
 PIPE_DIRECTIONS = {0: "up", 1: "down", 2: "bidi"}
-PIPE_JOIN_FLAG_CARRIER_BOUND = 0x04
-PIPE_JOIN_FLAG_STANDBY = 0x08
-PIPE_JOIN_RESERVED_MASK = 0xF0
-MULTIPATH_SECRET_FLAGS = {0x01: "E (exporter)", 0x04: "P (pre-shared key)",
-                          0x08: "I (insecure join allowed)"}
+MULTIPATH_SECRET_FLAGS = {0x01: "E (exporter)", 0x04: "P (pre-shared key)"}
+JOIN_SUITES = {1: "AES-256-GCM, SHA-256", 2: "ChaCha20-Poly1305, SHA-256"}
+
+# --- Secure carrier spaces (secure-carrier/SPEC.md) ----------------------------
+# Profiles, payload types, CredTypes, Suites, Groups and KeyAlgs share one private range,
+# never assigned by this specification.
+SECURE_PRIVATE_FIRST = 1 << 30
+SECURE_PRIVATE_LAST = (1 << 31) - 1
+SECURE_PRIVATE_SPACES = ["Profile", "payload type", "CredType", "Suite", "Group", "KeyAlg"]
+# Key exchange groups of Join and of session epochs (secure-carrier/SPEC.md Section 11.6).
+# Share lengths are (initiator, responder); components lists the shared secrets in order.
+GROUPS = [
+    dict(value=1, name="X25519", priority=1, share_initiator=32, share_responder=32,
+         components=["X25519"]),
+    dict(value=2, name="X25519+MLKEM768", priority=2, share_initiator=32 + 1184,
+         share_responder=32 + 1088, components=["X25519", "ML-KEM-768"]),
+]
+# Long-term public key algorithms (secure-carrier/SPEC.md Section 6.5).
+KEY_ALGS = [
+    dict(value=1, name="X25519", key=32, signature=None, pq=False, use="static key of Establish"),
+    dict(value=3, name="ML-DSA-44", key=1312, signature=2420, pq=True, use="proof key"),
+]
+CRED_TYPES = {0: "no credential"}
+# PQ confidentiality of each Establish Profile (secure-carrier/SPEC.md Section 3).
+PROFILE_PQ_CONFIDENTIALITY = {1: True, 3: True, 4: True, 5: True}
+
+
+def pq_authenticated(proof_alg, proof_verified):
+    """PQ authentication of secure-carrier/SPEC.md Section 6.8."""
+    pq = {k["value"] for k in KEY_ALGS if k["pq"]}
+    return bool(proof_verified) and proof_alg in pq
+
+
+EPOCH_PHASES = {0: "offer", 1: "answer"}
+# Further fixed values of the secure carrier, by space.
+PAYLOAD_TYPES = {0: "ignorable padding", 1: "credential", 2: "application data",
+                 3: "carrier first bytes",
+                 5: "join pipe", 6: "frames", 7: "join decision", 8: "proof", 9: "key share"}
+SECURE_FIXED = {
+    "payload type": PAYLOAD_TYPES,
+    "SESSION_EPOCH Phase": EPOCH_PHASES,
+}
 PIPE_STATUS_VALUES = {0: "available", 1: "standby"}
 PIPE_PRIORITY_DEFAULT = 0
 PIPE_WEIGHT_DEFAULT = 1
@@ -283,16 +323,19 @@ ROLE_VALUES = {0: "initiator", 1: "responder", 2: "auto"}
 # --- Labels ------------------------------------------------------------------
 LABELS = {
     "tls_exporter_session": "EXPORTER-zmux-session",
-    "tls_exporter_pipe": "EXPORTER-zmux-pipe",
+    "tls_exporter_join": "EXPORTER-zmux-join",
     "hkdf_salt_prefix": "zmux session",
     "hkdf_join_initiator": "zmux join i",
     "hkdf_join_responder": "zmux join r",
+    "key_id": "zmux-seal key",
+    "hkdf_epoch": "zmux epoch",
+    "proof_responder": "zmux-seal proof r",
+    "proof_initiator": "zmux-seal proof i",
 }
 
 LIMITS = {
-    "max_join_frame_bytes": 64,
-    "max_locator_bytes": 16,
-    "join_token_bytes": 16,
+    "join_first_batch_default_bytes": 8192,
+    "max_locator_bytes": 255,
     "lane_key_bytes": 16,
     "default_max_record_size": 16382,
     "zmux_max_record_size": 65535,
@@ -311,6 +354,7 @@ LIMITS = {
     "datagram_receive_bytes": 1048576,
     "suspect_floor_min_ms": 50,
     "probe_interval_ms": 15000,
+    "max_join_deadline_ms": 60000,
     "busy_window_ms": 15000,
     "ack_redundancy_ms": 50,
     "unretired_attachments_extra": 8,

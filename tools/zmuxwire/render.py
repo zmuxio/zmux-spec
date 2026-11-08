@@ -85,11 +85,9 @@ def md_fixed():
     for k, v in R.ROLE_VALUES.items():
         rows.append(["zmux_role Role", k, v])
     for k, v in R.PIPE_DIRECTIONS.items():
-        rows.append(["PIPE_JOIN Flags direction (mask 0x03)", k, v])
-    rows.append(["PIPE_JOIN Flags", hx(R.PIPE_JOIN_FLAG_CARRIER_BOUND), "carrier-bound"])
-    rows.append(["PIPE_JOIN Flags", hx(R.PIPE_JOIN_FLAG_STANDBY),
-                 "standby (initial request for the acceptor's outbound direction)"])
-    rows.append(["PIPE_JOIN Flags reserved mask", hx(R.PIPE_JOIN_RESERVED_MASK), "must be 0"])
+        rows.append(["Join Direction", k, v])
+    for k, v in R.JOIN_SUITES.items():
+        rows.append(["Join Suite", k, v])
     for k, v in R.MULTIPATH_SECRET_FLAGS.items():
         rows.append(["zmux_multipath Secret Flags", hx(k), v])
     for k, v in R.PIPE_STATUS_VALUES.items():
@@ -97,6 +95,26 @@ def md_fixed():
     rows.append(["PIPE_STATUS Priority", "0 to 2^62 - 1",
                  f"lower preferred; default {R.PIPE_PRIORITY_DEFAULT}; every value is valid"])
     return table(["Field", "Value", "Meaning"], rows)
+
+
+def md_secure():
+    rows = []
+    for g in R.GROUPS:
+        rows.append(["Group", g["value"], g["name"],
+                     f"priority {g['priority']}; shares {g['share_initiator']} / "
+                     f"{g['share_responder']} bytes; components " + ", ".join(g["components"])])
+    for k in R.KEY_ALGS:
+        sig = "-" if k["signature"] is None else str(k["signature"])
+        rows.append(["KeyAlg", k["value"], k["name"],
+                     f"key {k['key']} bytes; signature {sig}; PQ {'yes' if k['pq'] else 'no'}; {k['use']}"])
+    for k, v in R.CRED_TYPES.items():
+        rows.append(["CredType", k, v, ""])
+    for space, values in R.SECURE_FIXED.items():
+        for k, v in values.items():
+            rows.append([space, k, v, ""])
+    rows.append([", ".join(R.SECURE_PRIVATE_SPACES), "2^30 to 2^31 - 1", "private",
+                 "never assigned; not interpreted by implementations of the secure carrier"])
+    return table(["Space", "Value", "Name", "Properties"], rows)
 
 
 def md_labels():
@@ -117,6 +135,7 @@ SECTIONS = {
     "transport_errors": md_transport_errors,
     "application_errors": md_app_errors,
     "fixed_values": md_fixed,
+    "secure_carrier": md_secure,
     "labels": md_labels,
 }
 
@@ -163,15 +182,26 @@ def registry_json():
         "grease": {"transport_parameter": "31*N+27", "preamble_tlv": "0x1f*N+0x21"},
         "fixed_values": {
             "zmux_role": {str(k): v for k, v in R.ROLE_VALUES.items()},
-            "pipe_join_direction": {str(k): v for k, v in R.PIPE_DIRECTIONS.items()},
-            "pipe_join_carrier_bound": hx(R.PIPE_JOIN_FLAG_CARRIER_BOUND),
-            "pipe_join_standby": hx(R.PIPE_JOIN_FLAG_STANDBY),
-            "pipe_join_reserved_mask": hx(R.PIPE_JOIN_RESERVED_MASK),
+            "join_direction": {str(k): v for k, v in R.PIPE_DIRECTIONS.items()},
+            "join_suites": {str(k): v for k, v in R.JOIN_SUITES.items()},
             "multipath_secret_flags": {hx(k): v for k, v in R.MULTIPATH_SECRET_FLAGS.items()},
             "pipe_status": {str(k): v for k, v in R.PIPE_STATUS_VALUES.items()},
             "pipe_priority": {"min": 0, "max": (1 << 62) - 1,
                               "default": R.PIPE_PRIORITY_DEFAULT,
                               "order": "lower preferred; every value valid"},
+        },
+        "secure_carrier": {
+            "groups": R.GROUPS,
+            "key_algs": R.KEY_ALGS,
+            "cred_types": {str(k): v for k, v in R.CRED_TYPES.items()},
+            "profile_pq_confidentiality": {str(k): v for k, v in
+                                           R.PROFILE_PQ_CONFIDENTIALITY.items()},
+            "pq_authenticated": "the verdict named a proof key and a proof of a KeyAlg with PQ "
+                                "yes verified",
+            **{k.lower().replace(" ", "_"): {str(a): b for a, b in v.items()}
+               for k, v in R.SECURE_FIXED.items()},
+            "private_range": {"first": R.SECURE_PRIVATE_FIRST, "last": R.SECURE_PRIVATE_LAST,
+                              "spaces": R.SECURE_PRIVATE_SPACES},
         },
         "labels": R.LABELS,
         "limits": R.LIMITS,

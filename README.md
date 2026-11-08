@@ -19,13 +19,18 @@ zmux uses the record format of QMux ([draft-ietf-quic-qmux-02]) and the
 frame encodings of QUIC version 1 [RFC 9000], with zmux frames and transport
 parameters at codepoints of 2^14 and above.
 
-- **A zmux endpoint talking to a plain QMux peer is a QMux-02 endpoint.**
-  This is a hard invariant (SPEC.md Section 13): the peer sees only QMux-02
-  behaviour, plus transport parameters it ignores.
-- **zmux extensions are negotiated with transport parameters** and used only
-  between zmux endpoints: multipath, pipe acknowledgement, lanes, resume,
-  role negotiation, GOAWAY, stream preambles, priority updates and datagram
-  flows (SPEC.md Section 5.5).
+- **A zmux endpoint talking to a plain QMux peer is a QMux-02 endpoint**
+  (SPEC.md Section 13). The peer sees only QMux-02 behaviour, plus
+  transport parameters it ignores.
+- **What a plain QMux peer gets:** QUIC stream semantics over one
+  connection: bidirectional and unidirectional streams, stream and
+  connection flow control, STOP_SENDING, RESET_STREAM, CONNECTION_CLOSE,
+  QX_PING and, where the peer supports them, DATAGRAM and RESET_STREAM_AT.
+- **What only zmux peers get:** multipath, pipe acknowledgement, lanes,
+  resume, role negotiation, GOAWAY, stream preambles, priority updates and
+  datagram flows. Each is negotiated with transport parameters
+  (SPEC.md Section 5.5) and never used towards a peer that did not announce
+  it.
 
 ## Model
 
@@ -45,26 +50,22 @@ parameters at codepoints of 2^14 and above.
 
 | Document | Content |
 |---|---|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | scope, layering, relationship to QUIC and QMux, extension policy |
-| [SPEC.md](./SPEC.md) | records, frames, transport parameters, session lifecycle, streams, flow control, robustness rules, errors, QMux compatibility, security |
-| [MULTIPATH.md](./MULTIPATH.md) | pipes, lanes, joins, acknowledgement, failure detection, reinjection, removal, sender rules, join security and carrier binding |
-| [SCHEDULER.md](./SCHEDULER.md) | the multipath sender's estimators, scheduling policies, tiers, probation and budgets |
+| [SPEC.md](./SPEC.md) | records, frames, transport parameters, session lifecycle, streams, flow control, robustness rules, errors, QMux compatibility, extensions, security |
+| [MULTIPATH.md](./MULTIPATH.md) | pipes, lanes, joins, acknowledgement, failure detection, reinjection, removal, sender rules, join security |
 | [RESUME.md](./RESUME.md) | suspension and authenticated resumption |
 | [EXTENSIONS.md](./EXTENSIONS.md) | roles, GOAWAY, stream preamble, priorities, datagrams, application error codes, nested sessions and relays, duplicate sessions |
 | [STATE_MACHINE.md](./STATE_MACHINE.md) | stream, pipe and session state machines |
 | [REGISTRY.md](./REGISTRY.md) | every codepoint, GREASE, registration policy |
-| [SECURE-CARRIER.md](./SECURE-CARRIER.md) | experimental: end-to-end protected carriers through TLS-terminating intermediaries |
+| [secure-carrier/SPEC.md](./secure-carrier/SPEC.md) | end-to-end protected carriers through TLS-terminating intermediaries |
+| [CONFORMANCE.md](./CONFORMANCE.md) | conformance requirements, invalid inputs, QMux interoperability, defect classes |
+| [TRACES.md](./TRACES.md) | the executable trace format |
 | [WIRE_EXAMPLES.md](./WIRE_EXAMPLES.md) | byte-exact examples, generated and machine-checked |
-| [CONFORMANCE.md](./CONFORMANCE.md) | conformance requirements, invalid inputs, test vectors, QMux interoperability |
-| [TRACES.md](./TRACES.md) | the executable trace format and the trace runner |
-| [IMPLEMENTATION.md](./IMPLEMENTATION.md) | implementation architecture, scheduling, flow-control tuning, defaults, performance targets |
-| [API.md](./API.md) | cross-language API guidance, configuration and statistics schemas |
 
 SPEC.md, MULTIPATH.md, RESUME.md, EXTENSIONS.md, STATE_MACHINE.md,
-REGISTRY.md and, for conformance claims, SCHEDULER.md, CONFORMANCE.md and
-TRACES.md are normative; the test-mode settings of TRACES.md Section 3.3 bind
-only a trace runner. The rest is informative. How an implementation schedules
-frames across pipes, sizes its buffers and presents its API is up to the
+REGISTRY.md and secure-carrier/SPEC.md are normative;
+CONFORMANCE.md and TRACES.md are normative for conformance claims.
+WIRE_EXAMPLES.md is informative. How an implementation schedules frames
+across pipes, sizes its buffers and presents its API is up to the
 implementation, within the rules these documents state.
 
 ## Test vectors
@@ -74,6 +75,7 @@ implementation, within the rules these documents state.
 | [assets/registry.json](./assets/registry.json) | the registry in machine-readable form |
 | [fixtures/wire/valid.ndjson](./fixtures/wire/valid.ndjson), [fixtures/wire/invalid.ndjson](./fixtures/wire/invalid.ndjson) | the wire corpus |
 | [fixtures/traces/index.json](./fixtures/traces/index.json), [fixtures/profiles.json](./fixtures/profiles.json) | the executable traces and their endpoint profiles |
+| [secure-carrier/vectors/](./secure-carrier/vectors) | secure carrier and join vectors |
 | [assets/manifest.json](./assets/manifest.json) | inventory, counts and checksums |
 | [tools/](./tools) | reference codec, generators and validator |
 
@@ -84,15 +86,6 @@ python3 tools/rebuild_assets.py && python3 tools/validate_assets.py
 ```
 
 The tools need Python 3.12 or later and nothing beyond the standard library.
-
-## Versioning
-
-This is version 1 of the zmux protocol. It replaces the earlier zmux wire
-format (the one that starts with the ASCII magic `ZMUX`) under the same
-major version; the two fail at their first bytes and do not interoperate.
-zmux has no version negotiation: additive changes are negotiated
-extensions, and a change to existing encodings would be a new protocol
-version with new ALPN identifiers (ARCHITECTURE.md Section 5.4).
 
 ## Implementations
 

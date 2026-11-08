@@ -83,16 +83,18 @@ PROFILES = {
                                   "role": "auto", "max_incoming_uni_streams": 4, "probe_jitter": 0},
                        "test": dict(TEST_HOOKS, role_nonce=1000)},
     "zmux-mp": {"tp": dict(LOCAL_SMALL_TP, zmux_multipath=_mp_tp(LOCAL_NONCE, LOCAL_LOCATOR),
-                           zmux_ack_threshold=4096),
+                           zmux_session_crypto=C.DEFAULT_SESSION_CRYPTO, zmux_ack_threshold=4096),
                 "config": {"keep_alive_period": 0, "handshake_timeout": 10000, "max_pipes": 8,
-                           "scheduler": "spread-eta", "pipe_auth": {"psk": PSK},
+                           "scheduler": "spread-eta", "pipe_auth": {"psk": PSK}, "declared_end_to_end": True, "record_modes": ["trusted", "bound"],
                            "max_incoming_uni_streams": 4, "probation": 0, "redundancy": "off", "standby_probe": 0, "probe_jitter": 0},
-                "test": dict(TEST_HOOKS, session_nonce=LOCAL_NONCE, rtt_ms=10)},
+                "test": dict(TEST_HOOKS, session_nonce=LOCAL_NONCE, rtt_ms=10,
+                             epoch_locator_prefix=b"LOCAL-")},
     "zmux-mp-resume": {"tp": dict(LOCAL_SMALL_TP, zmux_multipath=_mp_tp(LOCAL_NONCE, LOCAL_LOCATOR),
-                                  zmux_ack_threshold=4096, zmux_resume=30000),
+                                  zmux_session_crypto=C.DEFAULT_SESSION_CRYPTO, zmux_ack_threshold=4096,
+                                  zmux_resume=30000),
                        "config": {"keep_alive_period": 0, "handshake_timeout": 10000,
                                   "max_pipes": 8, "scheduler": "spread-eta",
-                                  "pipe_auth": {"psk": PSK}, "resume_timeout": 30000,
+                                  "pipe_auth": {"psk": PSK}, "declared_end_to_end": True, "record_modes": ["trusted", "bound"], "resume_timeout": 30000,
                                   "max_incoming_uni_streams": 4, "probation": 0, "redundancy": "off", "standby_probe": 0, "probe_jitter": 0},
                        "test": dict(TEST_HOOKS, session_nonce=LOCAL_NONCE, rtt_ms=10)},
 }
@@ -213,6 +215,19 @@ def PIPE_STATUS(pipe, seq, status, priority=0):
     return dict(type="PIPE_STATUS", pipe=pipe, seq=seq, status=status, priority=priority)
 
 
+def SESSION_EPOCH(phase, epoch, share=b"", locator=b""):
+    """A SESSION_EPOCH frame (MULTIPATH.md 10.7)."""
+    return dict(type="SESSION_EPOCH", phase=phase, epoch=epoch, share=share, locator=locator)
+
+
+# Deterministic Group 2 shares of a scripted peer: an X25519 public key that is not of small
+# order, then an encapsulation key whose coefficients are all valid (offer) or a ciphertext
+# of the right length (answer).
+PEER_X25519_SHARE = bytes([9]) + bytes(31)
+PEER_OFFER_SHARE = PEER_X25519_SHARE + bytes([1]) * 1152 + bytes(range(32))
+PEER_ANSWER_SHARE = PEER_X25519_SHARE + bytes(1088)
+
+
 def RAW(b):
     return dict(type="RAW", bytes=b)
 
@@ -282,7 +297,7 @@ def peer_ack(**over):
 
 
 def peer_mp(**over):
-    d = peer_small(zmux_multipath=_mp_tp(PEER_NONCE, PEER_LOCATOR))
+    d = peer_small(zmux_multipath=_mp_tp(PEER_NONCE, PEER_LOCATOR), zmux_session_crypto=C.DEFAULT_SESSION_CRYPTO)
     d.update(over)
     return d
 
@@ -290,19 +305,6 @@ def peer_mp(**over):
 def secret():
     # peer is the initiator, local the responder in multipath traces
     return C.session_secret(PEER_NONCE, LOCAL_NONCE, b"", PSK)
-
-
-def join(pipe, direction="up", fate_group=0, locator=LOCAL_LOCATOR, role="initiator",
-         carrier_binding=b"", bad_token=False, carrier_bound=False, priority=0, standby=False):
-    f = dict(type="PIPE_JOIN", locator=locator, pipe=pipe, direction=direction,
-             carrier_bound=carrier_bound, standby=standby, fate_group=fate_group,
-             priority=priority, token=b"\x00" * 16)
-    f["token"] = C.join_token(secret(), role, f, carrier_binding)
-    if bad_token:
-        t = bytearray(f["token"])
-        t[0] ^= 0x01
-        f["token"] = bytes(t)
-    return f
 
 
 def record_bytes(records):
@@ -353,11 +355,11 @@ def SENT(pipe, plus=0, lane=0):
 
 class Trace:
     def __init__(self, id, title, refs, profile="zmux-small", local_role="responder",
-                 overrides=None):
+                 findings=(), overrides=None):
         self.id = id
         self.header = {"kind": "trace", "id": id, "title": title, "profile": profile,
                        "local_role": local_role, "overrides": overrides or {},
-                       "refs": list(refs),
+                       "refs": list(refs), "findings": list(findings),
                        "groups": id.split(".")[:-1]}
         self.steps = []
         self.peer_sent = {}      # pipe -> bytes the peer has delivered
@@ -368,8 +370,7 @@ class Trace:
                 and has_placeholder(kw["records"]):
             key = kw.get("pipe")
             if key is None:
-                first = kw["records"][0][0] if kw["records"] and kw["records"][0] else {}
-                key = first.get("pipe") if first.get("type") == "PIPE_JOIN" else kw.get("carrier")
+                key = kw.get("carrier")
             self.peer_sent[key] = self.peer_sent.get(key, 0) + \
                 placeholder_record_len(kw["records"])
         self.steps.append(kw)
@@ -384,6 +385,65 @@ class Trace:
         if via:
             d["via"] = via
         d.update(kw)
+        return self._add(**d)
+
+    # Join (TRACES.md Section 5.2.1); the runner plays the peer's side of the handshake
+    def peer_join(self, carrier, pipe, direction="up", fate_group=0, priority=0, standby=False,
+                  locator=LOCAL_LOCATOR, mode="trusted", batch=(), bad_key=False,
+                  outcome="accept", confirm=True, hold=False, binding=None, group=None,
+                  key_share=None, phase=None):
+        d = dict(op="peer_join", carrier=carrier, pipe=pipe, direction=direction,
+                 fate_group=fate_group, priority=priority, standby=standby, locator=locator,
+                 mode=mode, outcome=outcome)
+        if group is not None:
+            d["group"] = group
+        if key_share is not None:
+            d["key_share"] = key_share
+        if phase is not None:
+            d["phase"] = phase
+        if batch:
+            d["batch"] = list(batch)
+        if bad_key:
+            d["bad_key"] = True
+        if not confirm:
+            d["confirm"] = False
+        if hold:
+            d["hold"] = True
+        if binding is not None:
+            d["binding"] = binding
+        return self._add(**d)
+
+    # Session epochs (TRACES.md Section 5.2.2); the runner makes the peer's shares
+    def peer_epoch(self, pipe, phase, epoch, locator=b"", share_len=None, repeat=False):
+        d = dict(op="peer_epoch", pipe=pipe, phase=phase, epoch=epoch, locator=locator)
+        if share_len is not None:
+            d["share_len"] = share_len
+        if repeat:
+            d["repeat"] = True
+        return self._add(**d)
+
+    def peer_join_finish(self, carrier, outcome="accept"):
+        return self._add(op="peer_join_finish", carrier=carrier, outcome=outcome)
+
+    def peer_confirm(self, carrier):
+        return self._add(op="peer_confirm", carrier=carrier)
+
+    def join_hello(self, pipe, direction="up", fate_group=0, priority=0, standby=False,
+                   locator=PEER_LOCATOR, mode="trusted", batch=(), group=None, phase=None):
+        d = dict(op="expect_join_hello", pipe=pipe, direction=direction, fate_group=fate_group,
+                 priority=priority, standby=standby, locator=locator, mode=mode)
+        if group is not None:
+            d["group"] = group
+        if phase is not None:
+            d["phase"] = phase
+        if batch:
+            d["batch"] = list(batch)
+        return self._add(**d)
+
+    def join_reply(self, pipe, decision=0, leading_parameters=False):
+        d = dict(op="peer_join_reply", pipe=pipe, decision=decision)
+        if leading_parameters:
+            d["leading_parameters"] = True
         return self._add(**d)
 
     def lane_up(self, carrier, conn):
@@ -494,6 +554,9 @@ class Trace:
         if pipe is not None:
             d.update(pipe=pipe, dir=dir, state=pstate)
         return self._add(**d)
+
+    def no_event(self, name):
+        return self._add(op="expect_no_event", event=name)
 
     def event(self, name, **fields):
         return self._add(op="expect_event", event=name, fields=fields)

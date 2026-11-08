@@ -98,17 +98,6 @@ def frame_fields(f):
         out += [_vf("Stream ID", f["id"]), _vf("Sequence Number", f["seq"]),
                 ("Priority", bytes([b]),
                  f"urgency {f['urgency']}, incremental {int(bool(f.get('incremental')))}")]
-    elif t == "PIPE_JOIN":
-        loc = f["locator"]
-        flags = {"up": 0, "down": 1, "bidi": 2}[f["direction"]] | (
-            0x04 if f.get("carrier_bound") else 0) | (0x08 if f.get("standby") else 0)
-        out += [_vf("Locator Length", len(loc)), _bf("Session Locator", loc, repr(loc)),
-                _vf("Pipe ID", f["pipe"]),
-                ("Flags", bytes([flags]), f"direction {f['direction']}"
-                 + (", carrier-bound" if f.get("carrier_bound") else "")
-                 + (", standby" if f.get("standby") else "")),
-                _vf("Fate Group", f["fate_group"]), _vf("Priority", f.get("priority", 0)),
-                _bf("Join Token", f["token"])]
     elif t == "PIPE_ACK":
         out.append(_vf("Entry Count", len(f["entries"])))
         for e in f["entries"]:
@@ -127,6 +116,16 @@ def frame_fields(f):
         num = {"available": 0, "standby": 1}[st] if isinstance(st, str) else st
         out += [_vf("Pipe ID", f["pipe"]), _vf("Sequence Number", f["seq"]),
                 ("Status", V(num), f"{num} ({st})"), _vf("Priority", f.get("priority", 0))]
+    elif t == "SESSION_EPOCH":
+        ph = f["phase"]
+        code = F.EPOCH_PHASE_CODES[ph] if isinstance(ph, str) else ph
+        out += [("Phase", bytes([code]), f"{code} ({R.EPOCH_PHASES[code]})"),
+                _vf("Epoch", f["epoch"])]
+        share = f.get("share", b"")
+        loc = f.get("locator", b"")
+        out += [_vf("Share Length", len(share)), ("Share", share, f"{len(share)} bytes"),
+                ("Locator Length", bytes([len(loc)]), str(len(loc))),
+                ("Locator", loc, repr(loc) if loc else "empty: unchanged")]
     else:
         raise ValueError(t)
     return out
@@ -139,6 +138,9 @@ def _tp_note(pid, p):
     if isinstance(v, dict):
         if "role" in v:
             return f"role {v['role']}" + (f", nonce {v['nonce']}" if "nonce" in v else "")
+        if "groups" in v:
+            return "Suites " + ", ".join(map(str, v["suites"])) + "; Groups " + ", ".join(
+                map(str, v["groups"]))
         if "lane_key" in v:
             return f"Max Lanes {v['max_lanes']}, Lane Key {v['lane_key'].hex()}"
         return f"flags 0x{v['flags']:02x}, nonce {v['nonce'].hex()}, locator {v['locator']!r}"
