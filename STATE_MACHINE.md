@@ -102,13 +102,16 @@ implementation reports to its application. "Remote" means the peer caused it.
 | ZMUX_REJECTED from peer | stream rejected (retryable) | stream rejected (retryable) |
 | stream index at or above a received GOAWAY watermark | stream rejected (retryable) | stream rejected (retryable) |
 | stream opened locally, neither emitted nor pinned, when a GOAWAY arrives, and every open call after it (EXTENSIONS 3.5 rule 2) | going away (retryable) | going away (retryable) |
-| session closed by peer CONNECTION_CLOSE | session error with the peer's code | same |
+| session closed by peer CONNECTION_CLOSE | the data received before it, for as long as the read drain lasts (SPEC 6.5), then session error with the peer's code | session error with the peer's code at once |
 | session closed locally or by timeout | session error with the local reason | same |
 
 A stream-level outcome never closes the session (SPEC 9.3). When several
 apply, the first one that happened wins, except that a session error replaces
 an in-progress blocking wait of any kind: a blocked writer or reader is woken
-with the session error as soon as the session ends.
+with the session error as soon as the session ends. The one exception is a
+reader after the peer's CONNECTION_CLOSE: it keeps getting the data received
+before the close until it is read or the linger timeout of the read drain
+expires (SPEC 6.5), and only then the session error.
 
 ---
 
@@ -261,7 +264,7 @@ of its lanes, ends the session (SPEC 6.6).
 | ACTIVE | normal operation | idle timeout, keep-alive |
 | DRAINING | GOAWAY sent or received; no new streams; existing streams continue | idle timeout, keep-alive, GOAWAY fence |
 | SUSPENDED | resume in use and no live outbound or no live inbound pipe | resume grace |
-| CLOSING | CONNECTION_CLOSE sent or received, or idle timeout expired; write sides shut down; reading until end or linger timeout | linger timeout |
+| CLOSING | CONNECTION_CLOSE sent or received, or idle timeout expired; write sides shut down; reading until end or linger timeout; after a received CONNECTION_CLOSE also the read drain: no new streams, nothing sent, reads return the data received before the close (SPEC 6.5) | linger timeout |
 | CLOSED | all state released | none |
 
 QUIC's "closing" and "draining" states (RFC 9000 Section 10.2) both map to
@@ -288,10 +291,10 @@ zmux CLOSING. zmux DRAINING is the GOAWAY phase.
 | SUSPENDED | application closes | CLOSED (or CLOSING if an outbound pipe is live) | CONNECTION_CLOSE on any live outbound pipe (RESUME 11) |
 | any but CLOSED | fail-closed resume condition | CLOSING or CLOSED | ZMUX_RESUME_FAILED (RESUME 7) |
 | ACTIVE, DRAINING | local close or local protocol error | CLOSING | CONNECTION_CLOSE on every live outbound pipe, then shut down writes (SPEC 6.5) |
-| ACTIVE, DRAINING, SUSPENDED | CONNECTION_CLOSE received | CLOSING | report peer error; at most one CONNECTION_CLOSE per outbound pipe; shut down writes |
+| ACTIVE, DRAINING, SUSPENDED | CONNECTION_CLOSE received | CLOSING | start the read drain (SPEC 6.5); no new streams accepted, writes fail with the peer's error; at most one CONNECTION_CLOSE per outbound pipe; shut down writes |
 | ACTIVE, DRAINING | idle timeout | CLOSING | shut down writes without frames; in sessions with acknowledgement (multipath or pipe acknowledgement) CONNECTION_CLOSE(ZMUX_IDLE_TIMEOUT) first (SPEC 6.4) |
 | DRAINING | all streams done and application closes | CLOSING | application CONNECTION_CLOSE(NO_ERROR) |
-| CLOSING | every inbound pipe ended, or linger timeout | CLOSED | close carriers; abortive close only now |
+| CLOSING | every inbound pipe ended, or linger timeout; after a received CONNECTION_CLOSE also not before the read drain is over (the data received before it read, or the linger timeout) | CLOSED | close carriers (abortive close only after the linger timeout); release state and discard unread data |
 
 ### 4.3 Error precedence
 

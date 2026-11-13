@@ -80,13 +80,14 @@ are lowercase hex.
 - **config**: local settings that are not transport parameters, with the
   following names (`handshake_timeout`, `keep_alive_period`, `max_pipes`,
   `scheduler`, `resume_timeout`, `enable_datagrams`,
-  `max_incoming_uni_streams`), the scheduler parameters `suspect_floor`,
-  `dead_timeout`, `probation` and `overflow_delay` in milliseconds (the
+  `max_incoming_uni_streams`), the liveness settings `suspect_floor` and
+  `dead_timeout` and the scheduler parameters `probation` and
+  `overflow_delay` in milliseconds (the
   session-wide defaults that also apply to pipe 0; absent or `null` means
   the implementation's default), the scheduler parameter `redundancy`
   (`urgent` or `off`: whether the sender copies urgent data onto a second
-  pipe), `standby_probe` in milliseconds (MULTIPATH.md Section 7.1) and
-  `probe_jitter`, plus
+  pipe), the liveness settings `standby_probe` in milliseconds (MULTIPATH.md
+  Section 7.1) and `probe_jitter`, plus
   `role` (`initiator`,
   `responder` or `auto`: the role argument of session creation), `early_data` (object with `zmux_peer` and `replayable`, booleans; absent means both false; the in-memory carriers have no early data of their own, so traces exercise only the zmux floor) and
   `pipe_auth` as an object with `psk` (hex), and, beside it in `config`,

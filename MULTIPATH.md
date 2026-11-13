@@ -609,11 +609,12 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
    - while the acceptor is SUSPENDED (RESUME.md Section 4), the PIPE_ABANDON
      exchanges that retirement needs cannot complete, so instead of refusing
      the join it **displaces** one attachment of the peer at Confirmed and then accepts
-     the join; its decision in step 7 predicts this. It retires locally the oldest
-     unretired attachment of the
-     peer that has failed and whose own PIPE_ABANDON has not been
-     acknowledged, dropping its state including that pending PIPE_ABANDON.
-     If none has failed, all of them are live, and if the join provides a
+     the join; its decision in step 7 predicts this. It retires locally one
+     unretired attachment of the peer that has failed: preferably the oldest
+     one whose own PIPE_ABANDON has been acknowledged, otherwise the oldest one
+     whose own PIPE_ABANDON has not, dropping its state including that pending
+     PIPE_ABANDON (the peer retires it by unilateral retirement, Section 8.4).
+     Only if none has failed, all of them are live, and if the join provides a
      direction the acceptor lacks, none of them provides that direction (the
      acceptor would not be suspended otherwise): it then fails the one whose
      **last progress** (the later of the last advance of its outbound
@@ -627,12 +628,29 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
      displaced live attachment is never the acceptor's last pipe in the
      direction it still has.
 
+     Displacing an attachment drops every PIPE_ABANDON the endpoint owes for
+     it: one sent and awaiting acknowledgement is no longer retained or
+     re-sent, and one queued but not yet handed to a carrier is removed from
+     the queue and never sent. This covers only frames for the displaced
+     attachment. A PIPE_ABANDON for a Pipe ID without attachment state is
+     unaffected and is sent as Sections 4.3 and 8.1 say, for example the
+     PIPE_ABANDON(ZMUX_PIPE_RESOURCE_LIMIT) for a join refused at Confirmed
+     (step 8) and the answer to a peer's PIPE_ABANDON for an ID that has no
+     state.
+
    A joiner applies the same cap to the attachments it joined itself: it does
    not join while it has max_pipes + H of them unretired, except that a
    joiner that is SUSPENDED first displaces one of them in the same way
-   before a join that provides a direction it lacks: the oldest failed one
-   whose own PIPE_ABANDON has not been acknowledged, otherwise the live one
-   with the oldest last progress. Together with unilateral retirement (Section 8.4) this
+   before a join that provides a direction it lacks: a failed one, preferably
+   the oldest whose own PIPE_ABANDON has been acknowledged, otherwise the
+   oldest whose own PIPE_ABANDON has not; only when none has failed, the live
+   one with the oldest last progress. Its PIPE_ABANDON for the displaced attachment,
+   retained or still queued, is dropped as above. Joins that the cap holds back are
+   judged one by one, not in the order they were held: each that provides a
+   direction the joiner lacks proceeds as soon as a displacement makes room
+   for it, while the others keep waiting. A joiner that reports whether a
+   join could start now counts the cap only once the count has reached it,
+   and then also requires an attachment that could be displaced. Together with unilateral retirement (Section 8.4) this
    bounds the attachment state a peer can make an endpoint keep and the size
    of PIPE_ACK snapshots (Section 6.2), and it never stops a suspended
    session from resuming, however many rejoin attempts were cut off. A peer
@@ -684,17 +702,26 @@ and the pipes themselves are bounded by Section 5.4 step 9 and by the
 listener's memory budget, which every session is
 charged to.
 
-### 5.6 Pending-join and rate limits
+### 5.6 Pending-join limits
 
 An acceptor bounds the carriers it holds from arrival to Confirmed in Section
 5.4, per listener, per session and per source (the streams a lane needs are
-outside these bounds, Section 5.5). It closes a carrier that has not delivered
+outside these bounds, Section 5.5). The per-listener bound covers every stage
+before a carrier belongs to a session: from the moment the carrier is taken,
+through any handshake or check that precedes its first record, the
+classification and the verification of its Hello, and a carrier that the
+reject policy stalls (secure-carrier/SPEC.md Section 9), until it is attached,
+starts a session, or is closed. When the bound is full, the acceptor closes
+its oldest stalled carrier to make room for a new one, and closes the new
+carrier when none is stalled; stalled carriers take at most half of the
+bound, and a carrier to be stalled beyond that is closed instead. It closes a carrier that has not delivered
 its first record or Hello within a first-record timeout after the carrier is
 established, or that has not reached Confirmed by the join deadline (Section
 5.7), and closes a Hello longer than its limit before buffering it.
 
-Failed join verifications are rate limited per source, before the AEAD runs. A
-listener MUST NOT stop verifying the joins of a session because of failures
+A failed join verification holds a slot only until its carrier is closed, so the
+resources it consumes are bounded by the per-source and per-listener bounds above.
+A listener MUST NOT stop verifying the joins of a session because of failures
 attributed to that session: anyone who knows a locator could otherwise block
 every legitimate join and resume of the session. Authenticated joins are
 bounded by the cap of Section 5.4 step 9; refused ones leave state only inside
@@ -1426,9 +1453,11 @@ still open and retires the attachment anyway. A conforming
 peer answers within one round trip, so this only fires for a peer that does
 not, or whose answer was lost together with every pipe that carried it.
 While the endpoint is SUSPENDED its PIPE_ABANDON cannot be acknowledged;
-the cap of Section 5.4 step 9 then displaces an attachment (a failed one, or
-else a live one that cannot serve the missing direction) when a rejoin needs
-the room.
+the cap of Section 5.4 step 9 then displaces an attachment when a rejoin
+needs the room: a failed one, preferably the oldest whose own PIPE_ABANDON
+has been acknowledged, otherwise the oldest whose own PIPE_ABANDON has not;
+only when none has failed, a live one that cannot serve the missing
+direction.
 
 After retirement:
 
@@ -1739,7 +1768,7 @@ Each carrier of a session has a record mode, fixed by its handshake:
   never reaches step 8: nothing it does moves a pipe, a cap or a suspension. A replayed
   batch is deduplicated by stream ID and offset.
 - **Reflection.** Keys are per joiner role.
-- **Rate limiting.** Per source, never per session (Section 5.6).
+- **Pending bounds.** Per source, never per session (Section 5.6).
 - **Uniform refusal.** Every failure before a join authenticates gets the response of
   the reject policy (secure-carrier/SPEC.md Section 9), which covers the bytes sent and
   the way the carrier ends, not processing time; a

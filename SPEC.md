@@ -1201,9 +1201,42 @@ then discards what it has not yet read, the CONNECTION_CLOSE included. A message
 CONNECTION_CLOSE.
 
 **Receiving a close.** On processing a CONNECTION_CLOSE, an endpoint enters
-CLOSING, reports the peer's error to the application, sends at most one
-CONNECTION_CLOSE on each outbound pipe (QMux-02 Section 7.3), and continues
-with steps 2 to 4.
+CLOSING, sends at most one CONNECTION_CLOSE on each outbound pipe (QMux-02
+Section 7.3), and continues with steps 2 to 4. It does not release its
+receive state or drop its receive buffers at that point: a peer that closes
+after flushing (step 1) has had every byte it wrote delivered to this
+endpoint ahead of the close, and a slow reader must still get it. Until
+every stream the application has opened or accepted has delivered what this
+endpoint received on it before the CONNECTION_CLOSE (up to its end of
+stream, its reset's Reliable Size, or its reset), or the **linger timeout**
+of step 3 expires, whichever comes first, the endpoint keeps that data
+(the **read drain**), and then enters CLOSED and discards what remains.
+The linger timeout of the read drain is the one of step 3: it starts when
+the endpoint's own CONNECTION_CLOSE has been handed to the carriers (or
+step 1's wait has ended), and for an endpoint that sends none it starts on
+processing the peer's. During the read drain:
+
+- the session accepts no new stream: streams the peer opened but the
+  application has not accepted are discarded, and an accept call and every
+  open call fail with the session's error;
+- the endpoint sends nothing: no stream data, no flow control update, no
+  STOP_SENDING and no other frame, apart from the CONNECTION_CLOSE above;
+  a stream's flow control credit is therefore not returned;
+- a read returns the data that was received before the CONNECTION_CLOSE, as
+  it would without the close; once a stream has none left, the read fails
+  with the session's error, the peer's close (Error precedence below), unless
+  the stream ended before with a finish or a reset, which it reports as
+  usual; a blocked reader keeps blocking until data arrives or this point;
+- a write, a finish, a reset of the sending part, a flush and every other
+  operation that would send fails at once with the session's error.
+
+The endpoint stays in CLOSING for the read drain, and the session's
+whole end, as an application can wait for it, includes it; an endpoint that has nothing buffered enters CLOSED as soon as steps 2 to 4
+allow. The read drain concerns only what is received before the
+CONNECTION_CLOSE; bytes read afterwards (step 3) are still discarded.
+Only a processed CONNECTION_CLOSE from the peer starts a read drain: a
+local close or abort, an idle timeout, a handshake or resume timeout and a
+carrier failure end the session as before, with no read drain.
 
 **Error precedence.** The error reported to the application for a session is
 the first of the following that happened:

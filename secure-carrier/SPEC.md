@@ -679,7 +679,11 @@ the wire, stay as above.
 
 ## 10. Vectors
 
-All values are hex strings unless noted. `mode` is the Flags value. Ephemeral and
+All values are hex strings unless noted. `mode` is the Flags value. `max_app_data`, an
+integer, is the receiver's local bound on application data (Section 6.9) for the vector
+of `handshake.json` or `negative.json` that carries it: a positive value is that bound in
+bytes, 0 the default bound of 256 bytes, and a negative value no bound beyond the size of
+the message; absent, it is 0. Ephemeral and
 static keys are X25519 private scalars given as seeds. An ML-KEM-768 key pair is given
 as its 64-byte seed `d ‖ z` (FIPS 203 ML-KEM.KeyGen_internal), an encapsulation as its
 32-byte randomness `m` (ML-KEM.Encaps_internal). ML-DSA signatures of the vectors are

@@ -176,6 +176,8 @@ decoded value with the implementation's own encoder:
 | Condition | Result |
 |---|---|
 | unauthenticated join: malformed Hello, unknown Locator, Suite outside the set, failed AEAD, a key share missing, of a Group not usable or of the wrong length, pending-join and per-source limits, no Hello within the first-record timeout | carrier closed or stalled by the reject policy, without any response; session unaffected; a failed AEAD is reported as `JoinAuthFailed` |
+| new carrier while the listener's bound on carriers before a session is full (MULTIPATH.md Section 5.6) | the oldest stalled carrier closed to make room; with none stalled, the new carrier closed without any response; sessions unaffected |
+| carrier to be stalled while stalled carriers hold half of that bound | closed at once instead, without any response |
 | authenticated join whose key share is refused (`kex`, secure-carrier/SPEC.md Section 11.6) | carrier closed, counted, the pipe ID's bit stays set; session unaffected |
 | anything other than a verified Reply on a JOINING attachment, a CONNECTION_CLOSE or an oversized record included | the attachment fails; the session is unaffected and nothing read reaches it |
 | authenticated join whose pipe ID has attachment state, has its replay bit set or is stale (MULTIPATH.md Section 4.3) | carrier closed, counted in `join_replays`; session unaffected |
