@@ -29,7 +29,8 @@ from zmuxwire.varint import DecodeError  # noqa: E402
 
 ERRORS = []
 EXTRA_TRACES = []  # further trace directories (--traces DIR), same format as fixtures/traces
-CHECKS = {"registry": 0, "examples": 0, "corpus": 0, "traces": 0, "steps": 0, "docs": 0}
+CHECKS = {"registry": 0, "examples": 0, "corpus": 0, "traces": 0, "steps": 0, "docs": 0,
+          "capsules": 0}
 
 # Every Markdown document at the top level of the tree. A reference to a
 # document that is not in the tree is not checked.
@@ -633,6 +634,22 @@ def check_trace_dir(base, profiles, minimum=1):
 
 
 # =============================================================================
+# packet stream capsules
+
+def check_capsules():
+    import build_capsules  # noqa: E402
+    doc = json.loads(read("fixtures/capsules.json"))
+    if doc != {"spec": doc.get("spec"), "format": build_capsules.FORMAT,
+               "cases": build_capsules.cases()}:
+        fail("capsules: fixtures/capsules.json is stale; run tools/rebuild_assets.py")
+    for c in doc["cases"]:
+        CHECKS["capsules"] += 1
+        got = build_capsules.decode(bytes.fromhex(c["hex"]), c["max_payload"])
+        if got != (c["packets"], c["skipped"], c["error"]):
+            fail(f"capsules {c['id']}: decodes to {got}")
+
+
+# =============================================================================
 # manifest
 
 def check_manifest():
@@ -652,7 +669,7 @@ def main():
         else:
             sys.exit("usage: validate_assets.py [--traces DIR]...")
     for fn in (check_docs, check_registry, check_examples, check_corpus, check_traces,
-               check_manifest):
+               check_capsules, check_manifest):
         try:
             fn()
         except Exception as ex:  # noqa: BLE001

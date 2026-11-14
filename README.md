@@ -75,6 +75,7 @@ implementation, within the rules these documents state.
 | [assets/registry.json](./assets/registry.json) | the registry in machine-readable form |
 | [fixtures/wire/valid.ndjson](./fixtures/wire/valid.ndjson), [fixtures/wire/invalid.ndjson](./fixtures/wire/invalid.ndjson) | the wire corpus |
 | [fixtures/traces/index.json](./fixtures/traces/index.json), [fixtures/profiles.json](./fixtures/profiles.json) | the executable traces and their endpoint profiles |
+| [fixtures/capsules.json](./fixtures/capsules.json) | packet stream capsule vectors (EXTENSIONS.md Section 12); the format is described in the file |
 | [secure-carrier/vectors/](./secure-carrier/vectors) | secure carrier and join vectors |
 | [assets/manifest.json](./assets/manifest.json) | inventory, counts and checksums |
 | [tools/](./tools) | reference codec, generators and validator |

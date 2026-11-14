@@ -17,10 +17,6 @@ handshake; after it, both endpoints report their cumulative positions in
 ordinary PIPE_ACK snapshots and re-send everything the peer has not
 received.
 
-Resume is not a second mechanism: a resume is a multipath session whose pipe
-count dropped to zero in a direction and then rose again. The extra pieces are
-the SUSPENDED state, the grace timer and the fail-closed rules.
-
 ---
 
 ## 2. Model
@@ -84,21 +80,13 @@ On entry the endpoint:
 
 The grace timer is started once per suspension. Joins that are attempted and
 fail while the endpoint is SUSPENDED do not restart it; only leaving
-SUSPENDED (Section 4.4) stops it. A client that keeps retrying therefore
-cannot keep a dead session alive beyond the grace period.
+SUSPENDED (Section 4.4) stops it.
 
 ### 4.2 Behaviour while suspended
 
-- Application writes are accepted into send buffers until stream or session
-  flow control, the local retransmit budget or the local
-  send buffer limit is reached; then they block. Writes never fail because the
-  session is suspended.
-- Reads wait for data. Application deadlines and cancellations apply as usual.
-- Opening streams is allowed within stream credit; the frames wait for a pipe.
-- Datagrams submitted while no outbound pipe exists wait in the send queue of
-  EXTENSIONS.md Section 6.5 like any others: the oldest is dropped and
-  counted when the queue is full, and a datagram older than the
-  application's maximum age is dropped.
+- Stream state and credit are kept; frames, including those of streams
+  opened within stream credit, wait for a pipe.
+- Datagrams follow the queue rules of EXTENSIONS.md Section 6.5.
 - Information that was reinjected from failed pipes waits for a new pipe.
 - Frames that cannot be sent for lack of an outbound pipe (PIPE_ABANDON for
   the failed attachments, limit updates, PIPE_ACK, GOAWAY) are kept as
@@ -123,11 +111,7 @@ An endpoint may be suspended in one direction only (Section 2):
 Either endpoint may join new pipes while suspended, using MULTIPATH.md
 Section 5 unchanged; a session that is join pending (MULTIPATH.md Section 3.3) has
 no join keys, so one that suspends before that ends cannot rejoin and ends at the
-grace expiry (Section 8); in practice the endpoint that can reach the other's
-listener (usually the initiator) does it, possibly driven by an
-application-supplied redial hook. A first batch in the Hello
-(MULTIPATH.md Section 5.2) gets the first bytes across half a round trip after the
-carrier connects.
+grace expiry (Section 8).
 
 A rejoining endpoint SHOULD join one bidi attachment, on a carrier pair where its
 carriers are split (MULTIPATH.md Section 5.3): one handshake then restores both
@@ -157,10 +141,7 @@ that provides the missing direction the endpoint then displaces the live
 attachment with the oldest last progress, failing it locally without
 PIPE_ABANDON, so that a full set of one-way attachments never holds the
 session suspended until the grace period ends. The headroom H of that cap is the room for
-failed attachments that rejoining needs. A session therefore survives any
-number of rejoins that are cut off after they connect, and a peer that keeps
-joining and dropping attachments gains nothing: at most max_pipes + H of its
-attachments are attached and unretired at a time.
+failed attachments that rejoining needs.
 
 ### 4.4 Leaving SUSPENDED
 
@@ -206,11 +187,7 @@ rules of MULTIPATH.md make them arrive without a round trip of their own:
 
 An endpoint that has no inbound pipe but still has outbound pipes keeps
 sending snapshots on them (Section 4.2), and reports the final position of
-every inbound pipe that ended (MULTIPATH.md Section 6.3 rule 4). Positions
-are cumulative, so an outdated or replayed snapshot is harmless; and because
-information is released only once a PIPE_ACK covers it and is otherwise
-reinjected, exactly-once delivery never depends on a snapshot being
-complete, only the amount of duplicate reinjection does.
+every inbound pipe that ended (MULTIPATH.md Section 6.3 rule 4).
 
 ---
 
@@ -279,9 +256,7 @@ A listener MUST bound the resources held by suspended sessions:
   5.6).
 
 When a limit would be exceeded, the listener closes suspended
-sessions, the longest-suspended first, with ZMUX_RESUME_TIMEOUT. Deployments SHOULD also
-count suspended sessions in per-client quotas: otherwise "open a session,
-then disappear" is a cheap way to hold server memory.
+sessions, the longest-suspended first, with ZMUX_RESUME_TIMEOUT.
 
 ---
 
@@ -331,5 +306,3 @@ then disappear" is a cheap way to hold server memory.
   failures at the acceptor (MULTIPATH.md Section 5.4 step 5); the joiner
   learns of it only when the grace period expires.
 - Suspended sessions cost memory; Section 9 bounds it.
-- The grace period lets a session outlive its carriers. Applications that
-  need prompt failure reporting should keep the grace period short.

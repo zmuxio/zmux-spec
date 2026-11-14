@@ -24,17 +24,7 @@ QUIC stream (a pipe pair), or any other reliable byte carrier. Pipes can be adde
 Seen from the session, the set of pipes behaves like a datagram carrier that
 can reorder records across pipes and loses records only when a pipe breaks.
 The session therefore applies QUIC's stream semantics unchanged and replaces
-QUIC's packet-level machinery with much simpler pipe-level machinery:
-
-| QUIC mechanism | zmux multipath |
-|---|---|
-| packet numbers | implicit byte positions per pipe, or per lane of a pipe (no field on the wire) |
-| ACK frames with ranges | PIPE_ACK: one cumulative position per inbound pipe (per lane, Section 2.5), sent on any reverse pipe |
-| loss detection timers, PTO | none; loss happens only when a pipe fails, detected from acknowledgement progress |
-| retransmission of information (RFC 9000 Section 13.3) | unchanged, applied to the unacknowledged part of a failed or suspect pipe |
-| congestion control | none; each carrier does its own |
-| path validation, connection IDs | authenticated Join |
-| connection migration | adding a pipe and removing another |
+QUIC's packet-level machinery with pipe-level machinery.
 
 Every stream's data may be scattered frame by frame over all pipes in each
 direction. Per-frame spreading is a first-class mode, not an exception: any
@@ -95,10 +85,7 @@ If an outbound pipe breaks, its unacknowledged information is re-sent on the
 other pipes without the application noticing (Section 7).
 
 A carrier that decides its connection is dead (an idle timeout, a failed
-keep-alive, an error) fails the pipe at once (Section 7.1). A carrier idle
-timeout, or an intermediary's, shorter than the pipe's probe interval
-(Section 7.1) plus a round trip closes healthy idle pipes: on an idle pipe
-the probes and their answers are the only traffic.
+keep-alive, an error) fails the pipe at once (Section 7.1).
 
 ### 2.5 Lanes
 
@@ -208,10 +195,7 @@ zmux_multipath Value {
 
 These parameters MUST NOT be sent without `zmux_multipath` or `zmux_pipe_ack`
 (Section 3.5; a TRANSPORT_PARAMETER_ERROR, SPEC.md Section 5.5). A value out
-of range is a TRANSPORT_PARAMETER_ERROR. The ranges are safety bounds only: an
-acknowledgement threshold below 1024 bytes would let a peer demand a PIPE_ACK
-for almost every record, and an acknowledgement delay of 2^14 ms (16 s) or
-more would push failure detection beyond any useful time. QUIC's
+of range is a TRANSPORT_PARAMETER_ERROR.  QUIC's
 `max_ack_delay` (0x0b) remains prohibited.
 
 ### 3.3 Enablement
@@ -246,10 +230,8 @@ Only in multipath sessions:
 
 ### 3.5 Pipe acknowledgement without multipath
 
-A sender whose carrier neither reports its unsent bytes nor has a low-water
-mark cannot see the queue it builds in that carrier; only acknowledgements
-show it. zmux endpoints therefore acknowledge the single pipe pair of a
-session without multipath as well.
+zmux endpoints acknowledge the single pipe pair of a session without
+multipath as well.
 
 **Parameter.** `zmux_pipe_ack`, ID 0x34b47621, an empty value (a non-empty
 value is a TRANSPORT_PARAMETER_ERROR). zmux endpoints send it in every
@@ -381,8 +363,7 @@ attempt or a second attachment. A joiner needs nothing from its peer to
 join: pipe IDs are not credit, and the acceptor bounds what joins can cost it
 with the cap of Section 5.4 step 9 and the replay window of Section 4.3. A
 joiner that has used the largest pipe ID of its parity cannot join again in
-that session (at a million joins per second that takes tens of thousands of
-years).
+that session .
 
 ### 4.2 Bootstrap pipes
 
@@ -422,10 +403,7 @@ and whose bit is set, or that is stale, is treated as retired.
 A frame that references a pipe ID of the receiver's own parity that the
 receiver has not yet taken (Section 4.1) is a PROTOCOL_VIOLATION: the peer
 cannot know of such an attachment. Frames that reference an ID of the peer's
-parity without attachment state follow Sections 6.2, 8.1 and 9. Because
-only verified joins move the window, frames injected on an unprotected
-carrier cannot push it past the joiner's future pipe IDs; they can at most
-set bits within it, which the joiner skips over by taking new IDs.
+parity without attachment state follow Sections 6.2, 8.1 and 9.
 
 ---
 
@@ -466,21 +444,13 @@ of secure-carrier/SPEC.md Section 11.3, and only stream data that rule S1 of Sec
 configured otherwise, and an acceptor's Hello limit allows at least that. What it
 carries stays unacknowledged at the joiner and is sent again after the Reply as
 reinjected information, because the batch counts in no position and an acceptor may
-drop it; duplicates are harmless (Section 7.6). A batch goes in the same write
-as the Hello.
+drop it; duplicates are harmless (Section 7.6). 
 
 **First record of the joiner.** After Proven (Section 5.7 step 4), the first record
 the joiner writes on an outbound direction MUST carry a complete PIPE_ACK snapshot
 (Section 6.2) when the joiner has at least one entry, and SHOULD carry a
-PIPE_PING. The snapshot tells the acceptor at once what the joiner has received,
-which after a suspension is where retransmission starts (RESUME.md Section 5); it
-may continue at the start of the next record when it does not fit in the first. The
-PIPE_PING makes the acceptor acknowledge at once (Section 6.3) instead of after its
-acknowledgement delay, which gives the pipe its first RTT sample up to max_ack_delay
-earlier; it counts against the limit of Section 6.4. An endpoint that holds a pipe's
-records before handing them to the carrier holds the first record of a pipe whole, on
-both sides of the join, the snapshot in it current when the record is sent. Nothing an
-endpoint applies to a pipe's records precedes the handshake.
+PIPE_PING. The snapshot may continue at the start of the next record when it does not fit in
+the first. The PIPE_PING counts against the limit of Section 6.4.
 
 **Return frames.** The Reply's *frames* item MAY carry frames for the joiner; they are
 protected by the Reply's key in every mode, and count in no position. Before Confirmed
@@ -544,8 +514,7 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
    which role the peer has), never with a role inferred from the Pipe ID's parity. On
    failure, refuse the carrier and report a **join authentication failure** to the
    application, a distinct event and statistic (ZMUX_PIPE_AUTH_FAILED
-   is its local code). Nothing is sent to the peer. A stream of such failures usually means a mismatched secret,
-   or in Bound mode an intermediary that terminates the carrier (Section 10.5).
+   is its local code). Nothing is sent to the peer.
 6. If the Pipe ID has the joiner's parity and has attachment state, its bit
    is set, or it is stale (Section 4.3), close the carrier: the join is a
    replay or arrived too late. Count it in the statistic `join_replays`. A
@@ -582,10 +551,7 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
    record MUST carry a complete PIPE_ACK snapshot (Section 6.2) when the acceptor
    has at least one entry, and a PIPE_PING, subject to the PIPE_PING limit
    of Section 6.4 (a pipe whose PIPE_PING is delayed by the limit gets it as
-   soon as the limit allows): the snapshot tells the joiner what the
-   acceptor has received, and the acknowledgement of the PIPE_PING gives the
-   new outbound direction its first RTT and rate samples, which a record of
-   PIPE_ACK alone, not being ack-eliciting, never would. An acceptor with a non-default request for the joiner's
+   soon as the limit allows). An acceptor with a non-default request for the joiner's
    outbound direction puts its PIPE_STATUS in the same record (Section 9).
    If step 9 no longer allows the attachment, or a loop is now found, the acceptor
    closes the carrier and sends PIPE_ABANDON(Pipe ID, ZMUX_PIPE_RESOURCE_LIMIT) on another
@@ -598,9 +564,7 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
 9. Cap on unretired attachments: an acceptor keeps at most max_pipes + H
    attachments joined by the peer that are not retired (live, or failed or
    abandoned but not yet retired, Section 8.4). H, the **attachment
-   headroom**, is 8 by default: it is room for failed attachments whose retirement has
-   not completed, which matters most while rejoining after a suspension
-   (RESUME.md Section 4.3). The bootstrap pair counts as an attachment joined
+   headroom**, is 8 by default. The bootstrap pair counts as an attachment joined
    by the initiator (Section 2.1). The count is taken after the join or
    failure being processed has been applied. Step 7 only predicts this; the check
    that holds is the one at Confirmed. Once the cap is reached:
@@ -624,11 +588,7 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
      direction and its attachment) is oldest, as Section 7.2 says but
      without sending PIPE_ABANDON, and retires it locally at once. A join
      that provides no direction the acceptor lacks is refused as outside
-     suspension. Pipe IDs are never reused and frames for a retired
-     attachment are ignored (Section 8.4), so this is safe; the count never
-     exceeds the cap, and with a cap of at least 2 (9 with the defaults) the
-     displaced live attachment is never the acceptor's last pipe in the
-     direction it still has.
+     suspension.
 
      Displacing an attachment drops every PIPE_ABANDON the endpoint owes for
      it: one sent and awaiting acknowledgement is no longer retained or
@@ -650,14 +610,7 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
    retained or still queued, is dropped as above. Joins that the cap holds back are
    judged one by one, not in the order they were held: each that provides a
    direction the joiner lacks proceeds as soon as a displacement makes room
-   for it, while the others keep waiting. A joiner that reports whether a
-   join could start now counts the cap only once the count has reached it,
-   and then also requires an attachment that could be displaced. Together with unilateral retirement (Section 8.4) this
-   bounds the attachment state a peer can make an endpoint keep and the size
-   of PIPE_ACK snapshots (Section 6.2), and it never stops a suspended
-   session from resuming, however many rejoin attempts were cut off. A peer
-   may therefore have up to max_pipes + H attachments live at once;
-   max_pipes is what each endpoint aims for with its own joins.
+   for it, while the others keep waiting. A peer may have up to max_pipes + H attachments live at once.
 
 ### 5.5 Listener classification
 
@@ -696,13 +649,7 @@ its first record (Section 5.8) within the first-record timeout, outside
 the bounds throughout; a stream that turns out to be a join or a new
 session takes a slot at that moment, as an unauthenticated carrier (refused
 or evicting as Section 5.6 says), and goes on through Section 5.4 with both
-timeouts. The rule is a security property: a peer does not need to
-authenticate to establish a session, so an established session on the
-connection must not open it to unbounded pending carriers; with the rule a
-peer holds at most one pending stream per OPEN inbound pipe outside the bounds,
-and the pipes themselves are bounded by Section 5.4 step 9 and by the
-listener's memory budget, which every session is
-charged to.
+timeouts.
 
 ### 5.6 Pending-join limits
 
@@ -724,8 +671,7 @@ established, or that has not reached Confirmed by the join deadline (Section
 A failed join verification holds a slot only until its carrier is closed, so the
 resources it consumes are bounded by the per-source and per-listener bounds above.
 A listener MUST NOT stop verifying the joins of a session because of failures
-attributed to that session: anyone who knows a locator could otherwise block
-every legitimate join and resume of the session. Authenticated joins are
+attributed to that session. Authenticated joins are
 bounded by the cap of Section 5.4 step 9; refused ones leave state only inside
 the replay window of Section 4.3.
 
@@ -880,11 +826,7 @@ one lane, which the writer changes only once a PIPE_ACK covers every frame of
 that sending part on the old lane (Section 6.2; "acknowledged" in the sense
 of SPEC.md Section 7.4, a hand-off to the carrier, is not enough); every
 other frame goes on lane 0, and a CONNECTION_CLOSE waits as SPEC.md Section
-6.5 step 1 says. Each stream's frames, and the session's other frames, then
-keep their order; frames of different streams can be reordered, which the
-rules for opening and accepting streams already allow (SPEC.md Section 7.2
-rules 2 and 5), and limits only grow, so a credit frame that overtakes data
-is never a violation.
+6.5 step 1 says.
 
 **Reader.** A new inbound stream whose first record begins with PIPE_LANE is
 handed over with the identity of its carrier connection (Section 5.5). The
@@ -964,9 +906,7 @@ PIPE_ACK Entry {
 - **Entry Count**: at least 1. Zero is a FRAME_ENCODING_ERROR.
 - Entries MUST appear in strictly increasing order of (Pipe ID, Lane). A
   receiver MUST close the session with FRAME_ENCODING_ERROR when an entry's
-  (Pipe ID, Lane) is not greater than the previous entry's; this also
-  rejects an entry listed twice, with one comparison per entry and no
-  allocation.
+  (Pipe ID, Lane) is not greater than the previous entry's.
 - **Pipe ID**: a pipe inbound to the frame's sender.
 - **Lane**: a lane of that pipe (Section 2.5); 0 for a pipe without lanes.
 - **Position**: the sender's receive position on that lane (Section 6.1).
@@ -990,20 +930,11 @@ across several PIPE_ACK frames, each listing a strictly increasing subset of
 the entries. Positions are cumulative, so a partial list is harmless: a
 receiver applies each entry on its own. A pipe on which nothing
 has arrived yet is not listed: for example a downlink that a joiner handed to
-its adapter (Section 5.3) and that the acceptor has not attached yet. Its
-loss never matters, because the next snapshot carries the same information.
+its adapter (Section 5.3) and that the acceptor has not attached yet.
 PIPE_ACK is not ack-eliciting and is never retransmitted.
 
 **Size.** Because a snapshot may be split, PIPE_ACK sets no limit on the
-number of pipes. Only attached pipes have positions: refused joins and IDs
-abandoned before they were seen leave only a bit in the replay window
-(Section 4.3). An endpoint has at most max_pipes + H unretired attachments
-joined by the peer and at most max_pipes + H that it joined itself (Section
-5.4 step 9, the bootstrap pair included on its initiator's side), each with
-at most one inbound pipe, so a snapshot has at most 2 x (max_pipes + H)
-entries without lanes, and at most the sum over those inbound pipes of their
-lanes, each at most the endpoint's own L (Section 3.6), with them; an entry
-takes at most 32 bytes (four 8-byte variable-length integers).
+number of pipes.
 
 A receiver of PIPE_ACK processes each entry:
 
@@ -1047,13 +978,7 @@ MUST send a PIPE_ACK:
    resumption needs (RESUME.md Section 5).
 
 "Immediately" means with the next records the endpoint writes, without
-waiting for any other condition. The second part of rule 2 matters for
-sparse records: a record below the threshold that arrives after a quiet
-period would otherwise wait the whole delay, its sender's RTT sample would
-carry that delay, and once such a sample is the minimum RTT the ACK Delay
-can no longer be subtracted from later ones (Section 6.6, RFC 9002 Section
-5.3). In a steady flow PIPE_ACKs are less than `zmux_max_ack_delay` apart,
-so the rule adds none there. An endpoint MAY acknowledge more often. It
+waiting for any other condition.  An endpoint MAY acknowledge more often. It
 SHOULD put a PIPE_ACK in the same batch as pending MAX_DATA or
 MAX_STREAM_DATA updates.
 
@@ -1061,10 +986,7 @@ These deadlines bind every local delay of the record that carries the
 PIPE_ACK, a traffic-shaping delay included: whatever such a delay asks
 for, a PIPE_ACK that rules 1 to 3 make due leaves no later than the
 endpoint's own `zmux_max_ack_delay` after the first ack-eliciting byte it
-reports that was not reported before. The peer's PTO_p, and so its
-T_suspect_p (Section 7.1), counts on that bound and on nothing longer: a
-PIPE_ACK held beyond it makes the peer's working pipe suspect at every
-exchange, and each suspicion sends a PIPE_PING that is answered as late.
+reports that was not reported before.
 An endpoint that wants to delay its acknowledgements longer advertises a
 larger `zmux_max_ack_delay`.
 
@@ -1098,16 +1020,9 @@ does so only
 for an outbound pipe that is **unproven**: during the preceding max(1 s,
 T_suspect_p) no ack-eliciting byte was handed to its carrier, its
 acknowledged position (for a pipe with lanes, its cumulative
-acknowledgement point) did not advance, and it did not become ACTIVE. An
-advance shows the direction to work as well as the answer to a PIPE_PING
-would. In particular a PIPE_ACK that answers a PIPE_PING whose record also
+acknowledgement point) did not advance, and it did not become ACTIVE.  In particular a PIPE_ACK that answers a PIPE_PING whose record also
 acknowledged the PIPE_PING the pipe sent before carries none, however
-long that exchange took, so that PIPE_PING frames never answer each other:
-counted from the last byte sent alone, every exchange slower than max(1 s,
-T_suspect_p) (one whose records wait in a shaper, or a path whose round
-trip exceeds the initial estimate) would make each answer carry a
-PIPE_PING, and the two endpoints would exchange them once per round trip
-for good.
+long that exchange took.
 
 ### 6.5 Choice of pipe for PIPE_ACK and credit frames
 
@@ -1117,13 +1032,8 @@ work: an endpoint **prefers ACTIVE pipes**, and a SUSPECT or DRAINING pipe
 carries such a frame only as an additional copy, or when no ACTIVE outbound
 pipe exists. Which ACTIVE pipe carries the primary copy is local.
 
-- **Redundancy.** When it has at least two live outbound pipes, an endpoint
-  SHOULD also send its latest snapshot on a second outbound pipe no later
-  than 50 ms after it sent a changed snapshot, and immediately when the pipe
-  that carried it becomes suspect, so that acknowledgements keep flowing
-  when one return pipe dies. When the pipe that carried the latest value of
-  a credit limit becomes suspect, the endpoint SHOULD send that value again
-  on an ACTIVE pipe.
+- **Redundancy.** An endpoint MAY send copies of its latest snapshot and
+  of its latest credit limits on further outbound pipes.
 - **PIPE_PING answers on its own pipe pair.** The PIPE_ACK that answers a
   PIPE_PING under rule 3 of Section 6.3 SHOULD be sent on the outbound
   direction of the pipe pair (the same attachment) on which the PIPE_PING
@@ -1311,9 +1221,7 @@ suspect or failed pipe beyond the acknowledged position:
 | SESSION_EPOCH | an offer: the same bytes until the answer arrives; an answer: the same bytes until it is acknowledged (Section 10.7) |
 | PIPE_ACK, PIPE_PING, PADDING, QX_PING, DATAGRAM, QX_TRANSPORT_PARAMETERS, CONNECTION_CLOSE | nothing |
 
-Reinjected information SHOULD be sent before new data (RFC 9000 Section
-13.3). A sender SHOULD NOT re-send information that a PIPE_ACK has
-acknowledged in the meantime. Information sent on a pipe is reinjected from
+ Information sent on a pipe is reinjected from
 that pipe at most once: a pipe that is suspect and later fails does not
 reinject it again, and for frames that carry a current value (limits,
 watermarks, status) only the latest value per scope is re-sent. A copy that
@@ -1328,12 +1236,9 @@ dropped.
 
 ### 7.5 No retransmission timers
 
-A sender MUST NOT re-send information from a pipe that is not suspect,
-failed or abandoned, and MUST NOT use any per-frame or per-record
-retransmission timer. Each pipe's carrier already recovers losses; a second
-timer-driven retransmission layer causes the meltdown of a reliable layer
-over another (TCP over TCP). A sender MUST NOT send the same information on
-several pipes proactively, with three exceptions:
+A sender may re-send information beyond reinjection (Section 7.4); the
+receiver handles every copy as a duplicate (Section 7.6). Such copies
+include:
 
 1. the copies of PIPE_ACK and credit frames of Section 6.5;
 2. **opportunistic reinjection** (Section 7.5.1);
@@ -1343,21 +1248,17 @@ several pipes proactively, with three exceptions:
    with the copies whose data is not yet acknowledged bounded by the
    sender.
 
-These copies are not reinjection in the sense of Section 7.4, are never
-driven by a timer, and SPEC.md Sections 4.3 and 9.4.3 allow them
-explicitly; the receiver handles them as duplicates (Section 7.6).
+These copies are not reinjection in the sense of Section 7.4, and SPEC.md
+Sections 4.3 and 9.4.3 allow them explicitly; the receiver handles them as duplicates (Section 7.6).
 
 #### 7.5.1 Opportunistic reinjection
 
-A pipe can slow down without stalling: acknowledgements still advance, so it
-never becomes suspect, but data spread onto it arrives much later than data
-on the other pipes, and the receiver's flow-control window fills with data
-waiting for that hole. When a stream has data waiting that the sender cannot send,
+ When a stream has data waiting that the sender cannot send,
 because of the peer's stream or session flow control or because the stream's binding
 waits for its data on another pipe to be acknowledged, and the lowest unacknowledged
 data that blocks it (the **blocking data**) was sent on a pipe p well beyond the
 acknowledgement time it expected for that data, the sender MAY send that data
-again once on another eligible pipe (Section 11). 
+again once on another eligible pipe (Section 11).
 - Each byte is re-sent opportunistically at most once. The copies are
   ordinary STREAM frames; the receiver handles them as duplicates, which are
   never chargeable (Section 7.6).
@@ -1368,8 +1269,7 @@ again once on another eligible pipe (Section 11).
 Duplicate STREAM data, repeated control frames and outdated limits are normal
 in multipath sessions. They are not errors and are handled by the idempotence
 rules (SPEC.md Section 4.1 rule 5). They are never chargeable: SPEC.md Section
-9.4.1 exempts them in multipath sessions, because their number depends on how
-much was in flight on a failed pipe.
+9.4.1 exempts them in multipath sessions.
 
 Reinjection and duplicate suppression make each byte of a stream reach
 the receiving endpoint once and in order whatever happens to the pipes;
@@ -1436,10 +1336,7 @@ group; nothing on the wire marks it. An endpoint that removes attachment P grace
    with no unacknowledged stream data therefore completes its drain as soon
    as the second PIPE_ABANDON of the exchange is sent or received. It then
    shuts down its write side of P gracefully (every lane at a record
-   boundary) and P is CLOSED. Waiting for the peer's PIPE_ABANDON
-   guarantees that the peer knows the end is coming before it sees it,
-   because PIPE_ABANDON may travel on another pipe than the end of stream
-   (Section 7.3). Information of other ack-eliciting frames sent on P that is
+   boundary) and P is CLOSED.  Information of other ack-eliciting frames sent on P that is
    still unacknowledged at that moment is reinjected (Section 7.4): it is
    control information of a few bytes. If the drain has not completed when
    T_fail_P has elapsed since P entered DRAINING, P fails instead (Section
@@ -1453,9 +1350,7 @@ group; nothing on the wire marks it. An endpoint that removes attachment P grace
 
 An endpoint that receives PIPE_ABANDON(P, NO_ERROR) performs steps 1, 3 and 4
 for its own directions of P and sends its own PIPE_ABANDON(P, NO_ERROR) if it
-has not done so. A graceful removal that completes its drain without a
-stall reinjects no stream data and causes no stall; only a draining pipe that
-stalls for T_suspect_P (a pipe that died or slowed while draining) does.
+has not done so.
 
 ### 8.3 Abrupt removal
 
@@ -1478,14 +1373,9 @@ the first moment all three hold, whichever event completes them (an
 acknowledgement, the peer's PIPE_ABANDON, the end of a direction, including
 the endpoint's own closing of the carrier when the attachment fails or the
 linger timeout expires); from then on both directions are RETIRED and the
-state is freed. Waiting for the acknowledgement keeps the endpoint's own PIPE_ABANDON
-in the reinjection state until the peer has it, so that both sides retire the
-attachment even when a PIPE_ABANDON is lost with a failing pipe. An endpoint
+state is freed.  An endpoint
 answers a peer's PIPE_ABANDON once: a copy that arrives again (reinjected by
-the peer, or sent on several pipes) gets no second answer, because the
-endpoint's own PIPE_ABANDON is already retained and re-sent until it is
-acknowledged. Answering every copy would let two endpoints keep answering
-each other's copies indefinitely.
+the peer, or sent on several pipes) gets no second answer.
 
 **Unilateral retirement.** A peer that never answers must not make the
 endpoint keep the attachment forever. When the endpoint's own PIPE_ABANDON
@@ -1498,9 +1388,7 @@ after that acknowledgement, where PTO is the largest PTO_p (Section 7.1) of
 the endpoint's ACTIVE outbound pipes, or of its live outbound pipes when none
 is ACTIVE, or the PTO of the initial values (Section 6.6) when it has no live
 outbound pipe, the endpoint closes whatever carrier of the attachment is
-still open and retires the attachment anyway. A conforming
-peer answers within one round trip, so this only fires for a peer that does
-not, or whose answer was lost together with every pipe that carried it.
+still open and retires the attachment anyway.
 While the endpoint is SUSPENDED its PIPE_ABANDON cannot be acknowledged;
 the cap of Section 5.4 step 9 then displaces an attachment when a rejoin
 needs the room: a failed one, preferably the oldest whose own PIPE_ABANDON
@@ -1595,8 +1483,7 @@ two fields separately, an explicit local setting wins, then the latest
 PIPE_STATUS request of the peer for that attachment (the one in the Hello
 until a PIPE_STATUS with a sequence number of at least 1 arrives), then the
 default (available, priority 0). An endpoint SHOULD honour the peer's request
-when it has no local setting: the request typically expresses something the
-sender cannot see, such as the cost of the path to the peer. Both the local
+when it has no local setting. Both the local
 setting and the request can change at any time; the sender uses the
 effective values in force at each decision.
 
@@ -1629,9 +1516,7 @@ direction follows (draft-ietf-quic-multipath-21 Section 3.3). Once a
 non-standby outbound pipe of that direction is usable again, which for a
 returning or new pipe means once the sender treats it as usable, an endpoint that sent such a
 takeover request MUST send a PIPE_STATUS restoring its configured request
-(Status standby, the same Priority). Without the restoring frame the peer
-would keep using its direction of the attachment as an ordinary pipe
-indefinitely.
+(Status standby, the same Priority).
 
 ---
 
@@ -1669,12 +1554,7 @@ known:
    source out of the secret.
 3. Equal flags select those sources.
 
-Clearing flags on a plaintext bootstrap therefore costs at most multipath or the
-session, which such a party can cause anyway.
-
-An implementation never sets E on its own, because it cannot tell whether a CDN or a
-TLS-intercepting proxy sits in the path, and then the two ends export different
-values. When handshakes are nested, the innermost one that terminates at both
+An implementation never sets E on its own. When handshakes are nested, the innermost one that terminates at both
 endpoints is used; a handshake below it may be terminated by an intermediary. That
 handshake is the secure carrier's, TLS 1.3 or QUIC terminated by the endpoint's own
 process (a TLS connection, or a QUIC connection whose stream is the carrier, RFC 9001
@@ -1682,8 +1562,7 @@ Section 4), or the handshake of a carrier layer that runs its own authenticated 
 exchange end to end with the peer and exports keying material in the same way. An
 endpoint never sets E from the exporter of a connection below a stream of a multiplexer
 running over it (a stream of another zmux session, EXTENSIONS.md Section 10.2, an HTTP/2
-stream through a proxy): the multiplexer's other carriers, or an intermediary that
-terminates them, can open streams and inject bytes the binding would wrongly vouch for.
+stream through a proxy).
 
 **Unmanaged first pipe.** A first pipe that does not use the secure carrier is
 **Unmanaged**: nothing in the protocol proves that pipe 0 ends at the peer, and it counts
@@ -1692,9 +1571,7 @@ Its host proves the pipe end to end, for example with a pinned certificate or an
 attestation over an exporter of its own label, and fails the session if the proof fails,
 and only then declares it end to end, a local act that
 sends nothing. Until an endpoint has declared, it has no join keys: it neither starts
-nor accepts a join (Section 3.3). The check catches a host that forgot, or that joined
-too early; it cannot catch a false declaration or a PSK that an intermediary can in fact
-see. A private PSK alone protects joins, not the plaintext of pipe 0.
+nor accepts a join (Section 3.3).
 
 ### 10.2 Inputs
 
@@ -1722,14 +1599,7 @@ see. A private PSK alone protects joins, not the plaintext of pipe 0.
   32-byte exporter. When only one half exposes an exporter the value is that
   half's 32 bytes, and the session secret binds that half alone.
 - **PSK**: at least 16 bytes supplied by the application, identical at both
-  endpoints and unpredictable to third parties. It may be static (for
-  example provisioned with a client's credentials) or specific to the
-  session (derived from the application's own authenticated exchange on the
-  bootstrap carrier, which also serves TLS stacks that expose no exporter,
-  such as Python's `ssl` module, and carriers whose security comes from
-  another layer). A per-session value confines the effect of its disclosure
-  to that session. An application with both kinds derives one PSK from them,
-  for example with HKDF. The application may supply the PSK after
+  endpoints and unpredictable to third parties.  It may be static or specific to the session. The application may supply the PSK after
   establishment (deferred), for example once it authenticated the peer
   over the session; P is sent from the start, the flags do not change, and
   the endpoint has no join keys until then (Section 3.3). The peer cannot
@@ -1832,10 +1702,6 @@ Each carrier of a session has a record mode, fixed by its handshake:
 - **Forward secrecy.** Every join runs a key exchange, so its record keys and exporter
   have forward secrecy, while its first batch and return frames do not: the consequences
   of a leaked epoch secret are those of secure-carrier/SPEC.md Section 11.5.
-- **Diagnosable misconfiguration.** The acceptor reports every failed
-  verification as a join authentication failure (Section 5.4 step 5), so a
-  secret mismatch is visible at the acceptor even though the joiner learns
-  nothing.
 
 ### 10.7 Session epochs
 
@@ -1917,21 +1783,13 @@ Locator the peer announced for d+1, if any. Rules:
    joined keep their record keys. A join of d that has not ended when d is deleted fails as
    any join does, and the host may retry it.
 
-The maximum join deadline bounds every honest join, so R covers the life of every join that
-uses d. When the acknowledgement of an answer arrives more than R late, A's joins of d fail and
-the host handles them as any failed join; this costs liveness only, not safety. An endpoint has at most one exchange, one set of private values, two epoch secrets
+When the acknowledgement of an answer arrives more than R late, A's joins of d fail as
+any failed join. An endpoint has at most one exchange, one set of private values, two epoch secrets
 and two local Locators at a time. The state of an exchange is part of the session's state,
 and losing it loses the session (RESUME.md Section 10).
 
-These rules give, under any loss, duplication, reordering across pipes and late arrival of
-frames between honest endpoints whose joins end within the maximum join deadline: the epoch
-a joiner uses is accepted by the acceptor until the join ends; an endpoint accepts at most
-two adjacent epochs, so the key phase selects one; both endpoints commit the same secret for
-an epoch; a deleted epoch is never accepted or used again; and rule 6 is never reached.
-
 Advancing is local policy. A session with one pipe and no resumption has no joins, and MAY
 never advance its epoch.
-
 
 ---
 
@@ -1980,10 +1838,6 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
 - S7. A stream's DATAGRAM frames follow its
   unacknowledged opening frame (EXTENSIONS.md Section 6.4), even onto a
   less-preferred tier for about a round trip, and are never reinjected.
-- S8. Within the frames chosen for a pipe, stream priorities apply
-  (EXTENSIONS.md Section 5).
-- S11. **Lanes.** A pipe with lanes (Section 2.5) is one pipe for every rule
-  above; the lane a frame goes on is the scheduler's choice.
 
 ## 12. Receiver requirements for spread streams
 
@@ -2032,7 +1886,7 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
 | epoch retention R | 3 x the maximum join deadline (180 s) after an endpoint starts using the new epoch | 10.7 |
 | join refusal backoff | 1 s after the peer's ZMUX_PIPE_RESOURCE_LIMIT refusal or abandonment, doubled per consecutive one, at most 60 s | 5.7 |
 | PIPE_PING | at most 8 per session in any one-second interval | 6.4 |
-| acknowledgement redundancy | latest snapshot on a second pipe within 50 ms | 6.5 |
+
 | initial RTT of a pipe | 333 ms (rttvar 166.5 ms) until its own first sample | 6.6 |
 | T_suspect | local; at least max(50 ms, 2 x PTO_p) | 7.1 |
 | T_fail (another pipe ACTIVE) | local; at least max(2 s, 8 x PTO_p) and T_suspect | 7.1 |
@@ -2069,14 +1923,7 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
   one only when its adapter declares the new stream on the connection of lane 0 and the
   pipe is not Sealed. A lane is accepted only with the receiver's Lane Key, which travels
   only in the session's own records (its transport parameters and its lanes),
-  and only on the connection of its pipe's lane 0 (Section 5.8). A
-  connection may carry the streams of several parties (a relay or a proxy
-  that forwards the streams of many clients over one connection), so the
-  connection alone would let one party's stream join another's pipe; the
-  key confines a lane to the session that issued it, and the connection
-  check to the pipe's own path. Whoever knows the key reads the session's
-  records already, so the key needs no MAC and no replay protection: a lane
-  replayed onto another connection names no pipe there and is refused. A
+  and only on the connection of its pipe's lane 0 (Section 5.8).  A
   peer can make the endpoint keep at most L - 1 lanes per inbound pipe,
   their incomplete records within the session's budget (SPEC.md Section
   9.8).

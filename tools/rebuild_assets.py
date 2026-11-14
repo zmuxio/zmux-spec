@@ -16,6 +16,7 @@ def run(script):
 def main():
     run("build_registry.py")   # assets/registry.json, REGISTRY.md tables
     run("build_wire.py")       # WIRE_EXAMPLES.md, fixtures/wire/*
+    run("build_capsules.py")   # fixtures/capsules.json
     run("build_traces.py")     # fixtures/profiles.json, fixtures/traces/**
     run("build_manifest.py")   # assets/manifest.json
 

@@ -14,11 +14,6 @@ Section 7.5 (exporters). The vectors in `vectors/` are normative: an
 implementation conforms only if it reproduces all of them. `MULTIPATH.md`
 defines the session secret, pipe IDs and locators.
 
-Informative references: [BL15] M. Bellare, A. Lysyanskaya, "Symmetric and Dual
-PRFs from Standard Assumptions: A Generic Validation of an HMAC Assumption",
-IACR ePrint 2015/1198; [BBGS23] M. Backendal, M. Bellare, F. Günther, M. Scarlata,
-"When Messages are Keys: Is HMAC a dual-PRF?", CRYPTO 2023.
-
 ## 1. Conventions
 
 - Fixed-width integers are big-endian.
@@ -95,12 +90,9 @@ KEM tokens of HFS:
 |---|---|---|---|
 | ML-KEM-768 | 1184 | 1088 | 32 |
 
-The contributory check of X25519 is Section 5 rule 1. ML-KEM has none: the end
-that encapsulates alone determines the shared secret, and the X25519 `e` of the
-other end still contributes to the keys. Its input check is Section 5 rule 8.
-
-For AESGCM the limit is that of Noise Section 14. A key protects at most 2^20
-records of at most 65535 bytes, under 2^36 bytes, which satisfies the limit.
+The contributory check of X25519 is Section 5 rule 1; ML-KEM has no
+contributory check, and its input check is Section 5 rule 8. For AESGCM the
+limit is that of Noise Section 14.
 
 ### 3.2 Adding a profile
 
@@ -235,9 +227,7 @@ Requirements:
 
 1. A DH output of all zeros MUST fail the handshake with `kex`, compared in constant
    time. This covers low-order
-   and all-zero public keys in every position. Without this rule a peer holding no
-   private key could complete Establish without a pre-shared key and be delivered an
-   identity. Several encodings can denote the same key, so a public key value
+   and all-zero public keys in every position. Several encodings can denote the same key, so a public key value
    MUST NOT be used to deduplicate principals.
    The failure occurs at the DH token that uses the key, not when the key is read: a
    responder that reads a low-order `e` in message 1 fails when it writes message 2,
@@ -251,8 +241,7 @@ Requirements:
 4. A server MUST verify message 3, its credentials and proof included, before delivering
    the client's identity or any bytes of the carrier.
 5. An end that decrypts a peer static key equal to its own fails at once with
-   `peer_is_self`, before the next token. This holds for every Profile and removes
-   reflection when both ends share a root and a pre-shared key.
+   `peer_is_self`, before the next token. This holds for every Profile.
 6. A message shorter than its pattern requires fails with `malformed` before any
    token of the message is processed, so no DH or AEAD result can take precedence.
    The minimum is the sum of the lengths of each public key, KEM encapsulation key
@@ -271,8 +260,7 @@ Requirements:
    length, or surplus; and a Handle absent, not 16 bytes, or surplus. `config.json` lists
    them. A responder that receives a first message in Bound and has no Binding, because
    its carrier does not meet the contract of Section 7.2 or is a split carrier in Join,
-   MUST refuse it with `auth` without processing it. A first message from a sender that
-   mixed no Binding would otherwise authenticate. In every other case a responder does
+   MUST refuse it with `auth` without processing it. In every other case a responder does
    not judge whether its Binding suits the received Mode: it mixes what it has, and any
    disagreement is `auth`.
 8. The responder MUST check `ek` at the `ekem1` token, before it encapsulates and
@@ -295,9 +283,7 @@ Requirements:
     key generation seed `(d, z)` and encapsulation randomness `m` of Establish, R of
     Join (Section 11.4), and the private values of every Group share (Section 11.6). A process restored from a snapshot, or a clone of one,
     MUST reseed its random source before it generates any of them; this requirement
-    has no fallback. Otherwise two copies can generate the same values: a recorded
-    handshake or Join then replays with the same keys, and the same key and nonce
-    encrypt different plaintexts. An implementation SHOULD draw each of these values
+    has no fallback. An implementation SHOULD draw each of these values
     directly from the operating system's entropy source. A failure of the random
     source fails the handshake or the Join.
 
@@ -375,8 +361,7 @@ of Section 6.1 rule 4 is a receiver's rule only, and `receiver.json` tests it.
 A message carries at most one credential, in one item of type 1. `CredType` is a shortest
 varint and names the format of `Credential`, which is opaque to this document: the handshake
 core checks only the bounds of the item and hands the bytes to the host's verifier. An
-empty value is `tlv_credentials`. The payload is encrypted under keys that include `ss` and
-`es`, so a credential needs no binding of its own to the handshake.
+empty value is `tlv_credentials`.
 
 | CredType | Name |
 |---|---|
@@ -448,9 +433,6 @@ verdict names no proof key, a proof is not verified. Production signers MUST use
 signatures. A server with a pre-shared key signs only after message 1 authenticates
 (Section 5 rule 2).
 
-The payload is encrypted under keys that include `ss` and `es`, so the position of the proof
-in the payload does not matter, and a proof can be neither removed nor replaced.
-
 ### 6.8 Post-quantum facts
 
 A handshake reports two facts about the peer:
@@ -461,11 +443,7 @@ A handshake reports two facts about the peer:
 
 A pre-shared key does not give PQ authentication. An end that requires PQ authentication of
 its peer fails the handshake with `credentials_failed` when the fact does not hold. Such an
-end MUST NOT accept a pin of an X25519 key alone, which is `invalid_config`: it gives an
-active quantum adversary a path that the requirement does not cover. PQ authentication is
-no stronger than what the verifier relies on to name the proof key: a verifier whose own
-trust rests on classical signatures lets an active quantum adversary name a proof key of its
-choice.
+end MUST NOT accept a pin of an X25519 key alone, which is `invalid_config`.
 
 ### 6.9 Application data
 
@@ -520,14 +498,12 @@ A sealed carrier is closed as SPEC.md Section 6.5 says: its write side is shut d
 after the last record, and it is read and discarded until the peer's end or the linger
 timeout before it is closed, so that the peer reads the records sent before the end. An end of the carrier at a record boundary, such as a TCP FIN, ends the carrier and
 says nothing else. It does not mean that data or a stream ended normally, and it closes
-no stream. It is not authenticated: anyone on the path can inject it, so it can cost a
-carrier and nothing more. A session judges only by authenticated zmux frames. Normal
+no stream. It is not authenticated. A session judges only by authenticated zmux frames. Normal
 closure is expressed by them, and an end that they do not make expected is a pipe
 failure (SPEC.md Section 6.4, MULTIPATH.md Section 7.3): the session recovers the pipe's
 information as after any failure. A graceful removal ends its pipe this way too, and its
 PIPE_ABANDON may come later over another pipe. Until that frame has been received or a
-graceful removal has been started locally, the end is treated as a failure, which costs
-at most a repeated send.
+graceful removal has been started locally, the end is treated as a failure.
 
 ### 7.2 Bound and Trusted
 
@@ -544,8 +520,7 @@ connection by H2 or a similar layer does not. A Hello in Bound MUST NOT be sent 
 carrier early data.
 
 The Binding identifies the secure connection, not a stream: QUIC streams of one connection
-share it. Isolation between them rests on the carrier's stream integrity, correct
-dispatch by the endpoint and the one-time use of the Pipe ID.
+share it.
 
 `Trusted` is an explicit configuration of both ends and is never selected
 automatically. Anyone on the path can read all records and relay online; only
@@ -611,10 +586,6 @@ The result is the client's Handle and pre-shared key. The first argument of
 `HKDF-Extract` is the salt. `deployment_salt` is optional and empty by default. A shorter secret is an invalid configuration. The secret MUST be
 uniformly random, and passwords MUST NOT be used.
 
-A derived Handle lets anyone who observes it test guesses of the secret offline, against
-many Handles at once. A 16-byte secret is the minimum and the default is 32 bytes. A
-`deployment_salt` keeps such a batch of Handles to one deployment.
-
 ## 9. Errors
 
 Nothing is ever sent to report an error. The error classes below are those of the
@@ -659,23 +630,9 @@ key and a Profile or Mode the server does not accept. For a Join they are all fa
 before the Hello's payload passes (Section 11.5 steps 1 and 2): a Hello that does not
 parse, an unknown Locator, a Suite not usable in the session, Bound without a Binding
 (Section 5 rule 7), a failed AEAD, and a carrier the acceptor declines for a local
-resource limit. The policy is one of two, chosen by the server for Establish and for
-Join separately: **close**, the carrier is closed; or **stall**, nothing more is read
-or sent and the carrier is closed when a time limit expires. The default is stall for
-Establish and close for a Join. The time limit always exists, also when the handshake
-itself has none; for a Join it is one join timeout of the listener from the refusal.
-Whether a server can stall one more carrier depends only on its own resource bounds for
-the carrier's source, never on the failure; a carrier it cannot stall is closed at
-once.
-
-What this guarantees is that every such failure gets the same response: no byte, and
-the same way of ending, a close or a stall of the same limit. The moment of the close
-is the time taken to receive and process the input plus that fixed wait; differences
-in processing time between failures are outside what this specification guarantees.
-
-An implementation MAY report a failure locally with a finer reason than these classes,
-for example which server setting refused a Profile; the classes, and what is visible on
-the wire, stay as above.
+resource limit. The policy either
+closes the carrier (**close**) or reads and sends nothing more and closes it when a time
+limit expires (**stall**). The response MUST NOT depend on which failure occurred.
 
 ## 10. Vectors
 
@@ -688,8 +645,8 @@ static keys are X25519 private scalars given as seeds. An ML-KEM-768 key pair is
 as its 64-byte seed `d ‖ z` (FIPS 203 ML-KEM.KeyGen_internal), an encapsulation as its
 32-byte randomness `m` (ML-KEM.Encaps_internal). ML-DSA signatures of the vectors are
 deterministic, with `rnd` of 32 zero bytes (FIPS 204 ML-DSA.Sign_internal), and ML-DSA
-keys are given as their 32-byte seeds. Implementations need an internal
-entrance to fix ephemeral keys and R; production interfaces MUST NOT offer one.
+keys are given as their 32-byte seeds. Reproducing the vectors requires
+fixing the ephemeral keys and R.
 
 | File | Content |
 |---|---|
@@ -823,23 +780,18 @@ output. `‖` joins without length prefixes: each input is self-delimiting given
 - The acceptor takes e from the epochs it accepts by the key phase; at most one matches.
   When none does, it opens the Hello with a key of its own that no joiner has, a fresh
   random value of the process, so that the Hello fails as `auth` like any wrong key.
-- Each end derives both `join_psk` values of each usable Suite when an epoch secret
-  becomes known and keeps them while it keeps that epoch, so Joins work after pipe 0 has
-  gone.
+- `join_psk` remains usable while its epoch is kept, also after pipe 0 has gone.
 - `join_psk` MUST NOT be derived from a session secret made with empty input keying
   material. There is no mode without a real session secret.
 - Every Hello and every Reply MUST take an R that the end has never used before, also
   across copies of a cloned or restored process (Section 5 rule 10). A receiver does
-  not check how R was made. If a Reply's R repeats and its payload is constant, a
-  replayed Hello gets the same `R_r` and `th3`; an old Confirm then replays, and
-  records under `r2i` reuse a key and nonce. An end SHOULD make R as
+  not check how R was made. An end SHOULD make R as
 
       R = first N bytes of HMAC(psk, "zmux join nonce" ‖ Attempt(8) ‖ RNG(N) ‖ H(head ‖ payload))
 
   where `head` is the bytes of the message before R, `payload` its plaintext, `RNG(N)`
   N bytes from the random source and `Attempt` a counter that increases with each R of
-  a process. This limits the harm of repeated random output only when the messages
-  differ. An end MAY also mix a wall-clock time in nanoseconds into the HMAC input.
+  a process. An end MAY also mix a wall-clock time in nanoseconds into the HMAC input.
 - `Binding` (Section 8.3) is present exactly when Mode is Bound, and a violation is
   `invalid_config` before any byte is sent at the joiner. An acceptor that receives a
   Hello in Bound and has no Binding MUST refuse it with `auth` without processing it, and
@@ -880,8 +832,7 @@ suspended state, so a replayed Hello cannot affect paths. It is also the conditi
 the acceptor's records. Before it, return frames are limited to the Reply payload, and
 in Sealed and Bound the whole Reply, its padding included, is at most 3 times the bytes
 received, frames taking precedence over padding; the session layer enforces this limit, since
-the protocol layer does not count them. A new authenticated Hello of the
-session MAY evict the oldest Unconfirmed one and MUST NOT be refused for lack of room.
+the protocol layer does not count them.
 If the pipe still loses at Confirmed, the acceptor closes the carrier and the joiner
 handles it as a pipe failure.
 
@@ -890,24 +841,9 @@ not a failure. Both ends bound a Join by the join deadline of `MULTIPATH.md` Sec
 default 10 s: the joiner from before the Hello to Proven, the acceptor from the Hello to
 Confirmed. Expiry is a failure of the same kind.
 
-Replay: the Hello can be replayed at ciphertext level. R_r makes the record keys and
-the Confirm fresh, so whoever replays it can neither read the Reply nor make a Confirm.
-The zero bytes of a Confirm add nothing to this: in Sealed they are authenticated, and in
-Trusted a party on the path can change their number, which moves only the start of records
-that Trusted does not protect. One-time use comes from the Pipe ID. A replay that arrives first makes the original
-Join fail as though lost, and a retry uses a new Pipe ID. In Bound the carrier's own
-integrity covers duplication on one carrier and the Binding covers other carriers.
-
-Forward secrecy covers the keys derived from `hs`: the record keys, the Trusted
-confirmation key and the exporter secret. The payloads of the Hello and the Reply,
-among them a first batch and the return frames, are protected by `join_psk` alone, as
-TLS 1.3 early data is by its pre-shared key: whoever learns the secret of an epoch can
-read and forge the payloads of that epoch's Joins, recorded or later. Without a party's
-ephemeral private values the record keys stay secret; under Group 1 that rests on X25519,
-under Group 2 on either X25519 or ML-KEM-768. A party that holds an epoch secret can also
-forge new Joins of the epoch, and from them obtain record keys of its own. Bound and
-Trusted Join records are not protected by these keys. The record keys of the Establish
-carrier do not derive from the session secret.
+One-time use of a Join comes from the Pipe ID: a replay that arrives first makes the
+original Join fail as though lost, and a retry uses a new Pipe ID. The payloads of the
+Hello and the Reply are protected by `join_psk` alone, without forward secrecy.
 
 ### 11.6 Groups
 
@@ -935,13 +871,10 @@ exchange; the responder is the acceptor or the answering end.
       Combine(salt, ss_1, ..., ss_n) = Extract(... Extract(Extract(salt, ss_1), ss_2) ..., ss_n)
 
   Join uses the Suite's hash, an epoch SHA-256. Each shared secret is 32 bytes and
-  uniformly random to the adversary, so the argument of Section 12 (Combination) applies
-  to each step. The public values are bound by the transcript, not by `Combine`: in Join
+  uniformly random to the adversary. The public values are bound by the transcript, not by `Combine`: in Join
   `th3` covers the ciphertexts that carry the shares, and in an epoch the derivation
   covers the frames that carry them (`MULTIPATH.md` Section 10.7).
-- **Private values.** The joiner keeps its private values from the Hello until it is
-  Proven or the Join fails; the acceptor drops its own once it has the shared secrets.
-  They are random values of Section 5 rules 9 and 10.
+- **Private values.** They are random values of Section 5 rules 9 and 10.
 
 A new Group MUST define: its share lengths for each role; the checks of its public values
 and which of them are `kex`; the number, order and length of its shared secrets, each a
@@ -949,80 +882,8 @@ uniformly random value of 32 bytes or reduced to one by HKDF-Extract first; the 
 of its random values; its priority; and vectors.
 
 
-**PQ confidentiality.** Every Establish Profile combines X25519 with ML-KEM-768. The keys of
-the handshake, the records, the exporter and every Join of the session stay
-secret as long as either X25519 or ML-KEM-768 resists the adversary, and, with a
-pre-shared key, also while the pre-shared key stays secret. For a Join this holds
-only in a session whose first pipe used Establish, since a session whose secret comes
-from a TLS exporter has the strength of that TLS handshake, and for a Join's payloads,
-which carry first batches and return frames, only while the epoch secret also stays
-secret (Section 11.5). The record keys of a Join under Group 1 rest on X25519 alone
-against a later quantum adversary that also holds the epoch secret; under Group 2 they
-keep the strength of the handshake.
-The responder's static
-key and credentials in message 2 and the initiator's in message 3 are encrypted
-under keys that already include the KEM shared secret, so they share this
-protection against a passive adversary. An active adversary learns the responder's
-identity in Profiles 4 and 5, which present it to any client, and in Profiles 1 and 3
-once the pre-shared key is known. Without PQ authentication the handshake binds the peer
-through its X25519 static key alone: an adversary able to break X25519 during a handshake
-can impersonate a peer.
-
-**PQ authentication.** The proof signs `h_p`, which covers the client's fresh `ek` and the
-`ct` sent to it; only the holder of `dk` and the server that encapsulated know `ss`, and the
-final keys depend on `ss`, so a proof binds its signer to this handshake. ML-DSA binds the
-public key into what it signs. To impersonate a peer with PQ authentication an active quantum
-adversary has to break both X25519 and ML-DSA-44, or the trust on which the verifier names
-the proof key (Section 6.8). It covers Establish only: an epoch exchange on a Bound pipe keeps
-the integrity of that carrier's own handshake.
-
-**Application data.** Message 2 data goes out before the client is authenticated: in
-Profiles 4 and 5 any party that connects, an active one on the path included, reads it, so it
-holds only what may be disclosed to any client; in Profiles 1 and 3 only a holder of the
-pre-shared key reads it. Message 1 data can be replayed (Section 6.9).
-
-**Linkability.** Profiles 1 and 3 send the client's Handle in the clear, so a passive
-observer can link the Establishes made with one Handle; Profiles 4 and 5 send no client
-identifier, and Joins of one epoch share a Locator.
-
-PQ confidentiality describes the handshake and the keys derived from it. Session data has the
-protection of the carrier that carries it: in Bound that of the carrier's own cipher
-suite, and in Trusted none from this layer; Section 7.2 states that a session is
-protected as its weakest carrier.
-
-In Profiles 1 and 3 the keys that protect message 1 depend only on the pre-shared key
-and public values. A pre-shared key that leaks later therefore lets a recorded message
-1 be decrypted, exposing `ek` and its payload: padding and any application data
-(Section 6.9). Under the assumptions of the combination below, it exposes
-neither the protected contents of messages 2 and 3 of an honest handshake nor the
-keys derived at its end.
-
-**Combination.** Each shared secret enters the chaining key through `MixKey`, that
-is as the input keying material of HKDF-Extract, with the chaining key as salt. The
-output is pseudorandom when either input is unknown to the adversary, by the
-dual-PRF property of HMAC-SHA256 [BL15] [BBGS23]. That argument needs every shared
-secret to have a fixed length of 32 bytes and be uniformly random to the adversary,
-`ek` and `ct` to enter `h`, which every later AEAD of the handshake takes as associated
-data, and `Split` to derive from the chaining key only; the integrity of the transcript
-comes from those AEADs, so a substituted `ek` or `ct` fails there with `auth`. The order of the tokens is fixed and there is no
-negotiation: the Profile enters the prologue and selects the protocol name, so a
-changed Profile fails as `auth`.
-
-The security of the combination as a whole rests on the following assumptions and is
-not proven. A passive and an active adversary are separate models. Against an active
-adversary the analysis has to cover at least one chosen-ciphertext interaction and what
-the adversary observes after it; where X25519 is broken and ML-KEM-768 is not, the AEAD
-that carries `ct` cannot be taken as a barrier to forgery.
-ML-KEM-768 is used in full, IND-CCA with implicit rejection (Section 5 rule 8). A
-formal analysis that assumes an ideal IND-CCA KEM does not show that a weaker
-assumption suffices.
-
-**Message sizes.** A Hello is at least 1216 bytes (Profiles 4 and 5) or 1248 bytes
-(Profiles 1 and 3) plus its header, and a Reply at least 1200 bytes plus its
-credentials; neither needs more than one Noise message. A receiver that sets a
-lower limit for a Hello (Section 4.1) keeps it above these. In Profiles 4 and 5
-`ek` is sent in the clear and its coefficients are all below 3329, so it is not
-uniformly random; in Profiles 1 and 3 it is encrypted. The X25519 `e` is in the
-clear in every Profile. The first message of Profiles 4 and 5 can therefore be
-recognised as this protocol; a deployment that needs it to be harder to recognise
-uses Profile 1 or 3.
+Every Establish Profile combines X25519 with ML-KEM-768, and each shared secret enters the
+chaining key through `MixKey`. Session data has the protection of the carrier that carries
+it (Section 7.2). Profiles 1 and 3 send the client's Handle in the clear, so Establishes made
+with one Handle are linkable; Joins of one epoch share a Locator. A receiver that sets a lower
+limit for a Hello (Section 4.1) keeps it above the minimum lengths of Section 5 rule 6.

@@ -61,9 +61,7 @@ values:
 | auto (nonce a) | auto (nonce b) | initiator if a > b, responder if a < b, ZMUX_ROLE_CONFLICT if a = b |
 
 On ZMUX_ROLE_CONFLICT the endpoint closes the session with that transport
-error. Equal nonces usually mean that an endpoint connected to itself or that
-a middlebox reflected its bytes; implementations SHOULD NOT retry
-automatically after a conflict.
+error and SHOULD NOT retry automatically.
 
 When only one endpoint sent `zmux_role`, role negotiation is not in use and
 both endpoints use the transport roles (SPEC.md Section 5.6). An endpoint
@@ -138,10 +136,7 @@ An endpoint A that wants to stop accepting new streams:
 A MAY skip phase 1 and send the final GOAWAY directly; more streams are then
 rejected. A MUST NOT send a watermark larger than one it sent before for the
 same type, and every GOAWAY after the first MUST lower at least one
-watermark. The fence is a round trip, not a guessed delay (the two-phase
-pattern of RFC 9113 Section 6.8). zmux needs no timeout on it: if the
-response never comes, A still closes at its own deadline (step 3), and the
-per-stream guarantee of Section 3.4 does not depend on the fence.
+watermark.
 
 ### 3.4 The "not processed" guarantee
 
@@ -187,11 +182,7 @@ An endpoint B that receives GOAWAY:
    Section 7.2), is not new: below the watermark it continues, a pinned
    stream sending its opening frame as soon as credit allows; at or above the
    watermark it is handled by rule 3, and a pinned identifier there is never
-   sent. This
-   fits the two-phase sending of Section 3.3: the first GOAWAY refuses
-   nothing that is already on its way, and from it on B opens nothing, so the
-   final watermark only has to cover streams B emitted before it learned of
-   the first;
+   sent.;
 3. MUST report every stream it opened (emitted or pinned) with an index at or
    above the watermark as not processed and retryable ("rejected") to its application at once, without waiting for A's
    RESET_STREAM and STOP_SENDING;
@@ -217,13 +208,9 @@ accepts.
   and the flow-control credit for a full preamble.
 - An endpoint that sends `zmux_preamble` MUST also send `reset_stream_at`.
 - Violations of the rules above are TRANSPORT_PARAMETER_ERROR.
-- An endpoint SHOULD NOT advertise more than one quarter of its own
-  `initial_max_data`, so that several preambles fit in the initial session
-  window. This is a limit on what an endpoint advertises, not a check on the
-  peer's value: receivers do not enforce it. A sender whose next preamble does
-  not fit in the remaining session or stream credit sends a BLOCKED frame at
-  the current limit (SPEC.md Section 8.4), so the stream is never stuck
-  either way.
+- A sender whose next preamble does not fit in the remaining session or
+  stream credit sends a BLOCKED frame at the current limit (SPEC.md Section
+  8.4).
 
 ### 4.2 Format and placement
 
@@ -336,38 +323,13 @@ the reset (reliable-stream-reset-11 Section 5).
 
 ### 4.6 Metadata conventions (informative)
 
-Overlays, relays and proxies often need routing and ownership metadata at
-stream open: where the stream should end, on whose behalf it runs, how many
-more relays it may cross, and a trace identifier. The preamble carries such
-metadata in the opening frame, so it costs no round trip and is never
-overtaken by data. zmux defines none of it; the layout below is an example
-of how an application might use its TLV range, with sizes chosen so that
-the whole set stays far below the 4096-byte preamble limit.
-
-| Example type | Example meaning | Example value |
-|---|---|---|
-| 0x1000 | destination: the endpoint where the stream terminates | opaque identifier, 1 to 255 bytes |
-| 0x1001 | owner: the principal on whose behalf the stream runs, for accounting and policy | opaque identifier, 1 to 255 bytes |
-| 0x1002 | hop limit: how many more relays the stream may cross | 1 byte |
-| 0x1003 | trace context | 16-byte trace ID, 8-byte parent span ID, 1 flags byte |
-
-- **Hop limit and loops.** A relay that forwards a stream copies the
-  metadata into the next hop's preamble, decrements the hop limit, and
-  rejects a stream that arrives with hop limit 0 instead of forwarding it,
-  with ZMUX_PROXY_TTL_EXPIRED (Section 7.3) on both parts. A hop limit
-  bounds every forwarding loop that routing state may form while it
-  converges; the bound is the application's choice, there is no protocol
-  maximum.
-- **Integrity.** TLVs are protected by each hop's carrier (SPEC.md Section
-  2.2 property 3), not end to end: every relay can read and rewrite them.
-  A receiver trusts a TLV only as far as it trusts the peer that sent it
-  to have set it. Ownership metadata in particular is set by the first
-  relay that authenticated the origin, from that authenticated identity,
-  and a relay does not accept it from a peer that is not trusted to assert
-  it; an application that needs end-to-end integrity puts a signature or
-  MAC over the value into the value.
-- **Placement.** A relay forwards metadata it does not understand
-  unchanged, so that conventions can evolve without upgrading every relay.
+Applications may carry routing and ownership metadata (destination, owner,
+hop limit, trace context) in application TLVs; zmux defines none of it. A
+relay that forwards such metadata decrements a hop limit and rejects a
+stream that arrives with hop limit 0 with ZMUX_PROXY_TTL_EXPIRED (Section
+7.3) on both parts. TLVs are protected by each hop's carrier (SPEC.md
+Section 2.2 property 3), not end to end; a relay forwards metadata it does
+not understand unchanged.
 
 ---
 
@@ -416,9 +378,7 @@ priorities are local and need no frame.
   the stream's preamble. A receiver applies an update only if its sequence
   number is greater than the last one applied to that stream; otherwise the
   frame has no effect (chargeable outside multipath sessions, SPEC.md Section
-  9.4). This makes updates
-  safe to reorder and to repeat, which a multipath session needs; HTTP/3 gets
-  the same effect from its ordered control stream (RFC 9218 Section 7).
+  9.4).
 - A PRIORITY_UPDATE for a terminal or discarded stream has no effect.
 - In a multipath session the latest update per stream is re-sent when its
   pipe fails (MULTIPATH.md Section 7.4).
@@ -535,35 +495,16 @@ overhead:
 | plain QMux peer with the default record size and a `max_datagram_frame_size` of at least 16382 | 16382 | 16381 (datagram flows are never in use with it) |
 
 A stream's datagrams cost the length of the stream's Flow and Context ID
-more. Every IP packet of an MTU up to 65 000 bytes fits a zmux peer, and
-the packets of 1500-byte and 9000-byte (jumbo) links fit every zmux peer,
-and every plain QMux peer whose parameters allow frames of that size, with
-room for the overhead, over a single pipe and over every pipe of a multipath session alike: the
-size limits are those of the peer, not of a pipe. Over TLS a sender keeps
-records at 16382 bytes of frames (SPEC.md Section 3.3), so datagrams up to
-that size share a record with other frames and larger ones occupy a record
-of their own.
+more. The size limits are those of the peer, not of a pipe.
 
 ### 6.7 Datagrams across relays and nested sessions
 
-Datagram semantics are per session and per hop:
-
-- **Relayed hop by hop** (a relay forwards the datagrams of one session,
-  or of a stream's datagram flow, to another session):
-  every hop applies its own queues and drops. A datagram is delivered end
-  to end at most once, may be lost at any hop, and is not reordered on a
-  single-pipe hop, but may be reordered across the pipes of a multipath
-  hop. A relay never queues datagrams beyond the destination session's
-  send queue: forwarding never blocks and never waits for credit, since
-  DATAGRAM frames are not flow controlled.
-- **Inside a nested session** (Section 10) the nested session's datagrams
-  travel in the records of its pipes, and a pipe that runs over a relayed
-  stream is reliable and ordered: such datagrams are not lost at the relays
-  and arrive in order on that pipe, at the price of waiting behind any
-  stream data queued before them on it. They are still dropped by the
-  nested session's own queues, and lost with a pipe that fails. Traffic
-  that relies on loss rather than delay, such as IP packets whose own
-  transport recovers loss, is better relayed hop by hop.
+Datagram semantics are per session and per hop. A relay that forwards
+datagrams from one session to another applies each hop's queues and drops,
+never queues beyond the destination session's send queue and never waits for
+credit. Datagrams of a nested session (Section 10) travel in the records of
+its pipes and are dropped only by the nested session's own queues or with a
+failed pipe.
 
 ### 6.8 Datagrams on a carrier's datagram channel
 
@@ -645,6 +586,7 @@ QUIC library limits error codes to 32 bits.
 | ZMUX_CANCELLED | 0x5a4d0001 | the endpoint abandoned the stream or operation; data may or may not have been processed |
 | ZMUX_REJECTED | 0x5a4d0002 | the stream was not processed (Section 7.2) |
 | ZMUX_CARRIER_FAILED | 0x5a4d0003 | the stream carried something that failed: it was a pipe of a nested session that the nested session failed or aborted, or one hop of a relayed stream whose other side was lost (Section 10); data already delivered stands, the rest is lost, and the stream is not safe to retry blindly |
+| ZMUX_PACKET_ERROR | 0x5a4d0004 | the bytes of a packet stream were malformed: a capsule above the receiver's bound, or the stream ended inside a capsule (Section 12) |
 
 ### 7.2 REJECTED
 
@@ -693,20 +635,15 @@ imply that no stream data was forwarded to the target.
 ### 7.4 Codes chosen by libraries
 
 When a zmux library ends a stream or a session because of a local API
-action that carries no explicit code, it uses the codes below. The
-choice belongs to the protocol core (the release of a handle), not to each
-language's handle layer, so that every binding of one core sends the same
-code:
+action that carries no explicit code, it uses the codes below:
 
 - ZMUX_CANCELLED with RESET_STREAM (or RESET_STREAM_AT covering the
   preamble) when the application drops or closes a sending part without an
-  explicit finish: Rust `Drop`, Java `close()`, Python leaving `async with`
-  through an exception, and garbage collection of an unfinished handle. Only
+  explicit finish, including garbage collection of an unfinished handle. Only
   an explicit finish (FIN) is a clean end; a reset is never complete
   (SPEC.md Section 7.5);
 - ZMUX_CANCELLED in CONNECTION_CLOSE when the application leaves a session's
-  scope through an exception where the language reports it (Python
-  `async with`), so that the peer can tell it from a normal close;
+  scope through an exception where the language reports it, so that the peer can tell it from a normal close;
 - STOP_SENDING with code 0 when the application drops or closes a receiving
   part before reading its end;
 - ZMUX_REJECTED as Section 7.2 describes;
@@ -748,11 +685,7 @@ a pipe pair of another zmux session (the **nested** session). Two
 endpoints then keep one end-to-end nested session whose pipes run over
 different routes: for example a direct carrier, and streams that cross one
 or more **relays**, each relay being an endpoint of two outer sessions that
-splices a stream of one to a stream of the other. The nested session's
-failure detection, reinjection and resume (MULTIPATH.md, RESUME.md) then move its traffic from
-one route to another without its streams noticing, which per-hop relaying
-of each stream cannot do: a stream relayed hop by hop dies with any relay
-it crosses.
+splices a stream of one to a stream of the other. 
 
 Nothing here changes the wire format of either session. The outer session
 sees ordinary streams; the nested session sees ordinary pipes. The
@@ -824,16 +757,6 @@ SHOULD NOT parse the nested session's records: acknowledgement, failure
 detection, reinjection and resume stay end to end, and the relay's failures
 reach the nested session as pipe failures.
 
-The price is visibility: a relay sees one stream per nested pipe and its
-bytes, which include the nested session's framing, acknowledgements,
-reinjected data and redundant copies. Exact application byte counts exist
-only at the nested session's endpoints. An application
-that needs per-stream metadata or exact per-stream accounting at a relay
-relays those streams hop by hop instead (one outer stream per application
-stream, spliced at each relay, with the metadata of Section 4.6), and gives
-up end-to-end migration for them. Both can run side by side over the same
-outer sessions.
-
 A relay that forwards a carrier stream opens the next hop's stream with
 PIPE_CARRIER as well, so that the last hop can tell
 it apart. A relay forwards data from one hop to the next only while the
@@ -854,10 +777,8 @@ the forwarded bytes have been passed to the carrier.
 
 ## 11. Duplicate sessions
 
-Two endpoints that dial each other at about the same time, for example the
-two sides of an overlay link, end up with two sessions where they wanted
-one. The rule below picks the same survivor at both ends from information
-both have, so that each can act alone. It uses only existing frames.
+Two endpoints that dial each other at about the same time can end up with
+two sessions. The rule below picks the same survivor at both ends.
 
 **When it applies.** The **dialer** of a session is the endpoint that
 established its bootstrap carrier (the TCP, TLS or HTTP client, or for a
@@ -899,14 +820,44 @@ have ended (SPEC.md Section 6.7). Both ends sending GOAWAY is harmless. Without
 GOAWAY in use the losing session is closed after its streams have ended.
 
 **Keeping the route.** The losing session's carrier cannot become a pipe of
-the survivor: its byte stream belongs to the losing session from its first
-record, and changing that would need a new frame. When the survivor uses
+the survivor. When the survivor uses
 multipath, the endpoint that dialed the losing session MAY instead dial
 the same route again and join the new carrier to the survivor (MULTIPATH.md
 Section 5), so that the route is kept at the cost of one carrier handshake,
 made after the decision and off the path of any stream.
 
-**Avoiding the race.** An endpoint that already has an established
-multipath session with a peer joins a new carrier to it instead of
-starting another session; the race then exists only while both endpoints
-dial within one establishment time of each other.
+
+## 12. Packet streams
+
+A packet stream is a bidirectional stream whose two endpoints agree, by
+convention of the application (for example in the stream's preamble), to
+carry packets: messages that each go either as a datagram associated with
+the stream (Section 6.3) or in the stream's bytes. No parameter or frame
+announces it.
+
+The bytes of a packet stream in each direction are a sequence of capsules
+in the format of RFC 9297 Section 3.2:
+
+```text
+Capsule {
+  Type (i),
+  Length (i),
+  Value (..),
+}
+```
+
+- Type 0x00 is DATAGRAM (RFC 9297 Section 3.5). Its Value is exactly the
+  data a datagram associated with the stream would carry after the Flow
+  field: `Context ID (i)` followed by the payload. A packet sent either way
+  is therefore the same Context ID and payload, and a relay may move a
+  packet between the two forms without changing it.
+- A receiver skips capsules of types it does not know.
+- A receiver bounds the Length it accepts; a capsule above its bound, or a
+  stream that ends inside a capsule, is an error of the packet stream: the
+  receiver resets its sending part and sends STOP_SENDING, both with
+  ZMUX_PACKET_ERROR (Section 7.1).
+- Packets are not ordered relative to each other: those in capsules arrive
+  in order and reliably, those sent as datagrams may be lost or arrive
+  earlier or later. A packet is never fragmented.
+- A packet stream ends like any stream; datagrams associated with it that
+  arrive after its end are dropped (Section 6.4).

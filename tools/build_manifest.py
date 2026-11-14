@@ -15,7 +15,8 @@ def _sha(p):
 
 def manifest():
     files = ["assets/registry.json", "fixtures/profiles.json", "fixtures/wire/valid.ndjson",
-             "fixtures/wire/invalid.ndjson", "fixtures/traces/index.json", "WIRE_EXAMPLES.md"]
+             "fixtures/wire/invalid.ndjson", "fixtures/traces/index.json", "fixtures/capsules.json",
+             "WIRE_EXAMPLES.md"]
     traces = sorted((ROOT / "fixtures/traces").rglob("*.ndjson"))
     index = json.loads((ROOT / "fixtures/traces/index.json").read_text())["traces"]
     groups = {}

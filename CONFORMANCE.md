@@ -29,9 +29,9 @@ Section 13.
 | C-1 | Implement every MUST of SPEC.md, MULTIPATH.md, RESUME.md and EXTENSIONS.md. | all |
 | C-2 | Pass every trace in `fixtures/traces/` with a trace runner shipped in the implementation's repository (Section 3). | TRACES.md |
 | C-3 | Accept every entry of `fixtures/wire/valid.ndjson` and reject every entry of `fixtures/wire/invalid.ndjson` with the listed error (Section 4). | |
-| C-4 | Enforce the no-effect budget with exactly the parameters of SPEC.md Section 9.4.2 (more lenient values are allowed by the protocol, but conforming libraries use the reference values so that traces test the boundary). | SPEC 9.4 |
-| C-5 | Use the PIPE_PING in the join record (MULTIPATH.md Section 5.2) and in the first record of an accepted down or bidi join (MULTIPATH.md Section 5.4 step 8), the PIPE_STATUS requests of MULTIPATH.md Section 9 (precedence of local settings over the peer's request, the initial request in PIPE_JOIN and the deferral of changes made while JOINING, the announcement when standby pipes take over and its withdrawal when a non-standby pipe is usable again), the credit rules of SPEC.md Section 8.3, the QX_PING in the first record of an endpoint without a carrier minimum RTT (SPEC.md Section 8.3 rule 6; trace runners report one, TRACES.md Section 3.3, so traces show none), the BLOCKED frame for a preamble that does not fit in the remaining credit (SPEC.md Section 8.4), staged unidirectional credit (SPEC.md Section 8.5 rule 4) and the linger timeout of SPEC.md Section 6.5 unless the application overrides them. Traces rely on these. | |
-| C-6 | Schedule at transmission time (late binding, MULTIPATH.md Section 11 rule S10): frames are bound to a pipe only when that pipe is being written. Traces rely on it. | |
+| C-4 | Run the traces with the no-effect budget at the parameters of SPEC.md Section 9.4.2, so that they test the boundary. Production values may be more lenient. | SPEC 9.4 |
+| C-5 | Run the traces with the sender behaviour they assume: the PIPE_PING of MULTIPATH.md Sections 5.2 and 5.4 step 8, the PIPE_STATUS requests of MULTIPATH.md Section 9, the credit rules of SPEC.md Sections 8.3 to 8.5 and the linger timeout of SPEC.md Section 6.5. Production defaults are the implementation's own. | |
+| C-6 | Run the traces with frames bound to a pipe only when that pipe is being written (MULTIPATH.md Section 11 rule S10). | |
 | C-7 | Provide the test hooks of TRACES.md Section 3.3, unreachable from production configuration. | TRACES 3.3 |
 | C-8 | Never place a transport error code in a stream frame and never let an application choose one. | SPEC 10.1 |
 | C-9 | Report session errors with the precedence of SPEC.md Section 6.5 and stream outcomes as STATE_MACHINE.md Section 2.5 lists. | |
@@ -274,8 +274,9 @@ except the fence of test 11.
 Every defect class below is either tested here or impossible by design.
 Trace ids are under `fixtures/traces/`; tag names are those used in trace
 headers. A tag is `D-` followed by a class letter and a number: F flow
-control and budgets, S streams, C close and termination, A API behaviour,
-Q carrier adapters, I implementation, B build and release process.
+control and budgets, S streams, C close and termination. Classes of local
+behaviour (API, carrier adapters, implementation, release process) are not
+part of conformance.
 
 | Item | Tag | Disposition |
 |---|---|---|
@@ -289,28 +290,13 @@ Q carrier adapters, I implementation, B build and release process.
 | Rapid Reset | `D-F04` | traces `core.flow.reset_before_accept_keeps_credit`, `core.flow.rapid_reset_bounded` |
 | Data overtakes stream-open metadata | `D-S03` | impossible by design: the preamble occupies offset 0 (EXTENSIONS 4.2); trace `core.streams.local_open_write` |
 | STOP_SENDING race escalates to session close | `D-S04` | trace `findings.stop_race_is_stream_error`; SPEC 9.3 |
-| Data race on the session's close error | `D-I01` | implementation: race-checked concurrency |
 | Opener rollback over-refunds session credit | `D-F05` | trace `findings.reset_does_not_refund_session_credit`; SPEC 8.2 |
 | Stream errors reported as session errors | `D-S05` | traces `core.streams.stop_sending_elicits_reset`, `findings.peer_reset_code_zero`; STATE_MACHINE 2.5 |
-| Build breaks on 32-bit targets | `D-B01` | process: CI builds on a 32-bit target |
 | Stream identifier skipped | `D-S06` | trace `core.streams.no_identifier_gap`; SPEC 7.2 |
-| Pending write never completes after graceful close | `D-A01` | API conformance test: pending writes fail with the session error (STATE_MACHINE 2.5) |
 | Blocked read misses session close | `D-C03` | trace `core.close.pending_read_fails_with_session_error`; API test with a blocked reader |
 | Data beyond the final size handled wrongly | `D-S07` | trace `core.streams.data_beyond_final_size` (FINAL_SIZE_ERROR); duplicates within the final size are ignored in multipath |
 | Forged increasing BLOCKED escapes budgets | `D-F06` | trace `core.flow.blocked_above_advertised`; SPEC 4.3 |
 | Writes fail the session instead of backpressure | `D-F07` | trace `core.flow.backpressure_not_error` |
-| QUIC adapter races and error reporting | `D-Q01`, `D-Q02`, `D-Q03` | QUIC adapter tests against STATE_MACHINE 2.5 |
-| Blocking reads inside futures | `D-I02` | implementation: no blocking call inside an asynchronous task |
-| Self-suppression in close | `D-A02` | API test |
-| QUIC adapter orphan channel, spurious timeout | `D-Q04`, `D-Q05` | adapter tests |
-| Close of a stuck writer leaks threads | `D-I03` | implementation: leak test |
-| Close never completes or returns early | `D-A03`, `D-A04` | API test: close and shutdown complete only when the session is CLOSED (STATE_MACHINE 4) |
-| Deadline equal to now | `D-A05` | API test: a deadline at or before now expires immediately |
 | FIN overtakes data after STOP_SENDING | `D-S08` | trace `core.streams.no_data_after_stop_sending` |
 | Writer blocks past session termination | `D-C04` | traces `core.close.peer_code_survives_carrier_reset`, `core.close.pending_read_fails_with_session_error` |
-| Timer delay on small writes | `D-I04` | implementation: no coalescing timer on small writes |
 | Wrong code after peer STOP_SENDING | `D-S09` | trace `core.streams.stop_sending_elicits_reset` |
-| Inherited socket timeout kills sessions | `D-Q06` | API test: carrier adapters clear inherited timeouts |
-| QUIC adapter decrements another stream's count | `D-Q07` | adapter test |
-| Timing-dependent handshake test | `D-B02` | process: virtual-time traces replace wall-clock tests |
-| Release without tests or a change log | `D-B03` | release process |

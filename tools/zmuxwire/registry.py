@@ -242,6 +242,7 @@ APPLICATION_ERRORS = [
     dict(name="ZMUX_CANCELLED", code=0x5A4D0001, socks5_rep=None),
     dict(name="ZMUX_REJECTED", code=0x5A4D0002, socks5_rep=None),
     dict(name="ZMUX_CARRIER_FAILED", code=0x5A4D0003, socks5_rep=None),
+    dict(name="ZMUX_PACKET_ERROR", code=0x5A4D0004, socks5_rep=None),
     dict(name="ZMUX_PROXY_GENERAL_FAILURE", code=0x5A4D0101, socks5_rep=0x01),
     dict(name="ZMUX_PROXY_NOT_ALLOWED", code=0x5A4D0102, socks5_rep=0x02),
     dict(name="ZMUX_PROXY_NETWORK_UNREACHABLE", code=0x5A4D0103, socks5_rep=0x03),

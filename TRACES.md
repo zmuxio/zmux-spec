@@ -24,11 +24,7 @@ under test), against a scripted **peer**. The runner:
   steps, and the runner fires every local timer that is due.
 
 The runner does not interpret the peer's behaviour: the peer's bytes are
-fully scripted. With a sans-IO core the runner is
-a thin layer: `receive(pipe, bytes)`, API calls, `poll_transmit(pipe)`,
-`handle_timeout(now)`; with lanes, `receive` and `poll_transmit` name the
-lane too, and a new inbound stream is handed over with its carrier connection
-(Section 5.1.1).
+fully scripted.
 
 ---
 
@@ -40,6 +36,7 @@ lane too, and a new inbound stream is handed over with its carrier connection
 | `fixtures/traces/<group>/<name>.ndjson` | one trace per file |
 | `fixtures/traces/index.json` | every trace id with its file, groups, references and defect-class tags |
 | `fixtures/wire/valid.ndjson`, `fixtures/wire/invalid.ndjson` | the wire corpus (CONFORMANCE.md Section 4) |
+| `fixtures/capsules.json` | packet stream capsule vectors (EXTENSIONS.md Section 12), format in its `format` field |
 
 The traces test what a peer observes or relies on. Local sending policy
 within the bounds the documents state (which pipe carries a chunk, when a

@@ -267,9 +267,6 @@ of its lanes, ends the session (SPEC 6.6).
 | CLOSING | CONNECTION_CLOSE sent or received, or idle timeout expired; write sides shut down; reading until end or linger timeout; after a received CONNECTION_CLOSE also the read drain: no new streams, nothing sent, reads return the data received before the close (SPEC 6.5) | linger timeout |
 | CLOSED | all state released | none |
 
-QUIC's "closing" and "draining" states (RFC 9000 Section 10.2) both map to
-zmux CLOSING. zmux DRAINING is the GOAWAY phase.
-
 ### 4.2 Transitions
 
 | From | Event | To | Actions |
