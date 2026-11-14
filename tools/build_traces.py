@@ -603,19 +603,19 @@ def core_streams():
     out.append(t)
 
     t = Trace("core.streams.release_without_finish_resets",
-              "Dropping an unfinished send handle resets with code 0; dropping an unread receive "
-              "handle stops with code 0", ["EXTENSIONS.md#7.4", "SPEC.md#7.5"])
+              "Dropping an unfinished send handle resets with ZMUX_CANCELLED; dropping an unread "
+              "receive handle stops with code 0", ["EXTENSIONS.md#7.4", "SPEC.md#7.5"])
     t.handshake(peer_small())
     t.api("open_bidi", bind="a", expect={"ok": True})
     t.api("write", stream="a", data=b"partial", fin=False, expect={"accepted": 7})
     t.frames(0, SDATA(1, LOCAL_FIRST_PRE + b"partial"))
     t.api("release", stream="a", expect={"ok": True})
-    t.frames(0, {"type": "RESET_STREAM_AT", "id": 1, "code": 0, "final_size": 10,
+    t.frames(0, {"type": "RESET_STREAM_AT", "id": 1, "code": CANCELLED, "final_size": 10,
                  "reliable_size": {"min": 3}}, STOP(1, 0), match="unordered")
     t.send(0, [STREAM(0, EMPTY_PRE + b"unread")])
     t.api("accept_bidi", bind="s", expect={"stream": 0})
     t.api("release", stream="s", expect={"ok": True})
-    t.frames(0, STOP(0, 0), {"type": RESET_ANY, "id": 0, "code": 0, "final_size": 0},
+    t.frames(0, STOP(0, 0), {"type": RESET_ANY, "id": 0, "code": CANCELLED, "final_size": 0},
              match="unordered")
     out.append(t)
 
@@ -1854,6 +1854,26 @@ def core_pipe_ack():
     t.frames(0, PIPE_ACK((0, t.peer_sent[0], "*")), match="unordered")
     t.adv(100)
     t.no_frames(0, ["PIPE_ACK", "PIPE_PING"])
+    t.is_open()
+    out.append(t)
+
+    t = Trace("core.pipe_ack.after_quiet", "With pipe acknowledgement, an ack-eliciting record "
+              "on a pipe without a PIPE_ACK during the preceding zmux_max_ack_delay is "
+              "acknowledged at once, and one within it waits for the threshold or the delay",
+              [P0, "MULTIPATH.md#6.3"])
+    t.handshake(peer_ack(), features=ACK_FEATURES)
+    t.note("The peer's first record is the first on the pipe: acknowledged at once.")
+    t.frames(0, PIPE_ACK((0, t.peer_sent[0], "*")), match="unordered")
+    t.adv(30)
+    t.send(0, [STREAM(0, EMPTY_PRE + b"hello")])
+    t.frames(0, PIPE_ACK((0, t.peer_sent[0], "*")), match="unordered")
+    t.adv(1)
+    t.send(0, [STREAM(0, b"again", off=len(EMPTY_PRE) + 5)])
+    t.no_frames(0, ["PIPE_ACK"])
+    t.adv(24)
+    t.no_frames(0, ["PIPE_ACK"])
+    t.adv(1)
+    t.frames(0, PIPE_ACK((0, t.peer_sent[0], "*")), match="unordered")
     t.is_open()
     out.append(t)
 
@@ -3118,6 +3138,8 @@ def multipath():
     mp_handshake(t)
     t.send(0, [PIPE_ACK((0, SENT(0), 0))])
     t.writable(0, False)
+    t.send(0, [PIPE_PING()])
+    t.note("The PIPE_ACK that the PIPE_PING asks for waits for the carrier.")
     t.api("open_bidi", bind="a", expect={"ok": True})
     t.api("write", stream="a", data=b"stuck", fin=False, expect={"accepted": 5})
     t.adv(249)
@@ -3131,6 +3153,48 @@ def multipath():
     t.send(0, [PIPE_ACK((0, SENT(0), 0))])
     t.state(pipe=0, dir="out", pstate="ACTIVE")
     t.frames(0, SDATA(1, LOCAL_FIRST_PRE + b"stuck"))
+    out.append(t)
+
+    t = Trace("multipath.failover.write_stall_stream_data",
+              "Stream data waiting for the only pipe, whose carrier accepts no bytes, is a write "
+              "stall: the pipe becomes suspect after T_suspect with nothing else queued",
+              ["MULTIPATH.md#7.1"], profile=P)
+    mp_handshake(t)
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.writable(0, False)
+    t.api("open_bidi", bind="a", expect={"ok": True})
+    t.api("write", stream="a", data=b"stuck", fin=False, expect={"accepted": 5})
+    t.note("Nothing is unacknowledged and no control frame waits: only the stream data, "
+           "which the scheduler would give this pipe if its carrier took bytes.")
+    t.adv(249)
+    t.state(pipe=0, dir="out", pstate="ACTIVE")
+    t.adv(1)
+    t.state(pipe=0, dir="out", pstate="SUSPECT")
+    t.writable(0, True)
+    t.frames(0, PIPE_PING(), {"type": "STREAM", "count": 0}, match="unordered")
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.state(pipe=0, dir="out", pstate="ACTIVE")
+    t.frames(0, SDATA(1, LOCAL_FIRST_PRE + b"stuck"))
+    out.append(t)
+
+    t = Trace("multipath.failover.credit_blocked_no_write_stall",
+              "Stream data held back by the peer's credit does not wait for the carrier: a pipe "
+              "whose carrier accepts no bytes has no write stall while nothing else waits",
+              ["MULTIPATH.md#7.1"], profile=P)
+    mp_handshake(t, peer_mp(initial_max_stream_data_bidi_remote=4096))
+    body = bytes(i % 251 for i in range(4100))
+    head = 4096 - len(LOCAL_FIRST_PRE)
+    t.api("open_bidi", bind="a", expect={"ok": True})
+    t.api("write", stream="a", data=body, fin=False, expect={"accepted": len(body)})
+    t.frames(0, SDATA(1, LOCAL_FIRST_PRE + body[:head]))
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.writable(0, False)
+    t.note("The remaining bytes wait for stream credit, not for the carrier.")
+    t.adv(600)
+    t.state(pipe=0, dir="out", pstate="ACTIVE")
+    t.writable(0, True)
+    t.send(0, [MAX_STREAM_DATA(1, 8192)])
+    t.frames(0, SDATA(1, body[head:], off=4096))
     out.append(t)
 
     t = Trace("multipath.failover.no_reinjection_while_acknowledged",
@@ -3417,6 +3481,36 @@ def multipath():
     t.adv(1)
     t.closed("IDLE_TIMEOUT", space="local")
     t.frames(0, {"type": "CONNECTION_CLOSE", "app": False, "code": TE("ZMUX_IDLE_TIMEOUT")})
+    out.append(t)
+
+    t = Trace("multipath.probe.answer_after_advance_has_no_ping",
+              "The PIPE_ACK that answers a PIPE_PING carries a PIPE_PING of its own only when "
+              "its pipe is unproven: no ack-eliciting byte sent and no advance of its "
+              "acknowledged position for max(1 s, T_suspect)", ["MULTIPATH.md#6.4"],
+              profile=P)
+    mp_handshake(t)
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.adv(15000)
+    t.frames(0, PIPE_PING())
+    t.note("R_p = max(1 s, T_suspect) = 1 s here. The probe is acknowledged 100 ms after "
+           "it was sent, within T_suspect.")
+    t.adv(100)
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.state(pipe=0, dir="out", pstate="ACTIVE")
+    t.note("A PIPE_PING of the peer 950 ms later: the pipe sent its last ack-eliciting byte "
+           "1.05 s ago, but its position advanced 950 ms ago, so the answer carries none. "
+           "Counted from the byte alone, an exchange slower than R_p would make every "
+           "answer carry one, and the two ends would answer each other's answers.")
+    t.adv(950)
+    t.send(0, [PIPE_PING()])
+    t.frames(0, {"type": "PIPE_ACK"}, match="exact")
+    t.adv(1)
+    t.no_frames(0, ["PIPE_PING"])
+    t.note("Unproven for longer than R_p, the pipe adds its own PIPE_PING to the next answer.")
+    t.adv(1000)
+    t.send(0, [PIPE_PING()])
+    t.frames(0, {"type": "PIPE_ACK"}, PIPE_PING(), match="unordered")
+    t.is_open()
     out.append(t)
 
     t = Trace("multipath.idle.peer_idle_close",
@@ -4677,8 +4771,10 @@ def resume():
 
     t = Trace("resume.suspend.half_suspended_keeps_reading",
               "An endpoint that lost its outbound pipes but kept an inbound one suspends and keeps "
-              "delivering what arrives", ["RESUME.md#4.2"], profile=P)
+              "delivering what arrives", ["RESUME.md#4.2", "MULTIPATH.md#6.3"], profile=P)
     t.handshake(peer, features=feats)
+    t.note("The peer's first record is the first on the pipe: acknowledged at once.")
+    t.frames(0, PIPE_ACK((0, t.peer_sent[0], "*")), match="unordered")
     join_up(t, "c2", 2, "up")
     t.down(0, "bidi", "error")
     t.event("suspended")

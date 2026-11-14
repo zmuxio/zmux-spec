@@ -692,23 +692,27 @@ imply that no stream data was forwarded to the target.
 
 ### 7.4 Codes chosen by libraries
 
-When a zmux library terminates a stream because of a local API action that
-carries no explicit code, it uses code 0:
+When a zmux library ends a stream or a session because of a local API
+action that carries no explicit code, it uses the codes below. The
+choice belongs to the protocol core (the release of a handle), not to each
+language's handle layer, so that every binding of one core sends the same
+code:
 
-- RESET_STREAM (or RESET_STREAM_AT covering the preamble) with code 0 when the
-  application drops or closes a sending part without an explicit finish: Rust
-  `Drop`, Java `close()`, Python leaving `async with` through an exception,
-  and garbage collection of an unfinished handle. Only an explicit finish
-  (FIN) is a clean end; a reset is never complete (SPEC.md Section 7.5);
+- ZMUX_CANCELLED with RESET_STREAM (or RESET_STREAM_AT covering the
+  preamble) when the application drops or closes a sending part without an
+  explicit finish: Rust `Drop`, Java `close()`, Python leaving `async with`
+  through an exception, and garbage collection of an unfinished handle. Only
+  an explicit finish (FIN) is a clean end; a reset is never complete
+  (SPEC.md Section 7.5);
+- ZMUX_CANCELLED in CONNECTION_CLOSE when the application leaves a session's
+  scope through an exception where the language reports it (Python
+  `async with`), so that the peer can tell it from a normal close;
 - STOP_SENDING with code 0 when the application drops or closes a receiving
   part before reading its end;
 - ZMUX_REJECTED as Section 7.2 describes;
 - ZMUX_CARRIER_FAILED when a stream used as a carrier is aborted (Section
   10.2) and when a relay loses the other side of a spliced stream (Section
   10.3).
-
-ZMUX_CANCELLED is for applications that want to say "abandoned" explicitly;
-libraries never choose it on their own.
 
 ---
 

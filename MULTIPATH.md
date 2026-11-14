@@ -282,7 +282,9 @@ its inbound pipe 0 (the bootstrap pipe, Section 4.2) as in Sections 6.1 to
 3. An endpoint acknowledges by rules 1 and 2 of Section 6.3 only: when its
    own `zmux_ack_threshold` (65536 bytes unless sent) of ack-eliciting
    bytes have arrived since its last PIPE_ACK, and no later than its own
-   `zmux_max_ack_delay` (25 ms unless sent) after the first of them. There
+   `zmux_max_ack_delay` (25 ms unless sent) after the first of them, or at
+   once when the first of them arrives more than that delay after its last
+   PIPE_ACK (or before its first). There
    is no PIPE_PING and no other multipath frame. It SHOULD put the PIPE_ACK
    into a record it writes anyway (credit updates, stream data), and writes
    a record of its own only when a deadline would otherwise pass. PIPE_ACK
@@ -1030,7 +1032,10 @@ contains at least one ack-eliciting frame (SPEC.md Section 1.4). An endpoint
 MUST send a PIPE_ACK:
 
 1. when any inbound pipe has at least its own `zmux_ack_threshold` such bytes;
-2. no later than its own `zmux_max_ack_delay` after the first such byte;
+2. no later than its own `zmux_max_ack_delay` after the first such byte,
+   and immediately when such a byte arrives on an inbound pipe that has
+   not been reported by a PIPE_ACK during the preceding
+   `zmux_max_ack_delay` (or never has been);
 3. immediately after processing a record that contains PIPE_PING;
 4. promptly after an inbound pipe ends, so that its final position (that of
    each of its lanes) is known;
@@ -1042,9 +1047,26 @@ MUST send a PIPE_ACK:
    resumption needs (RESUME.md Section 5).
 
 "Immediately" means with the next records the endpoint writes, without
-waiting for any other condition. An endpoint MAY acknowledge more often. It
+waiting for any other condition. The second part of rule 2 matters for
+sparse records: a record below the threshold that arrives after a quiet
+period would otherwise wait the whole delay, its sender's RTT sample would
+carry that delay, and once such a sample is the minimum RTT the ACK Delay
+can no longer be subtracted from later ones (Section 6.6, RFC 9002 Section
+5.3). In a steady flow PIPE_ACKs are less than `zmux_max_ack_delay` apart,
+so the rule adds none there. An endpoint MAY acknowledge more often. It
 SHOULD put a PIPE_ACK in the same batch as pending MAX_DATA or
 MAX_STREAM_DATA updates.
+
+These deadlines bind every local delay of the record that carries the
+PIPE_ACK, a traffic-shaping delay included: whatever such a delay asks
+for, a PIPE_ACK that rules 1 to 3 make due leaves no later than the
+endpoint's own `zmux_max_ack_delay` after the first ack-eliciting byte it
+reports that was not reported before. The peer's PTO_p, and so its
+T_suspect_p (Section 7.1), counts on that bound and on nothing longer: a
+PIPE_ACK held beyond it makes the peer's working pipe suspect at every
+exchange, and each suspicion sends a PIPE_PING that is answered as late.
+An endpoint that wants to delay its acknowledgements longer advertises a
+larger `zmux_max_ack_delay`.
 
 ### 6.4 PIPE_PING
 
@@ -1067,6 +1089,25 @@ counted with it by SPEC.md Section 9.4.3 rule 1; when more pipes need a PIPE_PIN
 (probes, the first record of an accepted join, return-pipe liveness), it
 serves those that have waited longest first, each as soon as the limit
 allows.
+
+An endpoint MAY add a PIPE_PING to a PIPE_ACK it sends on a pipe pair, so
+that the exchange also shows its own outbound direction to work (the
+answer to a probe, and in a busy session the PIPE_ACK on a return pipe
+that carries nothing else, whose death would otherwise go unnoticed). It
+does so only
+for an outbound pipe that is **unproven**: during the preceding max(1 s,
+T_suspect_p) no ack-eliciting byte was handed to its carrier, its
+acknowledged position (for a pipe with lanes, its cumulative
+acknowledgement point) did not advance, and it did not become ACTIVE. An
+advance shows the direction to work as well as the answer to a PIPE_PING
+would. In particular a PIPE_ACK that answers a PIPE_PING whose record also
+acknowledged the PIPE_PING the pipe sent before carries none, however
+long that exchange took, so that PIPE_PING frames never answer each other:
+counted from the last byte sent alone, every exchange slower than max(1 s,
+T_suspect_p) (one whose records wait in a shaper, or a path whose round
+trip exceeds the initial estimate) would make each answer carry a
+PIPE_PING, and the two endpoints would exchange them once per round trip
+for good.
 
 ### 6.5 Choice of pipe for PIPE_ACK and credit frames
 
@@ -1121,7 +1162,14 @@ The pipe has an **ack stall** while it has unacknowledged ack-eliciting bytes
 acknowledged position (for a pipe with lanes, its cumulative acknowledgement
 point, Section 2.5) does not advance. It has a **write stall** while bytes
 are waiting to be written to it and its carrier makes no progress beyond
-what its rate explains.
+what its rate explains. Bytes wait for p when p would write them if its
+carrier took bytes now: control frames, acknowledgements and probes due on
+p, copies queued for p, and stream data the scheduler would place on p,
+whether or not other frames are also due. Stream data the peer's flow
+control holds back, data held back by a local rate limiter or a shaping
+delay, and data the scheduler would place on another pipe do not wait for
+p's carrier, so a pipe with nothing else to write has no write stall while
+they wait.
 
 - p becomes **suspect** when a stall has lasted longer than T_suspect_p,
   which is at least max(50 ms, 2 x PTO_p). A JOINING pipe has no stall
@@ -1140,7 +1188,8 @@ what its rate explains.
     at least 1 s, while it has none, that is, when p is the **last pipe** of
     its direction (Section 11 uses "usable" in a narrower sense).
 
-A peer that acknowledges as Section 6.3 requires therefore never makes a
+A peer that acknowledges as Section 6.3 requires, a shaped peer included,
+therefore never makes a
 working pipe suspect. Acknowledgements MUST NOT be withheld because the pipe
 that would carry them is suspect (Section 11 rule S1), so ack suppression is
 never what makes a pipe fail.

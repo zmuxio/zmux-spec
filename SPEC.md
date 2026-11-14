@@ -1427,7 +1427,7 @@ by the peer's application or stack, and are never inferred from delivery.
   the application instead of a clean end of stream, even if all data up to
   the final size has arrived, unless the application had already read the
   end of the stream before the reset arrived. Only a FIN that the sender did
-  not later reset ends a stream cleanly. Libraries reset with code 0 when a
+  not later reset ends a stream cleanly. Libraries reset with ZMUX_CANCELLED when a
   handle is dropped without an explicit finish (EXTENSIONS.md Section 7.4),
   so treating such a reset as completion would turn truncated data into
   apparently complete data.
