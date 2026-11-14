@@ -1137,7 +1137,8 @@ multipath session the PIPE_PING probes of idle pipes (MULTIPATH.md Section
    example a TCP FIN or a TLS close_notify), on every lane of a pipe with
    lanes, never abortively at this point.
 3. SHOULD keep reading every inbound pipe until the peer shuts down its write
-   side or the **linger timeout** expires, discarding what it reads without
+   side, the peer's CONNECTION_CLOSE has been read on that pipe (the peer
+   sends nothing after it), or the **linger timeout** expires, discarding what it reads without
    processing it (QMux-02 Section 7.2). The linger timeout is
    min(2 s, max(250 ms, 3 x SRTT)), with SRTT the largest smoothed RTT known
    for the session, or 333 ms when none is known. It starts when step 1 is
