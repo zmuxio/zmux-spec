@@ -107,6 +107,10 @@ def cases():
     add("datagram-context-nonzero", "Context ID 37 (1-byte varint) and 0x1234 (2-byte)",
         dgram(37, b"\x01\x02") + dgram(0x1234, b"\xff"))
     add("datagram-context-large", "Context ID 2^62-1 (8-byte varint)", dgram((1 << 62) - 1, b"x"))
+    add("datagram-context-not-minimal",
+        "Context ID 0 in two bytes (40 00): the payload is the Value after the bytes read, "
+        "and the next capsule stays in step",
+        capsule(DATAGRAM, bytes.fromhex("4000") + b"a") + capsule(0x21, b"\x0a\x0b"))
     add("datagram-empty", "empty payload: Value is the Context ID alone", dgram(0, b""))
     add("datagram-length-2byte", "payload of 100 bytes: 2-byte Length", dgram(0, bytes(range(100))))
     add("sequence", "three packets in order",
