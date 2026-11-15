@@ -202,7 +202,9 @@ pipe fails (MULTIPATH.md Section 7.4).
 preamble, including its Length field, that the sender of the parameter
 accepts.
 
-- The value MUST be at least 1, at most the sender's own `max_record_size`
+- The value MUST be at least 1, at most 8160 (the carrier record floor of
+  SPEC.md Section 3.2 minus 32, so that the offset-0 STREAM frame carrying a
+  full preamble fits any carrier), at most the sender's own `max_record_size`
   minus 32, and at most the sender's own `initial_max_stream_data_bidi_remote`
   and `initial_max_stream_data_uni`, so that a peer always has the record room
   and the flow-control credit for a full preamble.
@@ -495,7 +497,10 @@ overhead:
 | plain QMux peer with the default record size and a `max_datagram_frame_size` of at least 16382 | 16382 | 16381 (datagram flows are never in use with it) |
 
 A stream's datagrams cost the length of the stream's Flow and Context ID
-more. The size limits are those of the peer, not of a pipe.
+more. The size limits are those of the peer, not of a pipe. A pipe whose carrier
+takes smaller records (SPEC.md Section 3.2, at least 8192 bytes) carries only the
+datagrams that fit in its records; a datagram that fits on no usable pipe is dropped,
+as a datagram may be.
 
 ### 6.7 Datagrams across relays and nested sessions
 

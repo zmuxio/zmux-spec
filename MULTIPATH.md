@@ -441,7 +441,9 @@ position counts the record's plaintext form, without the protection's overhead.
 **First batch.** The Hello's *frames* item MAY carry a first batch, within the rules
 of secure-carrier/SPEC.md Section 11.3, and only stream data that rule S1 of Section
 11 allows on a JOINING pipe. A first batch is at most 8 KiB unless the joiner is
-configured otherwise, and an acceptor's Hello limit allows at least that. What it
+configured otherwise, and within the room the Hello's handshake message floor
+of 8192 bytes leaves (secure-carrier/SPEC.md Section 4.1), which every acceptor
+accepts, unless both ends are configured for larger Hellos. What it
 carries stays unacknowledged at the joiner and is sent again after the Reply as
 reinjected information, because the batch counts in no position and an acceptor may
 drop it; duplicates are harmless (Section 7.6). 
@@ -1878,7 +1880,7 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
 | pipe acknowledgement without multipath | `zmux_pipe_ack` sent in every session; PIPE_ACK on pipe 0 by rules 1 and 2 of 6.3, nothing retained | 3.5 |
 | lanes accepted per inbound pipe | absent `zmux_max_lanes` means 1 (no lanes); any value allowed | 3.6 |
 | replay window W | max(64, 2 x (max_pipes + H)) pipe IDs of the peer's parity below and above the highest verified join; at least max_pipes + H | 4.3 |
-| first batch | at most 8 KiB | 5.2 |
+| first batch | at most 8 KiB, within a Hello of 8192 bytes | 5.2 |
 | attachment headroom H | 8 | 5.4 |
 | unretired attachments of the peer | at most max_pipes + H, the bootstrap pair included; beyond that joins are refused, or, while suspended, one attachment is displaced | 5.4 |
 | join timeout | 10 s; at most the maximum join deadline | 5.7 |

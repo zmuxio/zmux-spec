@@ -275,6 +275,26 @@ TRANSPORT_PARAMETER_ERROR.
 
 zmux endpoints advertise a `max_record_size` of 65535 and SHOULD NOT advertise more.
 
+**Carrier record floor.** Every carrier of a pipe, each lane of it included (MULTIPATH.md
+Section 2.5), MUST carry records of every Size up to 8192 bytes (on a message-framed
+carrier, messages of up to 8192 bytes). A sender MAY write smaller records than the
+peer's limit allows on a carrier that cannot take larger ones, a limit of the carrier
+that both of its ends know (as they know its framing, Section 3.4) and that is never
+negotiated, but such a limit is never below 8192. A carrier that cannot carry
+8192-byte records is not a zmux carrier.
+
+Every frame except STREAM, DATAGRAM and PIPE_ACK encodes in at most 8192 bytes, so it
+fits in one record on any carrier: the largest is SESSION_EPOCH (MULTIPATH.md Section
+10.7), at most 1487 bytes with the Groups of secure-carrier/SPEC.md Section 11.6 and a
+255-byte Locator, followed by CONNECTION_CLOSE (at most 1043 bytes, Section 4.3) and a
+zmux endpoint's QX_TRANSPORT_PARAMETERS (Section 5). STREAM data is split across
+frames at any byte, except that the frame at offset 0 carries the whole preamble
+(EXTENSIONS.md Section 4.2), which, as a Maximum Preamble Size is at most 8160 (EXTENSIONS.md Section 4.1), also fits the
+floor, and PIPE_ACK across frames at any entry (MULTIPATH.md Section 6.2);
+a DATAGRAM frame is never split and is sent only on a pipe whose records can hold it
+(EXTENSIONS.md Section 6.6). A definition that adds a frame, a transport parameter or
+a Group MUST keep these frames within 8192 bytes.
+
 ### 3.3 Record boundaries
 
 Senders choose record boundaries freely within the size limit.
@@ -454,8 +474,10 @@ limit reported in such a frame exceeds the largest limit it has ever
 advertised for that scope.
 
 **CONNECTION_CLOSE.** Type 0x1c carries a transport error code (Section
-10.2), type 0x1d an application error code. Senders SHOULD keep the Reason
-Phrase to at most 1024 bytes of UTF-8. Section 6.5 defines how it is sent and
+10.2), type 0x1d an application error code. The Reason Phrase MUST be at most
+1024 bytes of UTF-8; a sender cuts a longer phrase, the application's included,
+at a character boundary at or below 1024 bytes. A receiver accepts a longer
+phrase that arrives in a valid record. Section 6.5 defines how it is sent and
 processed.
 
 **Diagnostic details.** When the stack closes a session with a transport

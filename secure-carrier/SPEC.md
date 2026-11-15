@@ -101,7 +101,8 @@ function and its public-key and ciphertext lengths; the AEAD with key length,
 tag length, nonce format and data-volume limit; the hash and its output length;
 the PSK length; the rekey interval, which MUST keep every key within the limit;
 the known payload types of each message (Section 6.3); whether it has a Handle;
-its PQ confidentiality. Each DH or KEM MUST define its contributory check: which public values or
+its PQ confidentiality; and the largest required contents of each message, within the
+floor of Section 4.1. Each DH or KEM MUST define its contributory check: which public values or
 outputs fail, compared in constant time. The minimum message length of Section 5 rule 6
 MUST count KEM ciphertexts. The cipher MUST define REKEY. It MUST
 provide vectors for handshake, negative, record and derivation. The largest
@@ -153,6 +154,35 @@ implicit.
 ciphertext at 65535 bytes. On a message carrier a longer unit is `too_large`. A
 receiver MAY apply a lower limit to a Hello before buffering it, and MUST bound
 memory and time before authentication.
+
+**Handshake message floor.** Every handshake message, that is a Hello, Reply or Finish
+and a Join Hello, Reply or Confirm (Section 11.2), is at most 8192 bytes as written: on a
+byte stream from its first byte through the end of its last unit, on a message carrier
+its message. This is the carrier record floor of `SPEC.md` Section 3.2, so every carrier
+carries every handshake message, and a receiver MUST accept each one of up to 8192
+bytes: a lower limit of its own is never below 8192. A larger message is sent only
+between ends that are both configured for it, outside this protocol, on carriers that
+carry it. The required contents of every message fit, with every Profile, Group and
+KeyAlg this document defines, the largest Locator and a proof (byte stream form; a
+message carrier omits `Len`):
+
+| Message | Required contents | Largest | Room left |
+|---|---|---|---|
+| Hello, Profiles 1, 3 | header 20, message 1 | 1268 | 6924 |
+| Hello, Profiles 4, 5 | header 4, message 1 | 1220 | 6972 |
+| Reply | `Len`, message 2, a proof item of KeyAlg 3 (3738) | 4940 | 3252 |
+| Finish | `Len`, message 3, a proof item of KeyAlg 3 | 3804 | 4388 |
+| Join Hello, Group 1 / 2 | head 291, `Len`, tag, join pipe 28, key share 35 / 1220 | 372 / 1557 | 7820 / 6635 |
+| Join Reply, Group 1 / 2 | head 33, `Len`, tag, join decision 3, key share 35 / 1124 | 89 / 1178 | 8103 / 7014 |
+| Confirm, Sealed / Trusted | `Len` and tag / `Len` and HMAC | 18 / 34 | |
+
+The other contents are optional and the sender sizes them to the room: padding
+(Section 6.2), application data (Section 6.9), carrier first bytes, which carry as many
+of the first zmux bytes as fit and leave the rest to records, a first batch and return
+frames (Section 11.3). A credential (Section 6.4) is required when the verifier requires
+one, and a sender whose message, with its credential and proof, would exceed the limit
+fails with `too_large` before writing it. A new Profile, Group or KeyAlg keeps the
+required contents of every message within 8192 bytes.
 
 The client sends nothing after a Hello until it has processed the Reply. A server
 that holds other bytes after a complete Hello, or reads any before writing its
@@ -334,7 +364,7 @@ that applies to the receiver. For a client this means trust in the server is
 established first.
 
 A sender MAY lengthen a Hello, a Reply or a Finish with one padding item, and a
-Confirm with zero bytes (Section 11.2). Padding in a message sent without a key is
+Confirm with zero bytes (Section 11.2), within the floor of Section 4.1. Padding in a message sent without a key is
 random.
 
 ### 6.3 Known types by message
@@ -361,7 +391,10 @@ of Section 6.1 rule 4 is a receiver's rule only, and `receiver.json` tests it.
 A message carries at most one credential, in one item of type 1. `CredType` is a shortest
 varint and names the format of `Credential`, which is opaque to this document: the handshake
 core checks only the bounds of the item and hands the bytes to the host's verifier. An
-empty value is `tlv_credentials`.
+empty value is `tlv_credentials`. A credential travels inside the floor of Section 4.1: a
+format meant for every carrier keeps a credential within the room of the message that
+carries it, 3252 bytes for the whole credential item (its type and length fields included, so at most
+3249 bytes of credential value) in message 2 with a proof of KeyAlg 3.
 
 | CredType | Name |
 |---|---|
@@ -403,7 +436,8 @@ checked by its length only. A proof key MUST NOT be used in another protocol or 
 purpose of this one.
 
 A new KeyAlg MUST define its encoding and lengths, its public key check, its use, its PQ
-column and vectors.
+column and vectors. A proof key's proof item keeps message 2 within the floor of Section
+4.1.
 
 ### 6.6 KeyId
 
@@ -470,9 +504,10 @@ on with side effects before the server has verified message 3 (Section 5 rule 4)
 application data of the handshake gives 0-RTT semantics to the zmux session; zmux bytes still
 follow the rules of Section 5.
 
-A length is bounded only by the encoding and the size of its message (Section 3.3). A
+A length is bounded only by the encoding and the size of its message (Section 4.1). A
 receiver MAY set a lower local bound; data over it fails the handshake with `too_large`.
-Data that does not fit the message being written is `too_large` too.
+Data that does not fit the message being written, within the floor of Section 4.1, is
+`too_large` too, at the sender before anything is written.
 
 ## 7. Records
 
@@ -744,9 +779,9 @@ Hello and Reply carry the payload of Section 6, with the known types of Section 
   control; a frame in error is dropped and counted, without closing the session; no
   position counts and no ACK results; the sender retains the data and may send it again; a
   final size covers the batch's last offset; replay is deduplicated by stream ID and
-  offset. The size of a batch is a local setting. An acceptor
-  MAY refuse a longer Hello; a limit it sets leaves room for the key share of every usable
-  Group beside the first batch it accepts.
+  offset. The size of a batch is a local setting, and the joiner keeps the Hello
+  within the floor of Section 4.1, so the room for a batch depends on the Group and the
+  Locator. An acceptor MAY refuse a Hello longer than the floor.
 
 ### 11.4 Keys
 
@@ -876,7 +911,9 @@ exchange; the responder is the acceptor or the answering end.
   covers the frames that carry them (`MULTIPATH.md` Section 10.7).
 - **Private values.** They are random values of Section 5 rules 9 and 10.
 
-A new Group MUST define: its share lengths for each role; the checks of its public values
+A new Group MUST define: its share lengths for each role, each at most 7921 bytes so
+that a SESSION_EPOCH frame stays within the carrier record floor of 8192 bytes
+(`SPEC.md` Section 3.2, `MULTIPATH.md` Section 10.7); the checks of its public values
 and which of them are `kex`; the number, order and length of its shared secrets, each a
 uniformly random value of 32 bytes or reduced to one by HKDF-Extract first; the single use
 of its random values; its priority; and vectors.
@@ -886,4 +923,4 @@ Every Establish Profile combines X25519 with ML-KEM-768, and each shared secret 
 chaining key through `MixKey`. Session data has the protection of the carrier that carries
 it (Section 7.2). Profiles 1 and 3 send the client's Handle in the clear, so Establishes made
 with one Handle are linkable; Joins of one epoch share a Locator. A receiver that sets a lower
-limit for a Hello (Section 4.1) keeps it above the minimum lengths of Section 5 rule 6.
+limit for a Hello (Section 4.1) keeps it at 8192 bytes or above.
