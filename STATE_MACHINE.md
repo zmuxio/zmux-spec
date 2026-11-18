@@ -35,16 +35,16 @@ receiving part: Recv -> Size Known -> Data Recvd -> Data Read
 
 ### 2.2 zmux deltas
 
-| # | Delta | Defined in |
+| Rule | Delta | Defined in |
 |---|---|---|
-| D1 | "Acknowledged" means "passed to the carrier" outside multipath, and "covered by PIPE_ACK" in multipath sessions. Outside multipath, Data Sent -> Data Recvd and Reset Sent -> Reset Recvd therefore happen as soon as the FIN or reset has been written. | SPEC 7.4 |
-| D2 | RESET_STREAM_AT moves the sending part to Data Sent (not Reset Sent) and the receiving part to Size Known, as reliable-stream-reset-11 Section 5.3 defines; Data Recvd is reached once all data below the smallest Reliable Size is acknowledged / received. | SPEC 7.5 |
-| D3 | When the stream preamble is in use, a peer-initiated stream has a pre-offer phase: it exists and counts against credit, but is not offered to the application until its preamble is complete. | EXTENSIONS 4.4 |
-| D4 | After both parts are terminal, the stream waits for the application's release before its state is discarded and its credit returns. | SPEC 7.6, 8.5 |
-| D5 | Once a sending part has received STOP_SENDING, it sends no new data and no FIN; it answers with RESET_STREAM or RESET_STREAM_AT. | SPEC 4.3 |
-| D6 | PRIORITY_UPDATE is permitted in every state of a part the receiver sends on and opens peer-initiated bidirectional streams. | EXTENSIONS 5.4 |
-| D7 | A peer stream at or above a GOAWAY watermark the endpoint sent, or a new peer stream arriving while the listener is under local resource pressure, is rejected by the stack and never offered; a stream the application rejects was offered, but none of its data was read. Either way the endpoint sends RESET_STREAM(ZMUX_REJECTED) on its sending part (bidirectional streams), which moves that part to Reset Sent, and STOP_SENDING(ZMUX_REJECTED) on its receiving part, which then waits for the peer's reset or FIN. | EXTENSIONS 3.4, 7.2 |
-| D8 | In multipath sessions, every frame may be duplicated or reordered. A frame that does not advance a state is ignored. | MULTIPATH 7.6 |
+| Acknowledgement | "Acknowledged" means "passed to the carrier" outside multipath, and "covered by PIPE_ACK" in multipath sessions. Outside multipath, Data Sent -> Data Recvd and Reset Sent -> Reset Recvd therefore happen as soon as the FIN or reset has been written. | SPEC 7.4 |
+| Reliable reset | RESET_STREAM_AT moves the sending part to Data Sent (not Reset Sent) and the receiving part to Size Known, as reliable-stream-reset-11 Section 5.3 defines; Data Recvd is reached once all data below the smallest Reliable Size is acknowledged / received. | SPEC 7.5 |
+| Pre-offer phase | When the stream preamble is in use, a peer-initiated stream has a pre-offer phase: it exists and counts against credit, but is not offered to the application until its preamble is complete. | EXTENSIONS 4.4 |
+| Release | After both parts are terminal, the stream waits for the application's release before its state is discarded and its credit returns. | SPEC 7.6, 8.5 |
+| Answer to STOP_SENDING | Once a sending part has received STOP_SENDING, it sends no new data and no FIN; it answers with RESET_STREAM or RESET_STREAM_AT. | SPEC 4.3 |
+| PRIORITY_UPDATE in any state | PRIORITY_UPDATE is permitted in every state of a part the receiver sends on and opens peer-initiated bidirectional streams. | EXTENSIONS 5.4 |
+| Rejection | A peer stream at or above a GOAWAY watermark the endpoint sent, or a new peer stream arriving while the listener is under local resource pressure, is rejected by the stack and never offered; a stream the application rejects was offered, but none of its data was read. Either way the endpoint sends RESET_STREAM(ZMUX_REJECTED) on its sending part (bidirectional streams), which moves that part to Reset Sent, and STOP_SENDING(ZMUX_REJECTED) on its receiving part, which then waits for the peer's reset or FIN. | EXTENSIONS 3.4, 7.2 |
+| Duplicates and reordering | In multipath sessions, every frame may be duplicated or reordered. A frame that does not advance a state is ignored. | MULTIPATH 7.6 |
 
 ### 2.3 Life cycle of a stream record
 
@@ -81,7 +81,7 @@ RFC 9000 Section 3.3 lists the frames permitted in each state. In addition:
 
 | Frame | Sending part states | Receiving part states |
 |---|---|---|
-| RESET_STREAM_AT | sent from Send or Data Sent | received in any state; transitions as D2 |
+| RESET_STREAM_AT | sent from Send or Data Sent | received in any state; transitions as the reliable reset rule (Section 2.2) |
 | PRIORITY_UPDATE | received in any state (applies to the sending part) | sent in any state (requests a priority for the peer's sending part) |
 | DATAGRAM with a flow prefix | n/a | associated with a stream that is not discarded; otherwise dropped (EXTENSIONS 6.4) |
 

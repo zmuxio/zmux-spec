@@ -543,8 +543,10 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
    attachment state; a replayed Hello therefore moves no pipe, evicts nothing and
    ends no suspension. The carrier stays Unconfirmed until the confirmation of its
    Mode, or the join deadline (Section 5.7), which closes it. A new authenticated Hello of the
-   session MAY evict the session's oldest Unconfirmed carrier and MUST NOT be refused
-   for lack of room.
+   session is never refused for lack of room: when the session already holds its
+   bound of Unconfirmed carriers (Section 5.6), the acceptor MUST first close the
+   oldest of them, as a failed join, and count it; while below the bound it MUST NOT
+   evict.
 8. **Confirmed** (secure-carrier/SPEC.md Section 11.5 step 5): apply step 9, then
    attach the pipe(s): create pipe state, take the joiner's initial request from the
    Hello (Section 9), and process the pipe's records. The acceptor MAY write on its
@@ -669,6 +671,10 @@ bound, and a carrier to be stalled beyond that is closed instead. It closes a ca
 its first record or Hello within a first-record timeout after the carrier is
 established, or that has not reached Confirmed by the join deadline (Section
 5.7), and closes a Hello longer than its limit before buffering it.
+
+The per-session bound counts only Unconfirmed carriers (Section 5.4 step 7); a
+carrier joining in Bound Mode is confirmed by its verification and never holds
+one.
 
 A failed join verification holds a slot only until its carrier is closed, so the
 resources it consumes are bounded by the per-source and per-listener bounds above.
@@ -924,7 +930,8 @@ for a pipe with lanes every such lane. A
 snapshot MAY omit the pipes and lanes whose position has not changed since the last
 complete snapshot the endpoint sent, so that its size follows the number of
 pipes and lanes with new data rather than max_pipes; the endpoint MUST send a complete
-snapshot at least once per second while it has such pipes. A snapshot that
+snapshot at least once per second while it has such pipes; the second runs from
+the sending of the last frame of the previous complete snapshot. A snapshot that
 omits pipes still lists every change since that complete snapshot, so a
 lost frame is repaired by the next snapshot either way. A
 snapshot is normally one frame; one that does not fit in a record is split
@@ -1790,7 +1797,8 @@ any failed join. An endpoint has at most one exchange, one set of private values
 and two local Locators at a time. The state of an exchange is part of the session's state,
 and losing it loses the session (RESUME.md Section 10).
 
-Advancing is local policy. A session with one pipe and no resumption has no joins, and MAY
+Advancing is local policy. Record keys never depend on it: each carrier rekeys
+within its cipher's limits (secure-carrier/SPEC.md Section 7.1). A session with one pipe and no resumption has no joins, and MAY
 never advance its epoch.
 
 ---

@@ -1504,8 +1504,16 @@ or was discarded on arrival (after STOP_SENDING, for example).
    - when the peer is **nearly blocked**, its remaining credit below one
      quarter of the window, and C - L has reached min(W/4, 32 KiB), W being
      the scope's window. 
-4. **Session credit (receiver policy).** When a receiver releases session
-   credit is local policy, bounded by a local **buffer cap** on the session's unread buffered bytes; the wire rules are rules 2 and 3. 
+4. **Session credit (receiver policy).** A receiver keeps a local **buffer
+   cap** on its unread buffered bytes, at least the sum of the stream
+   windows it offers: for each stream type, the peer's stream limit times
+   that type's initial stream window, plus the windows of its own open
+   bidirectional streams. While its unread buffered bytes stay below the
+   cap, it MUST release session credit for a byte when the byte is
+   buffered, so that data one stream leaves unread cannot hold back the
+   session credit of the others. A byte buffered at or above the cap, or
+   while the receiver is under memory pressure, MAY hold its session credit
+   until it is consumed (as above), never longer. The wire rules are rules 2 and 3.
 5. Credit updates SHOULD be coalesced per scope and sent with the next
    outgoing records; an endpoint MUST NOT send more than one MAX_DATA and one
    MAX_STREAM_DATA per stream in a single record.

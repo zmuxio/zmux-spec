@@ -132,6 +132,7 @@ be reachable from production configuration:
 | `pipe_rtt_ms` | `{pipe: ms}`: the initial smoothed RTT of particular pipes, overriding `rtt_ms`, for traces that depend on which pipe has the lowest one-way delay |
 | `epoch_locator_prefix` | the local endpoint announces the Session Locator `prefix ‖ e` (e in decimal ASCII) in its offer or answer of epoch e (MULTIPATH.md 10.7) instead of a random one |
 | `pipe_cap` | the number of unretired attachments of the peer that the local endpoint keeps (instead of max_pipes + H, MULTIPATH.md 5.4 step 9); an authenticated join beyond it is refused in the Reply (MULTIPATH.md 5.4 step 7), which makes the resource-exhaustion path deterministic |
+| `unconfirmed_cap` | the per-session bound on Unconfirmed carriers (MULTIPATH.md 5.6) instead of the implementation's own, which makes the eviction of MULTIPATH.md 5.4 step 7 deterministic |
 
 Three SHOULD/MAY choices are fixed in test mode, without a hook:
 
@@ -369,7 +370,7 @@ frame. In `expect_state`, a pipe `state` may likewise be `{"oneof": [names]}`.
 | `established` | `role`, `features` (the set of features in use, from `role`, `goaway`, `preamble`, `priority`, `datagram_flows`, `multipath`, `pipe_ack`, `resume`; lanes, available per direction, are observed through PIPE_LANE and PIPE_ACK instead) |
 | `goaway_received` | `max_bidi`, `max_uni`, `code`; reported only when a watermark is lowered |
 | `pipe_state` | `pipe`, `dir`, `state` |
-| `join_auth_failed` | `reason`: `auth`, or the class of a payload that does not parse (`missing_field`, `bad_field`, MULTIPATH.md 5.4 step 5), or `kex` for a key share refused after the Pipe ID's bit is set (step 7) |
+| `join_auth_failed` | `count` (failures with this reason since the previous one was read; traces match `reason` only), `reason`: `auth`, or the class of a payload that does not parse (`missing_field`, `bad_field`, MULTIPATH.md 5.4 step 5), or `kex` for a key share refused after the Pipe ID's bit is set (step 7) |
 | `suspended`, `resumed` | |
 | `datagram_dropped` | `count` |
 | `closed` | `error` |

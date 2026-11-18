@@ -810,6 +810,24 @@ def core_flow():
     t.frames(0, MAX_DATA({"min": 8193}))
     out.append(t)
 
+    t = Trace("core.flow.unread_stream_does_not_starve",
+              "Data buffered unread on one stream does not hold the session credit: with a "
+              "session window of one stream window, a full unread stream leaves the peer "
+              "blocked, and MAX_DATA is raised at once so that another stream gets data",
+              ["SPEC.md#8.3"], overrides={"tp": {"initial_max_data": 2048}})
+    t.handshake(peer_small())
+    t.note("The buffer cap is at least the sum of the offered stream windows (4 x 2048 per "
+           "stream type), so the 2048 unread bytes of stream 0 are below it and their "
+           "session credit is released; the peer has none left, so it is sent at once.")
+    t.send(0, [STREAM(0, EMPTY_PRE + body[:2047])])
+    t.frames(0, MAX_DATA({"min": 2049}))
+    t.send(0, [STREAM(4, EMPTY_PRE + b"next", fin=True)])
+    t.api("accept_bidi", bind="a", expect={"stream": 0})
+    t.api("accept_bidi", bind="b", expect={"stream": 4})
+    t.api("read", stream="b", max=20, expect={"data": b"next", "fin": True})
+    t.is_open()
+    out.append(t)
+
     t = Trace("core.flow.stream_limit_violation", "Exceeding a stream window is fatal",
               ["SPEC.md#8.1"])
     t.handshake(peer_small())
@@ -4262,6 +4280,41 @@ def multipath():
     t.adv(1)
     t.reject_carrier("a1")
     t.reject_carrier("b1")
+    out.append(t)
+
+    t = Trace("multipath.listener.unconfirmed_evicts_oldest",
+              "With the session's bound of Unconfirmed carriers reached, a new authenticated "
+              "Hello is accepted and the oldest Unconfirmed carrier is closed",
+              ["MULTIPATH.md#5.4", "MULTIPATH.md#5.6"], profile=P,
+              overrides={"test": {"unconfirmed_cap": 2}})
+    mp_handshake(t)
+    for carrier, pipe in (("c2", 2), ("c4", 4)):
+        t.up(carrier=carrier, dir="in", via="listener")
+        t.peer_join(carrier, pipe, "up", confirm=False)
+    t.is_open()
+    t.up(carrier="c6", dir="in", via="listener")
+    t.peer_join("c6", 6, "up", confirm=False)
+    t.pipe_closed(2, "in", "any")
+    t.peer_confirm("c4")
+    t.peer_confirm("c6")
+    t.state(pipe=4, dir="in", pstate="OPEN")
+    t.state(pipe=6, dir="in", pstate="OPEN")
+    t.is_open()
+    out.append(t)
+
+    t = Trace("multipath.listener.unconfirmed_below_bound_kept",
+              "Below the session's bound of Unconfirmed carriers no carrier is evicted: every "
+              "accepted carrier can still be confirmed",
+              ["MULTIPATH.md#5.4", "MULTIPATH.md#5.6"], profile=P,
+              overrides={"test": {"unconfirmed_cap": 3}})
+    mp_handshake(t)
+    for carrier, pipe in (("c2", 2), ("c4", 4), ("c6", 6)):
+        t.up(carrier=carrier, dir="in", via="listener")
+        t.peer_join(carrier, pipe, "up", confirm=False)
+    for carrier, pipe in (("c2", 2), ("c4", 4), ("c6", 6)):
+        t.peer_confirm(carrier)
+        t.state(pipe=pipe, dir="in", pstate="OPEN")
+    t.is_open()
     out.append(t)
 
     data4 = bytes(i % 239 for i in range(4000))
