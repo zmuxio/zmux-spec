@@ -1149,12 +1149,20 @@ multipath session the PIPE_PING probes of idle pipes (MULTIPATH.md Section
    flush it to the carrier before step 2, waiting at most the linger timeout
    of step 3 for a pipe that does not accept bytes. It MUST NOT send any other
    frame after CONNECTION_CLOSE on that pipe.
-   In a session without multipath whose pipe has lanes (MULTIPATH.md
-   Section 2.5), the CONNECTION_CLOSE of a close without error and of an
-   application close goes on lane 0 only once a PIPE_ACK covers every
-   record the endpoint wrote on its other lanes, waiting at most the linger
-   timeout of step 3, and less if the peer's CONNECTION_CLOSE arrives
-   first; it keeps processing what it receives meanwhile. 
+   The CONNECTION_CLOSE of a close without error and of an application
+   close waits for a PIPE_ACK that covers the ack-eliciting records the
+   endpoint wrote earlier, as the peer discards what it reads after the
+   CONNECTION_CLOSE: in a session without multipath whose pipe has lanes
+   (MULTIPATH.md Section 2.5), every such record on its other lanes, and
+   the CONNECTION_CLOSE goes on lane 0; in a multipath session, every such
+   record on every lane of every outbound pipe that is not failed, as the
+   peer closes on the first copy it reads. The endpoint waits at most the
+   linger timeout of step 3, and less if the peer's CONNECTION_CLOSE
+   arrives first. Meanwhile it accepts no new stream data, but keeps its
+   pipes working: it processes what it receives, sends PIPE_ACK (MULTIPATH.md Section 6) and
+   its other pipe frames, detects pipe failures, and
+   sends what it reinjects from a pipe that fails (MULTIPATH.md Section 7),
+   which the wait then also covers.
 2. MUST then shut down the write side of every outbound pipe gracefully (for
    example a TCP FIN or a TLS close_notify), on every lane of a pipe with
    lanes, never abortively at this point.

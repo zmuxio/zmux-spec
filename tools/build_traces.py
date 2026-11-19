@@ -3422,7 +3422,42 @@ def multipath():
               ["SPEC.md#6.5", "MULTIPATH.md#3.4"], profile=P)
     mp_handshake(t)
     join_up(t, "c2", 2, "bidi")
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.send(2, [PIPE_ACK((2, SENT(2), 0))])
     t.api("close", code=0, reason=b"", app=True, expect={"ok": True})
+    t.frames(0, CLOSE(0, app=True))
+    t.frames(2, CLOSE(0, app=True))
+    t.closed(0, space="application", remote=False)
+    out.append(t)
+
+    t = Trace("multipath.close.waits_for_pipe_ack",
+              "In a multipath session an application close waits until a PIPE_ACK covers "
+              "every record written, lane 0 included: the peer closes on the first copy it "
+              "reads", ["SPEC.md#6.5", "MULTIPATH.md#13"], profile=P)
+    mp_handshake(t)
+    join_up(t, "c2", 2, "bidi")
+    t.api("close", code=0, reason=b"", app=True, expect={"ok": True})
+    t.no_frames("*", ["CONNECTION_CLOSE"])
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.frames(0, CLOSE(0, app=True))
+    t.frames(2, CLOSE(0, app=True))
+    t.closed(0, space="application", remote=False)
+    out.append(t)
+
+    t = Trace("multipath.close.wait_keeps_acknowledging",
+              "While an application close waits for PIPE_ACK coverage the endpoint keeps "
+              "acknowledging what it receives, so a peer closing at the same time ends its own "
+              "wait; the CONNECTION_CLOSE stays pending until its own records are covered",
+              ["SPEC.md#6.5", "MULTIPATH.md#13"], profile=P)
+    mp_handshake(t)
+    join_up(t, "c2", 2, "bidi")
+    t.api("close", code=0, reason=b"", app=True, expect={"ok": True})
+    t.no_frames("*", ["CONNECTION_CLOSE"])
+    t.send(0, [PIPE_PING()])
+    t.adv(25)
+    t.frames(0, {"type": "PIPE_ACK"})
+    t.no_frames("*", ["CONNECTION_CLOSE"])
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
     t.frames(0, CLOSE(0, app=True))
     t.frames(2, CLOSE(0, app=True))
     t.closed(0, space="application", remote=False)

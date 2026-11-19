@@ -226,7 +226,9 @@ Only in multipath sessions:
    6.4). This item also applies with pipe acknowledgement (Section 3.5).
 4. Information is acknowledged by PIPE_ACK, and endpoints retain
    unacknowledged information (SPEC.md Section 7.4).
-5. CONNECTION_CLOSE is sent on every outbound pipe (SPEC.md Section 6.5).
+5. CONNECTION_CLOSE is sent on every outbound pipe, after the
+   ack-eliciting records written before it are acknowledged (SPEC.md
+   Section 6.5).
 
 ### 3.5 Pipe acknowledgement without multipath
 
@@ -1871,7 +1873,11 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
   replaced (SPEC.md Section 4.5); the "not processed" guarantee does not
   depend on it.
 - **Closing**: CONNECTION_CLOSE goes on every live outbound pipe; the first
-  copy received closes the session (SPEC.md Section 6.5).
+  copy received closes the session, so a close without error or an
+  application close first waits until a PIPE_ACK covers every
+  ack-eliciting record written on every lane, bounded by the linger
+  timeout; meanwhile acknowledgement, failure detection and reinjection
+  go on (SPEC.md Section 6.5).
 - **Datagrams**: never reinjected; lost with their pipe (EXTENSIONS.md
   Section 6.5).
 - **Preamble**: always in the frame at offset 0, also after reinjection.
