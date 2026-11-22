@@ -1897,7 +1897,6 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
 | epoch retention R | 3 x the maximum join deadline (180 s) after an endpoint starts using the new epoch | 10.7 |
 | join refusal backoff | 1 s after the peer's ZMUX_PIPE_RESOURCE_LIMIT refusal or abandonment, doubled per consecutive one, at most 60 s | 5.7 |
 | PIPE_PING | at most 8 per session in any one-second interval | 6.4 |
-
 | initial RTT of a pipe | 333 ms (rttvar 166.5 ms) until its own first sample | 6.6 |
 | T_suspect | local; at least max(50 ms, 2 x PTO_p) | 7.1 |
 | T_fail (another pipe ACTIVE) | local; at least max(2 s, 8 x PTO_p) and T_suspect | 7.1 |
