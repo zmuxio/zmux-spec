@@ -633,6 +633,10 @@ above the early-data floor of Section 6.1.2. A zmux endpoint MUST send the
 initial flow-control and stream-limit parameters explicitly, because their
 absent value is 0.
 
+When encoding a duration as `max_idle_timeout` or as Resume Grace
+(RESUME.md Section 3), a zmux sender MUST round it up to a whole
+millisecond and cap the result at 2^62 - 1 milliseconds.
+
 ### 5.4 zmux parameters
 
 zmux-allocated parameters use identifiers at or above 2^14. Plain QMux peers
@@ -722,6 +726,23 @@ Section 2.1) and even pipe identifiers (MULTIPATH.md Section 4.1).
 4. An endpoint MUST abandon establishment when it is not established within
    its handshake timeout. It closes the carrier without
    sending CONNECTION_CLOSE and reports a handshake timeout locally.
+
+**HTTP upgrade carriers.** A responder that accepts a WebSocket or
+WebTransport upgrade for zmux MUST send the carrier protocol's successful
+HTTP response before sending any zmux bytes. This is 101 for a WebSocket
+HTTP/1.1 Upgrade and a successful extended CONNECT response (for example,
+200) for WebSocket over HTTP/2 or HTTP/3 and for WebTransport. The initiator
+MUST validate that response before sending zmux bytes.
+
+For WebSocket, the first message after the opening handshake carries the
+first record and is subject to the framing and first-message checks of
+Section 3.4. For WebTransport, endpoints MUST use the first bidirectional
+stream opened by the session initiator as pipe pair 0, using the byte-stream
+framing of Section 3.1. If an endpoint refuses the carrier after sending or
+receiving a successful upgrade response and before starting the zmux
+handshake, it MUST close the upgraded WebSocket or WebTransport session
+using the carrier protocol. Section 6.5 governs closing an established
+zmux session.
 
 Over TLS, the responder SHOULD send its QX_TRANSPORT_PARAMETERS in the same
 flight as its TLS Finished message so that the initiator does not wait an
@@ -1142,7 +1163,10 @@ multipath session the PIPE_PING probes of idle pipes (MULTIPATH.md Section
 
 ### 6.5 Closing
 
-**Initiating a close.** An endpoint that closes a session:
+**Initiating a close.** Before an application close toward a zmux peer, an
+endpoint MAY make a bounded attempt to send pending STREAM data, including
+FIN, and stream resets within the peer's stream and session flow-control
+limits (Section 8.3). An endpoint that closes a session:
 
 1. MUST send a CONNECTION_CLOSE frame (0x1c for a transport error, 0x1d for
    an application close) on every outbound pipe that is not failed, and MUST
@@ -1805,9 +1829,12 @@ The QUIC transport error codes of RFC 9000 Section 20.1 apply with their QUIC
 meaning. zmux uses NO_ERROR, INTERNAL_ERROR, CONNECTION_REFUSED,
 FLOW_CONTROL_ERROR, STREAM_LIMIT_ERROR, STREAM_STATE_ERROR, FINAL_SIZE_ERROR,
 FRAME_ENCODING_ERROR, TRANSPORT_PARAMETER_ERROR, PROTOCOL_VIOLATION and
-NO_VIABLE_PATH. CONNECTION_REFUSED is what a listener sends, after its own
-QX_TRANSPORT_PARAMETERS, when it refuses a new session for policy reasons,
-for example its limit on concurrent sessions (Section 14.2). zmux adds:
+NO_VIABLE_PATH. A listener that refuses an otherwise valid new session
+for policy reasons (Section 14.2) MUST send CONNECTION_CLOSE with
+CONNECTION_REFUSED after its own QX_TRANSPORT_PARAMETERS. For a split
+bootstrap, this refusal is sent only after pairing (Section 6.1.1).
+If the listener supplies a policy reason, it MUST send it in the Reason
+Phrase, subject to Section 4.3. zmux adds:
 
 | Code | Value | Meaning | Sent on the wire |
 |---|---|---|---|

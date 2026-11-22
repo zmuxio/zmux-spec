@@ -139,7 +139,7 @@ FRAME_TYPES = [
 TRANSPORT_PARAMETERS = [
     dict(name="original_destination_connection_id", id=0x00, scope="prohibited"),
     dict(name="max_idle_timeout", id=0x01, scope="qmux", format="varint",
-         absent_default=0, zmux_sends="30000", spec="SPEC.md#5.3"),
+         absent_default=0, zmux_sends="30000 (ms)", spec="SPEC.md#5.3"),
     dict(name="stateless_reset_token", id=0x02, scope="prohibited"),
     dict(name="max_udp_payload_size", id=0x03, scope="prohibited"),
     dict(name="initial_max_data", id=0x04, scope="qmux", format="varint",
@@ -203,7 +203,7 @@ TRANSPORT_PARAMETERS = [
          zmux_sends="always: Max Lanes 258 (max_lanes) and a random 16-byte Lane Key",
          spec="MULTIPATH.md#3.6"),
     dict(name="zmux_resume", id=0x0D5778CE, scope="zmux", format="varint",
-         absent_default="not supported", zmux_sends="resume_timeout in ms when enabled",
+         absent_default="not supported", zmux_sends="Resume Grace in ms when enabled",
          spec="RESUME.md#3"),
 ]
 
@@ -215,7 +215,7 @@ ALLOCATION_SUFFIX = {
 TRANSPORT_ERRORS = [
     dict(name="NO_ERROR", code=0x00, source="RFC 9000", wire=True),
     dict(name="INTERNAL_ERROR", code=0x01, source="RFC 9000", wire=True),
-    dict(name="CONNECTION_REFUSED", code=0x02, source="RFC 9000", wire=True),
+    dict(name="CONNECTION_REFUSED", code=0x02, source="RFC 9000, SPEC.md#10.2", wire=True),
     dict(name="FLOW_CONTROL_ERROR", code=0x03, source="RFC 9000", wire=True),
     dict(name="STREAM_LIMIT_ERROR", code=0x04, source="RFC 9000", wire=True),
     dict(name="STREAM_STATE_ERROR", code=0x05, source="RFC 9000", wire=True),

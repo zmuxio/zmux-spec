@@ -578,7 +578,32 @@ def corpus():
     # A carrier that ends inside a record is a pipe failure, not a frame error
     # (SPEC.md Section 3.2); the traces core.records.pipe_ends_mid_record and
     # multipath.ack.pipe_ends_mid_record cover it.
+    # --- bootstrap and closing (SPEC.md Sections 5.3, 6.1, 6.5 and 10.2)
+    idle_timeout = {"id": "max_idle_timeout", "value": 2}
+    bootstrap = [TP([{"id": "initial_max_data", "value": 16384}, idle_timeout])]
+    okrec("webtransport-bootstrap", bootstrap,
+          note="first record on the initiator's first bidirectional stream after a "
+          "successful extended CONNECT response; a 1.5 ms idle timeout encodes as 2")
+    okrec("tp-resume-duration-rounded",
+          [TP([mp, su, {"id": "zmux_resume", "value": 2}])],
+          note="a 1.5 ms Resume Grace encodes as 2")
+    okrec("tp-duration-varint-ceiling",
+          [TP([mp, su, {"id": "max_idle_timeout", "value": (1 << 62) - 1},
+               {"id": "zmux_resume", "value": (1 << 62) - 1}])],
+          note="idle timeout and Resume Grace each saturate at the varint ceiling")
+    refused = CLOSE(TE("CONNECTION_REFUSED"), reason=b"listener unavailable")
+    okrec("new-session-refused", [refused],
+          note="sent after the listener's transport parameters, including after "
+          "pairing a split bootstrap")
+    okrec("pending-stream-frames-before-close",
+          [STREAM(1, b"\x00tail", fin=True), RESET(5, AE("ZMUX_CANCELLED"), 0),
+           CLOSE(0, app=True)],
+          note="an optional pre-close send within stream and session credit")
+
     # --- message-framed carriers (SPEC.md Section 3.4)
+    okmsg("websocket-bootstrap-refused", [bootstrap, [refused]],
+          note="after a successful opening handshake, the first binary message "
+          "carries the transport parameters, followed by the refusal in its own message")
     okmsg("messages-tp-then-stream",
           [[TP([{"id": "initial_max_data", "value": 1024}])],
            [STREAM(0, b"\x00hi", fin=True), PADDING(2)]],

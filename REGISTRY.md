@@ -156,7 +156,7 @@ multipath reinjection rule of MULTIPATH.md Section 7.4.
 | Parameter | ID | Origin, format | Absent means | zmux endpoints send | Defined in |
 |---|---|---|---|---|---|
 | original_destination_connection_id | 0x00 | QUIC v1, prohibited (TRANSPORT_PARAMETER_ERROR) | - | - | SPEC.md#5.2 |
-| max_idle_timeout | 0x01 | QUIC/QMux, varint | 0 | 30000 | SPEC.md#5.3 |
+| max_idle_timeout | 0x01 | QUIC/QMux, varint | 0 | 30000 (ms) | SPEC.md#5.3 |
 | stateless_reset_token | 0x02 | QUIC v1, prohibited (TRANSPORT_PARAMETER_ERROR) | - | - | SPEC.md#5.2 |
 | max_udp_payload_size | 0x03 | QUIC v1, prohibited (TRANSPORT_PARAMETER_ERROR) | - | - | SPEC.md#5.2 |
 | initial_max_data | 0x04 | QUIC/QMux, varint | 0 | 1048576 | SPEC.md#5.3 |
@@ -187,7 +187,7 @@ multipath reinjection rule of MULTIPATH.md Section 7.4.
 | zmux_ack_threshold | 0x2762c7e5 | zmux, varint | 65536 | omitted (65536) | MULTIPATH.md#3 |
 | zmux_max_ack_delay | 0x17fa1ed6 | zmux, varint | 25 | omitted (25) | MULTIPATH.md#3 |
 | zmux_max_lanes | 0x27856ef0 | zmux, lanes | 1 lane (no lanes) | always: Max Lanes 258 (max_lanes) and a random 16-byte Lane Key | MULTIPATH.md#3.6 |
-| zmux_resume | 0x0d5778ce | zmux, varint | not supported | resume_timeout in ms when enabled | RESUME.md#3 |
+| zmux_resume | 0x0d5778ce | zmux, varint | not supported | Resume Grace in ms when enabled | RESUME.md#3 |
 <!-- END GENERATED: transport_parameters -->
 
 "zmux endpoints send" is the RECOMMENDED value of a general-purpose
@@ -225,7 +225,7 @@ Section 4.6 shows a convention).
 |---|---|---|---|
 | NO_ERROR | 0x00 | RFC 9000 | yes |
 | INTERNAL_ERROR | 0x01 | RFC 9000 | yes |
-| CONNECTION_REFUSED | 0x02 | RFC 9000 | yes |
+| CONNECTION_REFUSED | 0x02 | RFC 9000, SPEC.md#10.2 | yes |
 | FLOW_CONTROL_ERROR | 0x03 | RFC 9000 | yes |
 | STREAM_LIMIT_ERROR | 0x04 | RFC 9000 | yes |
 | STREAM_STATE_ERROR | 0x05 | RFC 9000 | yes |

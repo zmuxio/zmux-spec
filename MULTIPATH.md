@@ -993,11 +993,6 @@ waiting for any other condition.  An endpoint MAY acknowledge more often. It
 SHOULD put a PIPE_ACK in the same batch as pending MAX_DATA or
 MAX_STREAM_DATA updates.
 
-These deadlines bind every local delay of the record that carries the
-PIPE_ACK, a traffic-shaping delay included: whatever such a delay asks
-for, a PIPE_ACK that rules 1 to 3 make due leaves no later than the
-endpoint's own `zmux_max_ack_delay` after the first ack-eliciting byte it
-reports that was not reported before.
 An endpoint that wants to delay its acknowledgements longer advertises a
 larger `zmux_max_ack_delay`.
 

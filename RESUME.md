@@ -43,11 +43,9 @@ zmux_resume Value {
 }
 ```
 
-Resume Grace is in milliseconds, at least 1; the value 0 is a
-TRANSPORT_PARAMETER_ERROR. There is no upper limit: the memory that suspended
-sessions hold is bounded by the listener's limits (Section 9), not by the
-grace period, and a deployment may keep sessions resumable for days. The parameter MUST NOT be sent without
-`zmux_multipath`.
+Resume Grace is in milliseconds and uses the duration encoding of SPEC.md
+Section 5.3. The value 0 is a TRANSPORT_PARAMETER_ERROR. The parameter MUST
+NOT be sent without `zmux_multipath`.
 
 Resume is in use when multipath is in use, both endpoints sent `zmux_resume`,
 and at least one endpoint's Session Locator is non-empty (otherwise neither

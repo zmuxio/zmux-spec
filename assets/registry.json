@@ -570,7 +570,7 @@
       "scope": "qmux",
       "format": "varint",
       "absent_default": 0,
-      "zmux_sends": "30000",
+      "zmux_sends": "30000 (ms)",
       "spec": "SPEC.md#5.3",
       "id": {
         "value": 1,
@@ -906,7 +906,7 @@
       "scope": "zmux",
       "format": "varint",
       "absent_default": "not supported",
-      "zmux_sends": "resume_timeout in ms when enabled",
+      "zmux_sends": "Resume Grace in ms when enabled",
       "spec": "RESUME.md#3",
       "id": {
         "value": 223836366,
@@ -935,7 +935,7 @@
     },
     {
       "name": "CONNECTION_REFUSED",
-      "source": "RFC 9000",
+      "source": "RFC 9000, SPEC.md#10.2",
       "wire": true,
       "code": {
         "value": 2,

@@ -11,13 +11,13 @@
       "multipath": 142,
       "resume": 18
     },
-    "wire_valid": 57,
+    "wire_valid": 63,
     "wire_invalid": 100
   },
   "sha256": {
-    "assets/registry.json": "01919ad4d6b22da6c5d24637d60a51b8eeb22303f048e119ea6075efc5c207f1",
+    "assets/registry.json": "81ee58bcd05bc5be96c730bc3a24acf9a0a21517905a7de81bc2c0ff49635973",
     "fixtures/profiles.json": "8efe1ec711b76bf85c657c16eb9411682b7101aa0db1a5ed2a8c1698f38ac89c",
-    "fixtures/wire/valid.ndjson": "7cafc4488518721b044644fcf7979000f6fa4cb0d375d9853ed6367157352a69",
+    "fixtures/wire/valid.ndjson": "53058fcfadca4ac0ca3b131be6ed632236c5ff43a9200ddaccb5bbc13bfd98c6",
     "fixtures/wire/invalid.ndjson": "027805f0ff24796d9d847473a4cab8cc08d1f1447ef818d22b0d44ccb6a2a106",
     "fixtures/traces/index.json": "746adba45a499f4d7625e8ad103a0f22adf7af905a1e28408cf2eb18159652a1",
     "fixtures/capsules.json": "eb1e8eae3c52ce610344cb440c4eaf6c6cda74671c72f1edcc682ea92d3a5fa6",
