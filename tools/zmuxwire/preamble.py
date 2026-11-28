@@ -64,15 +64,19 @@ def decode_preamble(first_frame_data, limit):
     return parsed, total
 
 
-def encode_flow_prefix(stream_id=None, context_id=0):
+def encode_datagram_data(sequence, payload=b"", stream_id=None, context_id=0):
+    """Encode the Datagram Data of a same-family zmux DATAGRAM."""
+    prefix = encode_varint(sequence)
     if stream_id is None:
-        return encode_varint(0)
-    return encode_varint(stream_id + 1) + encode_varint(context_id)
+        return prefix + encode_varint(0) + payload
+    return prefix + encode_varint(stream_id + 1) + encode_varint(context_id) + payload
 
 
-def decode_flow_prefix(data):
-    flow, pos, _ = decode_varint(data, 0, PV)
+def decode_datagram_data(data):
+    """Decode a zmux datagram without applying association or deduplication state."""
+    sequence, pos, _ = decode_varint(data, 0, PV)
+    flow, pos, _ = decode_varint(data, pos, PV)
     if flow == 0:
-        return None, None, data[pos:]
-    ctx, pos, _ = decode_varint(data, pos, PV)
-    return flow - 1, ctx, data[pos:]
+        return {"sequence": sequence, "data": data[pos:]}
+    context, pos, _ = decode_varint(data, pos, PV)
+    return {"sequence": sequence, "stream": flow - 1, "context": context, "data": data[pos:]}

@@ -200,8 +200,8 @@ def decode_tps(buf):
             raise DecodeError(TPE, f"duplicate transport parameter 0x{num:x}")
         seen.add(num)
         meta = R.tp_by_id(num)
-        if meta is not None and meta["scope"] == "prohibited":
-            raise DecodeError(TPE, f"prohibited transport parameter {meta['name']}")
+        if meta is not None and meta["scope"] in ("prohibited", "zmux-retired"):
+            raise DecodeError(TPE, f"unavailable transport parameter {meta['name']}")
         out.append(decode_tp_value(num, raw))
     validate_tps(out)
     return out
@@ -218,6 +218,9 @@ def tp_dict(params):
 def validate_tps(params, local_max_record_size=None):
     """Value and dependency checks from SPEC.md 5.2, EXTENSIONS.md, MULTIPATH.md 3."""
     d = tp_dict(params)
+    if "zmux_datagram_family" not in d and any(p["scope"] == "zmux" and p["name"] in d
+                                              for p in R.TRANSPORT_PARAMETERS):
+        raise DecodeError(TPE, "zmux evidence without zmux_datagram_family")
     if "max_record_size" in d and d["max_record_size"] < R.LIMITS["default_max_record_size"]:
         raise DecodeError(TPE, "max_record_size below 16382")
     for k in ("initial_max_streams_bidi", "initial_max_streams_uni"):
@@ -241,6 +244,10 @@ def validate_tps(params, local_max_record_size=None):
         raise DecodeError(TPE, "zmux_session_crypto goes with zmux_multipath, and only then")
     if "zmux_resume" in d and "zmux_multipath" not in d:
         raise DecodeError(TPE, "zmux_resume requires zmux_multipath")
+    if "zmux_carrier_datagram_padding" in d and (
+            "zmux_carrier_datagrams" not in d or not d.get("max_datagram_frame_size")):
+        raise DecodeError(TPE, "zmux_carrier_datagram_padding requires zmux_carrier_datagrams "
+                               "and a positive max_datagram_frame_size")
     if "zmux_ack_threshold" in d and d["zmux_ack_threshold"] < 1024:
         raise DecodeError(TPE, "zmux_ack_threshold out of range")
     if "zmux_max_ack_delay" in d and d["zmux_max_ack_delay"] >= (1 << 14):
@@ -309,6 +316,12 @@ def encode_frame(f, type_width=None):
         out += _v(f["max_bidi"]) + _v(f["max_uni"]) + _v(f["code"])
     elif t == "PRIORITY_UPDATE":
         out += _v(f["id"]) + _v(f["seq"]) + bytes([priority_byte(f)])
+    elif t == "DATAGRAM_ACK":
+        ranges = f["ranges"]
+        out += _v(f["pipe"]) + bytes([f["channel"]]) + _v(f["largest"]) + _v(f["delay"])
+        out += _v(len(ranges)) + _v(f["first_range"])
+        for r in ranges:
+            out += _v(r["gap"]) + _v(r["length"])
     elif t == "PIPE_ACK":
         out += _v(len(f["entries"]))
         for e in f["entries"]:
@@ -381,10 +394,10 @@ def decode_frame(buf, pos, end, enabled=None, limits=None):
         raise DecodeError(FE, f"prohibited frame type {meta['name']}")
     gate = meta.get("gate")
     gates = (gate,) if isinstance(gate, str) else (gate or ())
-    if gates and enabled is not None and not any(g in enabled for g in gates):
-        if meta["name"] == "DATAGRAM":
-            raise DecodeError(PV, "DATAGRAM without max_datagram_frame_size")
-        raise DecodeError(FE, f"{meta['name']} not negotiated")
+    if gates and enabled is not None and meta["name"] != "DATAGRAM":
+        check = all if meta.get("gate_all") else any
+        if not check(g in enabled for g in gates):
+            raise DecodeError(FE, f"{meta['name']} not negotiated")
     name = meta["name"]
 
     def v():
@@ -480,6 +493,27 @@ def decode_frame(buf, pos, end, enabled=None, limits=None):
             raise DecodeError(FE, "PRIORITY_UPDATE reserved bits set")
         f["urgency"] = b >> 5
         f["incremental"] = bool(b & 0x10)
+    elif name == "DATAGRAM_ACK":
+        end = min(end, start + R.DATAGRAM_ACK_MAX_SIZE)
+        f["pipe"] = v()
+        _need(buf, pos, 1, end)
+        f["channel"] = buf[pos]
+        pos += 1
+        if f["channel"] not in (0, 1):
+            raise DecodeError(FE, "DATAGRAM_ACK invalid channel")
+        f["largest"], f["delay"], count, f["first_range"] = v(), v(), v(), v()
+        if count > R.DATAGRAM_ACK_MAX_RANGE_COUNT or 2 * count > end - pos:
+            raise DecodeError(FE, "DATAGRAM_ACK ranges exceed frame bounds")
+        smallest = f["largest"] - f["first_range"]
+        if smallest < 0:
+            raise DecodeError(FE, "DATAGRAM_ACK first range underflow")
+        f["ranges"] = []
+        for _ in range(count):
+            gap, length = v(), v()
+            smallest -= gap + 2 + length
+            if smallest < 0:
+                raise DecodeError(FE, "DATAGRAM_ACK range underflow")
+            f["ranges"].append({"gap": gap, "length": length})
     elif name == "PIPE_ACK":
         n = v()
         if n == 0:
@@ -531,9 +565,11 @@ def decode_frame(buf, pos, end, enabled=None, limits=None):
         raise DecodeError(FE, f"no decoder for {name}")
     if pos > end:
         raise DecodeError(FE, "truncated frame")
-    if name == "DATAGRAM" and limits and "max_datagram_frame_size" in limits \
-            and pos - start > limits["max_datagram_frame_size"]:
-        raise DecodeError(PV, "DATAGRAM larger than max_datagram_frame_size")
+    if name == "DATAGRAM":
+        if enabled is not None and "max_datagram_frame_size" not in enabled:
+            raise DecodeError(PV, "DATAGRAM without max_datagram_frame_size")
+        if limits and "max_datagram_frame_size" in limits and pos - start > limits["max_datagram_frame_size"]:
+            raise DecodeError(PV, "DATAGRAM larger than max_datagram_frame_size")
     return f, pos
 
 
@@ -544,6 +580,26 @@ def decode_frames(payload, enabled=None, limits=None):
         f, pos = decode_frame(payload, pos, len(payload), enabled, limits)
         frames.append(f)
     return frames
+
+
+def decode_channel_datagram(payload, enabled=None, limits=None):
+    """Decode the frame region after routing to a channel in use.
+
+    Returns the PADDING count and the DATAGRAM frame. ``enabled`` has the
+    meaning used by decode_frame, including the bilateral padding gate.
+    """
+    pos = 0
+    if payload and payload[0] == 0:
+        if enabled is not None and "zmux_carrier_datagram_padding" not in enabled:
+            raise DecodeError(PV, "channel padding not negotiated")
+        if len(payload) > R.LIMITS["max_padded_channel_datagram_size"]:
+            raise DecodeError(PV, "padded channel datagram exceeds 65535 bytes")
+        while pos < len(payload) and payload[pos] == 0:
+            pos += 1
+    if pos == len(payload) or payload[pos] != 0x30:
+        raise DecodeError(PV, "channel datagram requires a type 0x30 DATAGRAM")
+    frame, _ = decode_frame(payload, pos, len(payload), enabled, limits)
+    return pos, frame
 
 
 # --------------------------------------------------------------------------

@@ -28,7 +28,7 @@ parameters at codepoints of 2^14 and above.
   QX_PING and, where the peer supports them, DATAGRAM and RESET_STREAM_AT.
 - **What only zmux peers get:** multipath, pipe acknowledgement, lanes,
   resume, role negotiation, GOAWAY, stream preambles, priority updates and
-  datagram flows. Each is negotiated with transport parameters
+  sequenced datagrams. The protocol family and features are established with transport parameters
   (SPEC.md Section 5.5) and never used towards a peer that did not announce
   it.
 

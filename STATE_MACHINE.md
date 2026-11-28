@@ -201,7 +201,7 @@ stall only after T_dead (MULTIPATH 7.1).
 | OPEN | graceful end at a record boundary after PIPE_ABANDON or CONNECTION_CLOSE was received, or after the endpoint sent PIPE_ABANDON(NO_ERROR) for the attachment | ENDED (graceful) | final position in next PIPE_ACK |
 | OPEN | linger timeout after the PIPE_ABANDON exchange completed | ENDED (graceful) | close carrier |
 | OPEN | carrier error, reset, end inside a record, or unexpected end | ENDED (failed) | discard incomplete record; fail own outbound direction of a pair; PIPE_ABANDON(ZMUX_PIPE_FAILED) (MULTIPATH 7.3) |
-| OPEN, attachment without a local outbound direction | no complete record for L_in, or for max(L_in, T_dead) when it is the last live inbound pipe (inbound silence, MULTIPATH 7.3) | ENDED (failed) | as above; close carrier |
+| OPEN, attachment without a local outbound direction | inbound silence reaches the limit in MULTIPATH 7.3, including its allowance for the last live inbound pipe | ENDED (failed) | as above; close carrier |
 | OPEN | local abrupt removal | ENDED (failed) | close carrier |
 | ENDED | attachment retired (MULTIPATH 8.4; at once when the end of this direction completes the conditions) | RETIRED | stop listing in PIPE_ACK |
 
@@ -260,7 +260,7 @@ of its lanes, ends the session (SPEC 6.6).
 
 | State | Meaning | Timers |
 |---|---|---|
-| ESTABLISHING | own parameters sent, peer's not yet processed; streams opened now send only early data (SPEC 6.1.2) | handshake timeout |
+| ESTABLISHING | own parameters sent, peer's not yet processed; application frames wait except for plain QMux 0-RTT (SPEC 6.1.2) | handshake timeout |
 | ACTIVE | normal operation | idle timeout, keep-alive |
 | DRAINING | GOAWAY sent or received; no new streams; existing streams continue | idle timeout, keep-alive, GOAWAY fence |
 | SUSPENDED | resume in use and no live outbound or no live inbound pipe | resume grace |
@@ -272,7 +272,6 @@ of its lanes, ends the session (SPEC 6.6).
 | From | Event | To | Actions |
 |---|---|---|---|
 | ESTABLISHING | peer parameters processed, valid | ACTIVE | fix roles, features, session secret |
-| ESTABLISHING | peer parameters processed after early data was sent, and the peer cannot take it (no PIPE_ACK in use, or `initial_max_streams_bidi` 0) | CLOSING | CONNECTION_CLOSE(NO_ERROR); report early data rejected; the early streams fail with it (SPEC 6.1.2) |
 | ESTABLISHING | invalid parameters or first frame | CLOSING | CONNECTION_CLOSE(transport error) |
 | ESTABLISHING | handshake timeout | CLOSED | close carriers without frames |
 | ESTABLISHING | first bytes rejected (SPEC 6.2) | CLOSING | QX_TRANSPORT_PARAMETERS, then CONNECTION_CLOSE(PROTOCOL_VIOLATION) |
@@ -308,5 +307,42 @@ independently of the session states above; d is its last completed epoch:
 | either | Stable(d) | d | d |
 | offering | Offering | d | d |
 | offering | committed, timer R running | d+1 | d, d+1 |
-| answering | answered, answer not yet acknowledged and no peer join of d+1 | d | d, d+1 |
-| answering | answer acknowledged or peer join of d+1 verified, timer R running | d+1 | d, d+1 |
+| answering | answered, awaiting a switch trigger from MULTIPATH 10.7 | d | d, d+1 |
+| answering | switched under MULTIPATH 10.7, timer R running | d+1 | d, d+1 |
+
+---
+
+## 5. Protocol timing index
+
+This index points to the timing rules a peer can rely on. An em dash means
+the contract supplies no fixed value for that column. Durations follow the
+monotonic-clock convention in [SPEC Section 1.3](SPEC.md#13-conventions).
+
+| Timer or timing rule | Start or trigger | Default or absent value | Protocol bounds and units | Contract |
+|---|---|---|---|---|
+| Bootstrap establishment | Bootstrap establishment pending | — | Local duration; expiry closes the carrier | [SPEC Section 6.1](SPEC.md#61-establishment) |
+| Split bootstrap pairing | First half awaits its complement | — | Establishment handshake timeout | [SPEC Section 6.1.1](SPEC.md#611-pairing-split-carriers) |
+| First record or Hello | Accepted carrier established, before classification | — | Local duration; expiry closes the carrier | [MULTIPATH Sections 5.5–5.6](MULTIPATH.md#56-pending-join-limits) |
+| Join deadline | Joiner enters JOINING; acceptor classifies Hello and takes a slot | 10 s | Positive, at most 60 s per end | [MULTIPATH Section 5.7](MULTIPATH.md#57-joiner-behaviour) |
+| Acceptor's first outbound Join record | A down or bidirectional Join becomes Confirmed and is attached | 25 ms if the ACK delay parameter is absent | Acceptor's `zmux_max_ack_delay`, in ms | [MULTIPATH Section 5.4, step 8](MULTIPATH.md#54-acceptor-processing) |
+| Lane confirmation | Lane stream opens, until confirmed by PIPE_ACK | Join timeout | Same bound as Join | [MULTIPATH Section 5.8](MULTIPATH.md#58-opening-a-lane) |
+| Join refusal backoff | Verified refusal or peer resource-limit abandonment | 1 s on first event | Doubles to 60 s; the qualifying retirement in the contract can end the wait sooner | [MULTIPATH Section 5.7](MULTIPATH.md#57-joiner-behaviour) |
+| Session idle timeout | Establishment or qualifying activity; stops at suspension and restarts on leaving it | Absent advertisement counts as 0; 30,000 ms recommended to send | Minimum nonzero advertisement, or off if both are zero; whole ms, at most 2^62 − 1 ms per advertisement | [SPEC Section 5.3](SPEC.md#53-core-parameters), [Section 6.4](SPEC.md#64-idle-timeout-and-keep-alive), [RESUME Section 4.4](RESUME.md#44-leaving-suspended) |
+| Keep-alive | Idle timer has not restarted for the chosen period | — | When used, shorter than the effective idle timeout; at most one request per idle-timer restart | [SPEC Section 6.4](SPEC.md#64-idle-timeout-and-keep-alive) |
+| Resume grace | Once on entering SUSPENDED | Absent leaves resume unnegotiated | Smaller of the two advertised values; 1 to 2^62 − 1 ms | [RESUME Sections 3, 4 and 8](RESUME.md#3-negotiation) |
+| PIPE_ACK delay | First newly processed ack-eliciting byte on an inbound pipe; immediate cases follow the contract | 25 ms if absent | Advertised range 0 to 2^14 − 1 ms; measured ACK Delay field in µs | [MULTIPATH Sections 3.2, 6.2 and 6.3](MULTIPATH.md#63-when-to-acknowledge) |
+| Complete PIPE_ACK snapshot | Last frame of the previous complete snapshot sent while reportable pipes exist | — | At least one complete snapshot per second | [MULTIPATH Section 6.2](MULTIPATH.md#62-the-pipe_ack-frame) |
+| Outbound stall thresholds | Acknowledgement or carrier-write progress stalls on an attached pipe | — | T_suspect ≥ max(50 ms, 2 × PTO); T_fail ≥ max(2 s, 8 × PTO, T_suspect) when another outbound pipe is ACTIVE; T_dead ≥ max(1 s, T_suspect) on the last outbound pipe | [MULTIPATH Section 7.1](MULTIPATH.md#71-suspect-and-failed-pipes) |
+| Idle probe on a one-way attachment | Last ack-eliciting byte reaches the carrier, or pipe becomes ACTIVE if none | — | Probe interval at most 15 s; probe dispatch also follows the PIPE_PING rate rule | [MULTIPATH Sections 6.4 and 7.1](MULTIPATH.md#71-suspect-and-failed-pipes) |
+| Inbound silence on a one-way attachment | Last complete record, or entry to OPEN if none | — | At least L_in from the contract, in seconds; the last live inbound pipe can wait longer | [MULTIPATH Section 7.3](MULTIPATH.md#73-inbound-pipe-end-and-inbound-silence) |
+| Pipe drain | Entry to DRAINING | — | T_fail bounds the wait for the exchange and outstanding stream acknowledgements | [MULTIPATH Section 8.2](MULTIPATH.md#82-graceful-removal) |
+| Unilateral retirement | Own PIPE_ABANDON acknowledged and peer PIPE_ABANDON still missing | — | max(2 s, 3 × PTO), with the PTO selection in the contract | [MULTIPATH Section 8.4](MULTIPATH.md#84-retirement) |
+| Linger and read drain | Close dispatch completes or its wait ends; on receipt if sending no close. For pipe removal, the PIPE_ABANDON exchange completes | 333 ms input SRTT when unknown | min(2 s, max(250 ms, 3 × SRTT)); also bounds the close waits specified in step 1 | [SPEC Section 6.5](SPEC.md#65-closing), [MULTIPATH Section 8.2](MULTIPATH.md#82-graceful-removal) |
+| QX_PING outstanding request | Request sent | — | max(1 s, 3 × SRTT), ending sooner on a qualifying response or failure of the sending pipe | [SPEC Section 4.5](SPEC.md#45-qx_ping) |
+| GOAWAY fence | QX_PING response covers the fence | — | Wait a further SRTT in the multipath and inbound-lane cases | [EXTENSIONS Section 3.3](EXTENSIONS.md#33-sending-two-phases-with-a-ping-fence) |
+| Datagram holding before stream open | Eligible arrival before the opening frame | — | Optional, at most one smoothed RTT; duplicates do not renew the hold | [EXTENSIONS Sections 6.4 and 6.9](EXTENSIONS.md#64-association-rules) |
+| DATAGRAM_ACK report spacing | New arrival for the reported pipe and channel | 25 ms floor without SRTT | At least max(25 ms, SRTT / 4) per tuple; per-session cap in a rolling 1 s window; Ack Delay field in µs | [EXTENSIONS Section 6.10](EXTENSIONS.md#610-datagram_ack) |
+| Ping and no-effect budgets | Ping, qualifying padding or chargeable frame | — | Rolling 1 s sender limits; receiver token replenishment in seconds | [SPEC Sections 9.4 and 13.2](SPEC.md#943-sender-rules-the-compliant-floor), [MULTIPATH Section 6.4](MULTIPATH.md#64-pipe_ping) |
+| SESSION_EPOCH retransmission | Offer sent until answer arrives; answer sent until acknowledged | Pipe probe interval | Repeat on each new pipe and once per probe interval of each pipe | [MULTIPATH Section 10.7](MULTIPATH.md#107-session-epochs) |
+| SESSION_EPOCH retention R | Offering end commits; answering end meets a switch trigger | — | 180 s (three times the maximum Join deadline); see the later-offer rule for earlier deletion | [MULTIPATH Section 10.7](MULTIPATH.md#107-session-epochs) |
+| Secure carrier rejection stall | Reject policy selects stall | — | Closes silently on expiry; Join remains subject to its deadline | [secure-carrier/SPEC Section 9](secure-carrier/SPEC.md#9-errors), [MULTIPATH Section 5.4](MULTIPATH.md#54-acceptor-processing) |

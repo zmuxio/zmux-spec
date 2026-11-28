@@ -5,7 +5,7 @@ Status: draft.
 The secure carrier is a transformation applied to one zmux carrier. It proves
 with a handshake that the carrier belongs to a peer or to a session, and it
 optionally protects the carrier's zmux records. Each carrier chooses its record
-mode. The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
+mode. Capitalized requirement words are interpreted as in BCP 14 (RFCs 2119 and 8174).
 
 Normative references: the Noise Protocol Framework, revision 34 ("Noise");
 the Noise extension "hfs" (hybrid forward secrecy, "HFS"); FIPS 203 (ML-KEM);
@@ -132,6 +132,105 @@ first message.
 A host that reads `incomplete` reads more, within its own time limit. `dispatch.json`
 gives cases for both framings.
 
+### 3.4 Prefix authentication
+
+A carrier using prefix authentication has a token before dispatch. Peers agree
+to use it on that entry in advance. Each ticket has a distinct opaque 16-byte ID and a
+dedicated, independent 32-byte ticket key `K`. Presenters and verifiers in one
+admission domain share the current 32-byte outer key `O`. Both keys MUST be
+generated from cryptographic randomness and used only for their stated purpose.
+The slot length `L` is a positive whole number of seconds. Both ends agree on
+`L` and on whether to use the carrier binding.
+
+    P(k, m) = HMAC-SHA256(k, m)
+    N       = 16 fresh random bytes
+    X       = ID ⊕ first16(P(O, 00 ‖ N))
+    A       = first16(P(O, 01 ‖ N ‖ X))
+    s       = floor(unix_seconds / L)
+    B       = binding (empty or 32 bytes)
+    T       = first16(P(K, 02 ‖ ID ‖ N ‖ X ‖ A ‖ uint64(s) ‖ uint8(len(B)) ‖ B))
+    Token   = N ‖ X ‖ A ‖ T
+
+Here `00`, `01`, `02` are single octets, `first16` takes the leftmost 16
+bytes, ⊕ is bytewise XOR, and UTC Unix time excludes leap seconds.
+The presenter MUST use a new cryptographically random N per presentation.
+Peers MUST use the bound form only over TLS 1.3 or QUIC, with B equal
+to the 32-byte exporter of the completed handshake on the actual connection
+between presenter and verifier (RFC 8446 Section 7.5, label
+`EXPORTER-zmux-prefix-auth`, empty context). Bound presentation fails on
+TLS 1.2 or earlier or if the required exporter is unavailable. Unbound
+tokens have empty B and are bearer credentials. Peers MUST use them only
+over an encrypted outer carrier or in a deployment that accepts denial of
+service as the sole consequence of another party presenting a token first.
+
+**Placement.** A presenter MUST send the 64 bytes as the first bytes of the
+stream or carrier request body. On a message carrier with binary admission
+they occupy one whole first message. On an HTTP admission decided on the
+request head, including an upgrade or a bodyless split half, it MUST instead
+send exactly one field with the canonical unpadded base64url encoding
+(RFC 4648 Section 5, 86 characters, zero unused bits). The field name is
+`Zmux-Prefix-Auth` unless the entry uses a different agreed name. The
+header form MUST be used only on an encrypted outer carrier. A cleartext
+header presentation or a missing, repeated or malformed field fails
+verification. Each independently admitted carrier or split half requires
+its own presentation, including on Join or resume.
+An exchange with its own authenticated request envelope and no prefix
+admission point uses that envelope alone. Streams on an already admitted
+connection that have no separate admission take no token.
+The token MUST NOT appear in a URL. On carriers with early data, a
+presenter MUST wait for 1-RTT data and a verifier MUST refuse presentations
+in early data.
+After acceptance, exactly the token is consumed in binary form and zero body
+bytes are consumed in header form. Admission precedes the inner protocol.
+
+Admission success alone establishes no peer identity. An endpoint MUST NOT
+expose the ticket ID or its attributes to an application as the session
+principal unless the token is bound or an inner Profile 1 or 3 handshake
+has independently authenticated that principal with a separate credential.
+Section 5 rule 4 governs identity delivery for Establish.
+
+**Acceptance.** Let C be the greater of the verifier's current UTC slot and the
+domain's rollback floor. The floor is the greatest verifier C at which an
+acceptance or an expiry of replay state has taken effect. Until the first
+such operation, use the current UTC slot. The ticket's issue slot s never
+sets the floor. The slot tolerance S is a nonnegative integer. The
+RECOMMENDED value is one slot. A verifier MUST enforce a finite, locally
+configurable upper bound on S. The RECOMMENDED initial limit is two slots.
+Neither S nor its limit is negotiated.
+
+The verifier MUST apply the following checks in order and refuse if any fails.
+
+1. Compare A in constant time for every eligible installed generation. Unless
+   exactly one generation matches, refuse before recovering or looking up ID.
+   With the matching O, recover ID by applying the same XOR mask to X.
+2. Look up a live ticket for ID. For that ticket, compute T and compare it
+   in constant time on exactly 2S+1 trials, one per offset from −S through
+   +S, including all trials after a match. A match counts only if C plus
+   the offset is a uint64 in the matching generation's issue-slot interval.
+   For an unrepresentable slot use zero for the computation and discard the
+   result. Refuse if no eligible slot matches.
+3. Claim (ID, N) once across all verifiers and generations of the domain.
+   For a single-use ticket also consume ID once across nonces, bindings,
+   carriers and outer keys. The same linearizable store MUST hold the floor
+   and these claims. At acceptance it MUST atomically check freshness at
+   the current C, ticket and generation validity, and availability of the
+   claims, then record the claims and advance the floor to C before admission.
+   Expiry MUST advance the floor to its C in the same operation that retires
+   a claim.
+   A failed presentation creates no claim. A subsequent inner handshake
+   failure does not undo acceptance.
+
+At a scheduled key change at slot U, the outgoing key's issue slots end
+immediately before U and the incoming key's begin at U. A verifier MUST
+consider only installed generations whose issue slots intersect its acceptance
+window. There is no generation field on the wire. A revoked key or ticket
+MUST cease to authorize acceptance when revocation takes effect. The verifier
+MUST retain a nonce claim while C ≤ s + S (without wrap), including during rotation,
+and MUST NOT reopen a window after a clock rollback or a restart. If it cannot
+establish freshness, including when the replay store is full, it MUST refuse
+the presentation. Consumption of a single-use ID lasts for the ticket's entire
+lifetime. All failed presentations have the outcome of Section 9.1.
+
 ## 4. Wire format
 
 ### 4.1 Messages
@@ -184,9 +283,10 @@ one, and a sender whose message, with its credential and proof, would exceed the
 fails with `too_large` before writing it. A new Profile, Group or KeyAlg keeps the
 required contents of every message within 8192 bytes.
 
-The client sends nothing after a Hello until it has processed the Reply. A server
-that holds other bytes after a complete Hello, or reads any before writing its
-Reply, fails with `trailing_bytes`. `Finish` and a Reply MAY be followed by records.
+After a Hello the client MUST wait until it has processed the Reply before
+sending more. Extra client bytes held after a complete Hello or read before
+the server writes the Reply fail with `trailing_bytes`.
+`Finish` and a Reply MAY be followed by records.
 
 The parser reads a Hello's fields in wire order and the first failure is the result:
 Profile, Flags, Handle, then the unit. A header that ends early is `incomplete` on a
@@ -261,7 +361,7 @@ Requirements:
    MUST NOT be used to deduplicate principals.
    The failure occurs at the DH token that uses the key, not when the key is read: a
    responder that reads a low-order `e` in message 1 fails when it writes message 2,
-   having sent nothing; an initiator fails while reading message 2 or, for its own
+   before sending any Noise Reply; an initiator fails while reading message 2 or, for its own
    `se`, a responder while reading message 3.
 2. With a pre-shared key, a server MUST NOT perform any DH, check or encapsulate to
    `ek`, sign a proof, or answer before message 1 authenticates, that is before the tag
@@ -294,7 +394,7 @@ Requirements:
    not judge whether its Binding suits the received Mode: it mixes what it has, and any
    disagreement is `auth`.
 8. The responder MUST check `ek` at the `ekem1` token, before it encapsulates and
-   having sent nothing, with the encapsulation key check of FIPS 203 Section 7.2: the
+   before writing the Noise Reply, with the encapsulation key check of FIPS 203 Section 7.2: the
    length is 1184, and each 12-bit coefficient of its first 1152 bytes, decoded as
    ByteDecode12, is below q = 3329 (re-encoding gives the same bytes). A failure is
    `kex`. This is the only check of `ek`, and an implementation performs it in this
@@ -309,13 +409,13 @@ Requirements:
    from, the encapsulation randomness `m` and `ss` SHOULD be destroyed as soon as the
    token that uses them is processed; where the platform cannot erase them, an
    implementation drops them as early as it can.
-10. The handshake random values are the ephemeral X25519 private key, the ML-KEM
-    key generation seed `(d, z)` and encapsulation randomness `m` of Establish, R of
+10. The random values include prefix N (Section 3.4),
+    the ephemeral X25519 private key, the ML-KEM key generation seed `(d, z)` and encapsulation randomness `m` of Establish, R of
     Join (Section 11.4), and the private values of every Group share (Section 11.6). A process restored from a snapshot, or a clone of one,
     MUST reseed its random source before it generates any of them; this requirement
     has no fallback. An implementation SHOULD draw each of these values
     directly from the operating system's entropy source. A failure of the random
-    source fails the handshake or the Join.
+    source ends the affected presentation, handshake or Join.
 
 ## 6. Handshake payloads
 
@@ -623,7 +723,7 @@ uniformly random, and passwords MUST NOT be used.
 
 ## 9. Errors
 
-Nothing is ever sent to report an error. The error classes below are those of the
+A peer MUST NOT send a secure-carrier error message. The error classes below are those of the
 vectors. Each fails the handshake or the direction permanently, except `incomplete`,
 and a refused oversized plaintext.
 
@@ -655,19 +755,33 @@ and a refused oversized plaintext.
 
 A differing Binding, a wrong pre-shared key and a changed Flags field are the same
 `auth` failure. In Profiles 4 and 5 message 1 is not authenticated: the mismatch
-appears when the client reads message 2, and a third party can obtain only the node
-credentials.
+appears when the client reads message 2. Section 9.1 governs output to an
+anonymous initiator.
 
-**Reject policy.** Every failure before the peer is authenticated MUST be handed to
-the server's reject policy, which is the only response to it. For Establish these are
-all failures before message 3 passes, among them an unknown Handle, a wrong pre-shared
-key and a Profile or Mode the server does not accept. For a Join they are all failures
-before the Hello's payload passes (Section 11.5 steps 1 and 2): a Hello that does not
-parse, an unknown Locator, a Suite not usable in the session, Bound without a Binding
-(Section 5 rule 7), a failed AEAD, and a carrier the acceptor declines for a local
-resource limit. The policy either
-closes the carrier (**close**) or reads and sends nothing more and closes it when a time
-limit expires (**stall**). The response MUST NOT depend on which failure occurred.
+### 9.1 Output before authentication
+
+On an unclassified carrier at a shared listener, or one subject to prefix
+admission or secure-carrier authentication, a responder MUST limit output before
+the applicable check passes to the flights in the table. Any refusal before
+that check, including timeout, unknown selector, failed proof, replay or
+resource refusal, MUST take the same configured rejection path for that entry
+and stage regardless of cause. This covers the bytes emitted and the way the
+carrier ends. Different stages of the same entry MAY have different timeout
+values. For Establish and Join the reject policy closes the carrier, or
+stalls it without sending and closes it when its time limit expires. For
+prefix admission the entry may also hand the original input to its host.
+For Establish this policy applies through verification of message 3 even
+when the sender has already proved PSK possession. For Join it applies through Section 11.5 step 2.
+
+| Entry or stage | Permitted output and boundary |
+|---|---|
+| Outer carrier and host handoff | Ordinary TLS, QUIC and HTTP exchanges, including Retry, upgrade, early-data or capacity responses and the host's normal fallback or handoff response, follow the outer protocol. A host response MUST NOT encode the inner reason for refusal. |
+| Ordinary QMux entry | QMux-02 on an available carrier follows [the QMux mapping](../SPEC.md#13-qmux-compatibility), including the shared listener's leading parameters in Section 13.2 rule 7. No prefix is required on that entry. A required prefix failing on a protected entry does not dispatch to QMux. |
+| Split bootstrap and lanes | Pair completion precedes bootstrap output as in the base specification Section 6.1.1. A subsequent lane on a live attachment uses the stream disposition and acknowledgement of `MULTIPATH.md` Section 5.8. |
+| Prefix | Passing Section 3.4 permits dispatch. Only the checks of the selected inner protocol authorize its subsequent output. |
+| Establish, Profiles 1 and 3 | The ordinary message 2 may follow successful message 1 PSK authentication (Section 5 rule 2). Verification of the client's message 3 including its required credentials is the peer identity boundary. |
+| Establish, explicitly accepted Profiles 4 and 5 | A valid anonymous message 1 may elicit message 2, including its configured credential, Proof and message 2 data, before client authentication. When concurrent handshake or pending carrier limits preclude admission, the responder MUST refuse the Hello under this section. Whether the entry accepts an anonymous Profile is observable. Only a verified message 3 reaches the delivery point of Section 5 rule 4. |
+| Join, also on resume | A Reply, including an authenticated refusal, follows the authenticated Hello payload and the checks of Section 11.5. Confirmation and attachment use the later boundaries there. |
 
 ## 10. Vectors
 
@@ -685,6 +799,8 @@ fixing the ephemeral keys and R.
 
 | File | Content |
 |---|---|
+| `first_message.json` | Prefix inputs, ID masks, tags, binary tokens and corresponding HTTP field values. |
+| `first_message_cases.json` | Ordered first-message conformance scenarios. Named inputs refer to the byte vectors. Refusals describe the observable output on the selected entry. |
 | `handshake.json` | each Establish Profile and mode, and payload variants, including complete handshakes with an opaque credential and a proof whose key the verdict names, with a pin, and with PQ authentication required: prologue; the initiator's ML-KEM seed and the responder's encapsulation randomness; for each message the payload, `noise`, `wire_stream`, `wire_message` and `h` and `ck` afterwards; final hash, `ck`, split, exporter secret and an export. `split_c1`, `split_c2` are used for records only when `records_use_split` is true |
 | `negative.json` | one end with fixed inputs driven through `steps` on `framing`; the last step fails with class `error`, and earlier ones succeed. Ops: `hello` parses a Hello, refuses bytes after it, and reads message 1, taking the Profile, mode and Handle from it; `read` cuts a frame and reads it; `write` writes with an empty payload, or with a padding item of `padding` bytes; `force_n` sets n of the current handshake cipher to 2^64-1 through the internal entrance |
 | `receiver.json` | `establish` and `join` lists in the form of `negative.json` and `join_negative.json`, in which every step succeeds: received types a message does not know, with low bit 0, are skipped |
@@ -696,6 +812,39 @@ fixing the ephemeral keys and R.
 | `config.json` | local parameters that are `invalid_config` |
 | `join.json` | each Suite, Group, Mode, session role of the joiner, with and without a batch, and variants: inputs (`attempt`, 7, and `random_i` make `r_i`; `attempt_r`, 8, and `random_r` make `r_r`; `crypto_i`, `crypto_r`; `group`, the X25519 private keys `x_i` and `x_r`, for Group 2 the joiner's ML-KEM seed `kem_seed` and the acceptor's encapsulation randomness `encaps_m`), `r_i`, `r_r`, `th`, `th2`, `th3`, `k0`, `k1`, the shared secrets `ss` in order, `hs`, `key_i2r`, `key_r2i`, `mac_key`, `exporter_secret`, `confirm_tag`, each wire on both framings, an export. `confirm_tag` is computed in every Mode and sent only in Trusted. `confirm_padding`, when given, is the number of zero bytes the Confirm holds |
 | `join_negative.json` | as `negative.json`, with `side` joiner or acceptor, and the key exchange inputs of `join.json`. Ops: `write_hello` with `hello_payload`, preceded by a padding item of `padding` bytes when given, `hello` parses, refuses bytes after it, and opens, `write_reply` with `reply_payload`, padded alike, and `attempt_r`, `random_r`, `reply` reads a Reply, `confirm` reads a confirmation, and `need`, when given, is the total length an `incomplete` asks for. An acceptor uses `join_psk` and `binding` as given, so a disagreeing `binding` is `auth` |
+
+For `first_message_cases.json` each case starts in independent state. Prefix
+attempts in a case run in order, each on a new admission. Default to stream
+form over TLS 1.3, the base clock plus zero seconds, the input's binding,
+and a live reusable ticket for the `unbound` ID and outer key. At cutover
+the incoming generation uses the `rotated` outer key starting at `cutover_slot`.
+`incoming_outer_from` supplies that generation's key from the named input
+even when both installed generations then have identical key bytes.
+`outer_transport` selects the actual carrier for an attempt, independently
+of the supplied exporter bytes. `accept_first_use_dos` selects a deployment
+that accepts denial of service from first use, default false. An attempt
+may override the case setting. An offset sets the wall clock for that
+attempt. An explicit expiry step retires claims past their last slot at
+the given offset. A byte index is zero-based and XOR toggles bit 0. In
+header form `xor_unused_bit` toggles the least significant bit of the final
+base64url sextet. A concurrent group
+is delivered at the same instant to separate entrances sharing the ticket.
+Named entrances in a case share the domain store even if their clocks differ.
+Acceptance consumes the token in its specified form. Refusal produces no
+inner output. Any `then` operation follows the attempt.
+
+Anonymous cases run on both framings unless specified, using the named
+`handshake.json` input or `profile4-sealed-empty` by default. Flights
+give the complete exchange in order, including any modified input. A
+completed handshake uses the Noise results of its input. When modifying
+Noise message 1, update its frame length. A byte appended to the complete
+stream Hello arrives in the same read. Unless specified, the profile is
+accepted and capacity is available.
+
+The responses table uses trace IDs from the trace index and named cases
+from `negative.json`, `handshake.json` or the prefix vectors. A named trace
+with a step supplies the exact input bytes of that step. A host fixture
+supplies the indicated outer output.
 
 ## 11. Join
 
@@ -851,9 +1000,9 @@ refused there is `kex`. It writes Confirm, after any local delay, and then its r
    usable in that session.
 2. Opens the Hello and parses its payload, with the checks of Section 11.3. A failure in
    step 1 or 2 goes to the reject policy (Section 9).
-3. Applies Mode and authorization, sets the Pipe ID's one-time bit, performs its side of
-   the key exchange (Section 11.6), and applies a first batch. A key share refused there is
-   `kex`: the carrier is closed and the Pipe ID's bit stays set.
+3. Follows MULTIPATH.md Section 5.4 step 7 for authorization, revalidation,
+   claiming the Pipe ID, and applying the first batch. It performs its side
+   of the key exchange under Section 11.6.
 4. Writes the Reply with a decision.
 5. Becomes Confirmed: in Sealed when the first record authenticates and its plaintext holds
    only zero bytes, any other byte being `bad_confirm`, and its frames are not parsed; in
@@ -871,7 +1020,7 @@ the protocol layer does not count them.
 If the pipe still loses at Confirmed, the acceptor closes the carrier and the joiner
 handles it as a pipe failure.
 
-A failure at any step is permanent for that carrier and sends nothing. `incomplete` is
+A failure at any step is permanent for that carrier (Section 9). `incomplete` is
 not a failure. Both ends bound a Join by the join deadline of `MULTIPATH.md` Section 5.7,
 default 10 s: the joiner from before the Hello to Proven, the acceptor from the Hello to
 Confirmed. Expiry is a failure of the same kind.

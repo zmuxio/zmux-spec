@@ -33,10 +33,11 @@ def md_frames():
             rows.append([f["name"], frame_range(f), "QUIC v1, prohibited", "-", "-", "-",
                          f["spec"]])
             continue
+        join = " and " if f.get("gate_all") else " or "
         rows.append([f["name"], frame_range(f), {
             "core": "QUIC v1 (RFC 9000)", "qmux": "QMux-02", "quic-ext": "QUIC extension",
             "zmux": "zmux"}[f["kind"]],
-            " or ".join(f["gate"]) if isinstance(f["gate"], tuple) else (f["gate"] or "-"),
+            join.join(f["gate"]) if isinstance(f["gate"], tuple) else (f["gate"] or "-"),
             "yes" if f.get("ack_eliciting") else "no", f.get("retransmit", "-"), f["spec"]])
     return table(["Frame", "Type", "Origin", "Gate", "Ack-eliciting", "Retransmission",
                   "Defined in"], rows)
@@ -48,6 +49,9 @@ def md_tps():
         if p["scope"] == "prohibited":
             rows.append([p["name"], hx(p["id"]), "QUIC v1, prohibited (TRANSPORT_PARAMETER_ERROR)",
                          "-", "-", "SPEC.md#5.2"])
+            continue
+        if p["scope"] == "zmux-retired":
+            rows.append([p["name"], hx(p["id"]), "zmux, retired", "-", p["zmux_sends"], p["spec"]])
             continue
         origin = {"qmux": "QUIC/QMux", "zmux": "zmux", "zmux-reserved": "zmux (reserved)"}[
             p["scope"]]

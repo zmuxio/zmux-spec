@@ -243,11 +243,7 @@ acknowledges its pipes by Section 6 anyway. A plain QMux peer ignores the
 parameter (QMux-02 Section 5.1), so pipe acknowledgement is never in use
 with it and it never sees a PIPE_ACK (SPEC.md Section 13.2). An endpoint
 MUST NOT send PIPE_ACK in a session where neither feature is in use; a
-receiver treats such a frame as unknown (SPEC.md Section 4.1 rule 3). The
-only PIPE_ACK sent before the endpoint knows is the fence of early data
-(SPEC.md Section 6.1.2), whose single entry has Position 0 and is ignored
-where PIPE_ACK is in use, and which a peer without it rejects before
-processing anything after it.
+receiver treats such a frame as unknown (SPEC.md Section 4.1 rule 3).
 
 **Rules.** While pipe acknowledgement is in use, each endpoint acknowledges
 its inbound pipe 0 (the bootstrap pipe, Section 4.2) as in Sections 6.1 to
@@ -380,18 +376,18 @@ endpoint fails the attachment and closes the other carrier too (Section
 ### 4.3 Replay window
 
 For the pipe IDs of the peer's parity an endpoint keeps h, the highest pipe
-ID of a Hello it has verified (Section 5.4 step 5), and a bitmap that
+ID it has claimed under Section 5.4 step 7, and a bitmap that
 covers the W pipe IDs of that parity below h and the W above it. For an
 initiator peer h starts at 0, the bootstrap pair; for a responder peer, which
 has no attachment yet, the bitmap covers its first W pipe IDs until its
-first verified join. W is a local safety bound of at least max_pipes + H (H,
+first claimed ID. W is a local safety bound of at least max_pipes + H (H,
 Section 5.4 step 9), counted in pipe IDs of that parity; the default is
 max(64, 2 x (max_pipes + H)).
 
 - A bit is set when the ID is recorded as used
-  without being attached: a verified Hello (Section 5.4 step 7), or
+  without being attached: a Join that claims the ID (Section 5.4 step 7), or
   PIPE_ABANDON for an ID not seen joined (Section 8.1).
-- Only a verified Hello raises h. When h rises, bits that fall below the
+- When h rises, bits that fall below the
   bitmap are dropped, together with any PIPE_ABANDON pending for an ID that
   has no attachment state.
 - The bitmap decides only for IDs without attachment state. An attachment
@@ -488,9 +484,10 @@ joined. No field of the handshake travels outside the carrier.
 
 ### 5.4 Acceptor processing
 
-An acceptor (normally a listener that serves many sessions) processes a new carrier as follows. Steps 1 to 6 MUST allocate no session
-state and MUST perform no session operation; they may hold the carrier and at
-most one Hello of it.
+An acceptor (normally a listener that serves many sessions) processes a new
+carrier as follows. Steps 1 to 6 and pending authorization in step 7 MUST
+allocate no session state and MUST perform no session operation. They may
+hold the carrier and at most one Hello of it.
 
 Every refusal in steps 1 to 5 goes to the reject policy of
 secure-carrier/SPEC.md Section 9, which closes or stalls the carrier and sends
@@ -504,9 +501,13 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
    its length, among every Locator that a session accepts (Section 10.7). Refuse the carrier if no session matches, if the Suite is outside
    the found session's set (`unknown_suite`, without opening the Hello), or if the
    acceptor declines it here for a local resource limit, such as memory pressure.
-4. If the session is not yet established (the joiner's transport parameters
-   are still in flight), hold the join until establishment completes or the
-   join timeout expires. Likewise, if the session has no join keys yet
+4. If the session is not yet established, hold the join until establishment
+   completes or the join timeout expires. The acceptor MUST use only a
+   session established with confirmed same-family parameters (SPEC.md
+   Section 5.5). If establishment fails or retained state has no such family
+   confirmation, the acceptor MUST refuse the carrier before applying its
+   first batch, attaching it, affecting an epoch or restoring session state.
+   Likewise, if the session has no join keys yet
    (**join pending**, Section 3.3), hold the join, still without session state
    and within the limits of Section 5.6, until the keys exist or the join
    timeout expires; then close the carrier silently (it is not a join
@@ -523,14 +524,25 @@ nothing; a stalled carrier keeps its slot of Section 5.6.
    is set, or it is stale (Section 4.3), close the carrier: the join is a
    replay or arrived too late. Count it in the statistic `join_replays`. A
    Pipe ID of the other parity goes on to step 7.
-7. From here on the join is authenticated, so violations are the peer's. Wrong
-   parity for the joiner closes the session with PROTOCOL_VIOLATION. A Mode or
-   authorization that local policy refuses (Section 10.5) closes the carrier without
-   setting the Pipe ID's bit, and is counted. Otherwise the acceptor sets the
-   Pipe ID's bit and raises h if the ID is above it. Only then does it perform its side of
-   the key exchange (secure-carrier/SPEC.md Section 11.6), so that a replayed Hello costs
-   at most one AEAD: a share it refuses (`kex`) closes the carrier, is counted, and leaves
-   the bit set. It then applies the first batch (Section 5.2). It then writes the Reply with its decision, which is a read-only
+7. From here on the join is authenticated, so violations are the peer's.
+   Wrong parity for the joiner closes the session with PROTOCOL_VIOLATION.
+   The acceptor MUST complete Mode and authorization checks (Section 10.5)
+   before claiming the Pipe ID. At that commit point it MUST revalidate the
+   authorization and the Join against the current session. It MUST check
+   that the session and carrier can still accept the Join, its authenticated
+   Locator and epoch are still accepted, its deadline has not expired, and
+   the replay checks of step 6 still pass. Revalidation and claiming the ID
+   MUST be atomic. On authorization denial or failed revalidation, the
+   acceptor MUST close the carrier and discard the pending Join without
+   applying its first batch or changing session state.
+
+   To claim the ID, the acceptor sets its bit and raises h if the ID is
+   above it. Only then does it perform its side of the key exchange
+   (secure-carrier/SPEC.md Section 11.6), so that a replayed Hello costs at
+   most one AEAD. A share it refuses (`kex`) closes the carrier, is counted,
+   and leaves the bit set. After a successful exchange it applies the
+   Join-triggered epoch rule of Section 10.7 and then the first batch
+   (Section 5.2). It then writes the Reply with its decision, which is a read-only
    prediction and changes no state. It answers **refuse** when:
    - the direction is one that the carrier cannot provide;
    - the carrier is a stream of a session running, directly or through
@@ -1080,7 +1092,7 @@ point, Section 2.5) does not advance. It has a **write stall** while bytes
 are waiting to be written to it and its carrier makes no progress beyond
 what its rate explains. Bytes wait for p when p would write them if its
 carrier took bytes now: control frames, acknowledgements and probes due on
-p, copies queued for p, and stream data the scheduler would place on p,
+p, copies queued for p, and stream data or record datagrams the scheduler would place on p,
 whether or not other frames are also due. Stream data the peer's flow
 control holds back, data held back by a local rate limiter or a shaping
 delay, and data the scheduler would place on another pipe do not wait for
@@ -1225,7 +1237,7 @@ suspect or failed pipe beyond the acknowledged position:
 | PIPE_STATUS | the latest status for the pipe |
 | PIPE_ABANDON | the same frame, until it is acknowledged (retirement waits for that, Section 8.4) |
 | SESSION_EPOCH | an offer: the same bytes until the answer arrives; an answer: the same bytes until it is acknowledged (Section 10.7) |
-| PIPE_ACK, PIPE_PING, PADDING, QX_PING, DATAGRAM, QX_TRANSPORT_PARAMETERS, CONNECTION_CLOSE | nothing |
+| PIPE_ACK, PIPE_PING, PADDING, QX_PING, DATAGRAM, DATAGRAM_ACK, QX_TRANSPORT_PARAMETERS, CONNECTION_CLOSE | nothing |
 
  Information sent on a pipe is reinjected from
 that pipe at most once: a pipe that is suspect and later fails does not
@@ -1248,14 +1260,11 @@ include:
 
 1. the copies of PIPE_ACK and credit frames of Section 6.5;
 2. **opportunistic reinjection** (Section 7.5.1);
-3. **redundant urgent data**: copies of the STREAM frames of urgent stream
-   directions, and of the first data written on a pipe after an idle
-   period, on one more pipe of the same tier, at most one copy per byte,
-   with the copies whose data is not yet acknowledged bounded by the
-   sender.
+3. **proactive data copies** (Section 7.5.2).
 
-These copies are not reinjection in the sense of Section 7.4, and SPEC.md
-Sections 4.3 and 9.4.3 allow them explicitly; the receiver handles them as duplicates (Section 7.6).
+These copies are allowed by SPEC.md Sections 4.3 and 9.4.3.
+Receivers process duplicate STREAM data under Section 7.6 and datagram
+copies under EXTENSIONS.md Section 6.9.
 
 #### 7.5.1 Opportunistic reinjection
 
@@ -1269,6 +1278,22 @@ again once on another eligible pipe (Section 11).
   ordinary STREAM frames; the receiver handles them as duplicates, which are
   never chargeable (Section 7.6).
 - The trigger is that blocked stream, never a timer.
+
+#### 7.5.2 Proactive data copies
+
+A sender MAY copy STREAM data of an urgent sending direction, the first
+STREAM data on a pipe after an idle period, or a logical datagram. For
+STREAM data it MUST send at most one extra copy per byte. For DATAGRAM it
+MUST follow rule S7 and use the same Datagram Data in each copy
+(EXTENSIONS.md Section 6.9).
+
+The sender MUST dispatch the original and extras on distinct outbound pipes.
+Each extra MUST use an ACTIVE pipe in the original's tier or the next less
+preferred tier among usable pipes of that direction. An endpoint MAY send
+an extra on a standby pipe when its local policy permits it. Rule S2
+defines the exception to normal overflow gating.
+
+The sender's choice to send extra copies is local.
 
 ### 7.6 Duplicates at the receiver
 
@@ -1686,7 +1711,7 @@ Each carrier of a session has a record mode, fixed by its handshake:
   once (Section 5.4 step 6, with the bounded replay window of Section 4.3). A captured
   Hello cannot join a different pipe ID, direction, fate group, priority request or
   session.
-- **No state before verification.** Section 5.4 steps 1 to 6.
+- **Join authorization and state.** Section 5.4 steps 1 to 7.
 - **Replay.** A replayed Hello, including requests that CDNs or HTTP/2 GOAWAY replay, is
   closed at step 6, or if it arrives first it takes the Pipe ID and the original fails as
   if lost. Whoever replays one can neither read the Reply nor make a confirmation, so it
@@ -1763,9 +1788,15 @@ alone, and an exchange targets d+1. `R` is 3 x the maximum join deadline (Sectio
        --recv answer(d+1)--> commit d+1; new joins use d+1; accept {d, d+1}; start timer R
     A: Stable(d) --recv offer(d+1)--> commit d+1; send answer(d+1); accept {d, d+1};
           new joins still use d
-       --first of: a record carrying the answer is acknowledged, or a join of phase
-          (d+1) mod 2 from the peer verifies--> new joins use d+1; start timer R
+       --first of: a record carrying the answer is acknowledged, or a peer Join
+          qualifies for the transition below--> new joins use d+1; start timer R
     both: --timer R expires--> delete d --> Stable(d+1)
+
+For the Join-triggered transition, A MUST use a peer Join authenticated
+with epoch d+1 only after it passes authorization and revalidation under
+Section 5.4 step 7 and the acceptor completes its side of the Join key
+exchange successfully. A denied, invalidated or key-exchange-failed Join
+MUST NOT switch the epoch used for new joins or start or extend timer R.
 
 To commit an epoch is to derive its secret, which needs the peer's share; an endpoint
 accepts the epochs listed and joins with the epoch stated. An endpoint accepts its new
@@ -1819,7 +1850,7 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
   |---|---|
   | ACTIVE | every frame |
   | JOINING | no record. While no outbound pipe is usable (standby pipes included), stream data in the Hello's first batch (Section 5.2), reinjected information first (Section 7.4). A JOINING pipe is not usable until it is ACTIVE (Section 5.7 step 4) |
-  | SUSPECT | every frame except STREAM frames with new stream data (bytes or a FIN not sent before), reinjected information and DATAGRAM frames |
+  | SUSPECT | every frame except STREAM frames with new stream data (bytes or a FIN not sent before) and reinjected information. DATAGRAM placement follows S7 |
   | DRAINING | as SUSPECT until the PIPE_ABANDON exchange for the attachment is complete (Section 8.2); afterwards only PIPE_ACK and CONNECTION_CLOSE |
   | FAILED, CLOSED | nothing |
 
@@ -1830,21 +1861,29 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
   that Section 6.5 describes. A frame sent there is not reinjection. Which
   ACTIVE pipes may take new stream data is further restricted by
   tier gating (S2).
-- S2. Tier gating comes first: new stream data, reinjected information,
-  opportunistic copies and redundant copies (Section 7.5) go only to the
-  eligible pipes (apart from the first batch of S1 while no pipe is usable),
-  and the policy chooses among them. A standby pipe takes new stream data
-  only on failover, when no non-standby pipe of its direction is usable; it
-  is never used for overflow.
+- S2. The sender MUST apply tier gating to new stream data, original
+  datagrams, reinjected information and opportunistic copies. The exceptions
+  are the first batch under S1, the placement under S7, and proactive copies
+  under Section 7.5.2, which may use the tier exception there without
+  waiting for overflow. The sender MUST use standby for originals only on
+  failover, when no ordinary pipe in that direction is usable for that data.
 - S4. Flow control, the sender's bound on retained data and the preamble
   rule (EXTENSIONS.md Section 4.2) apply to every policy; a FIN-only STREAM
   frame is held back neither by flow control nor by that bound (SPEC.md
   Section 8.2).
 - S5. Retransmission only as Section 7 allows.
 - S6. PIPE_ACK placement as Section 6.5.
-- S7. A stream's DATAGRAM frames follow its
-  unacknowledged opening frame (EXTENSIONS.md Section 6.4), even onto a
-  less-preferred tier for about a round trip, and are never reinjected.
+- S7. The sender MUST schedule each datagram independently, subject to this
+  rule and S2. It MUST dispatch a DATAGRAM only on a pipe whose sending
+  direction is ACTIVE, currently writable on the selected record or carrier
+  channel, and able to carry the entire frame (EXTENSIONS.md Section 6.6).
+  For a locally opened stream, until PIPE_ACK covers a record that carries
+  its opening frame, the sender MUST dispatch at most one copy of each
+  associated datagram. It MUST dispatch that copy after the opening frame
+  on a pipe that carried the opening frame or its reinjection, even if
+  that pipe belongs to a less preferred tier. Using a carrier channel or
+  another lane on the same pipe can still reorder arrivals. After
+  confirmation, Section 7.5.2 governs extra copies.
 
 ## 12. Receiver requirements for spread streams
 
@@ -1888,7 +1927,7 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
 | zmux_max_ack_delay | 25 ms | 3.2 |
 | pipe acknowledgement without multipath | `zmux_pipe_ack` sent in every session; PIPE_ACK on pipe 0 by rules 1 and 2 of 6.3, nothing retained | 3.5 |
 | lanes accepted per inbound pipe | absent `zmux_max_lanes` means 1 (no lanes); any value allowed | 3.6 |
-| replay window W | max(64, 2 x (max_pipes + H)) pipe IDs of the peer's parity below and above the highest verified join; at least max_pipes + H | 4.3 |
+| replay window W | max(64, 2 x (max_pipes + H)) pipe IDs of the peer's parity below and above the highest claimed Pipe ID; at least max_pipes + H | 4.3 |
 | first batch | at most 8 KiB, within a Hello of 8192 bytes | 5.2 |
 | attachment headroom H | 8 | 5.4 |
 | unretired attachments of the peer | at most max_pipes + H, the bootstrap pair included; beyond that joins are refused, or, while suspended, one attachment is displaced | 5.4 |
@@ -1920,8 +1959,8 @@ gating lets it take the next chunk: pipes of a less-preferred tier (Section
   replay window with their pending PIPE_ABANDON (Section 4.3). Frames about
   IDs of the receiver's own parity that it has not taken are fatal, and
   PIPE_STATUS for IDs without attachment state is ignored (Section 9), so no
-  frame makes the receiver store state per unknown ID. Only verified joins
-  move the replay window, so frames injected on an unprotected carrier
+  frame makes the receiver store state per unknown ID. Claiming a Pipe ID
+  under Section 5.4 is what moves the window, so frames injected on an unprotected carrier
   cannot push it past the joiner's future pipe IDs.
 - A peer that keeps joining beyond the cap is refused each time; the
   refused joins cost state only inside the replay window, and their rate is

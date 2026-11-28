@@ -200,112 +200,68 @@ def core_handshake():
     t.frames(0, SDATA(1, LOCAL_FIRST_PRE + b"hi", fin=False))
     out.append(t)
 
-    EARLY = {"config": {"early_data": {"zmux_peer": True, "replayable": False}}}
     E6 = "SPEC.md#6.1.2"
-    FENCE = PIPE_ACK((0, 0, 0))
-    FLOOR_PEER = peer_ack(initial_max_data=65536, initial_max_stream_data_bidi_remote=8192,
-                          initial_max_streams_bidi=8, zmux_preamble=1024)
-
-    t = Trace("core.handshake.early_data_floor",
-              "With the peer declared a zmux endpoint, stream data goes out before the peer's "
-              "parameters, behind the PIPE_ACK fence and within the floor (4096 bytes a stream)",
-              [E6, "SPEC.md#5.1"], local_role="initiator", overrides=EARLY)
-    t.up(0, "bidi", via="bootstrap")
-    data = bytes(i % 251 for i in range(5000))
+    family = "SPEC.md#5.5"
+    t = Trace("core.handshake.application_waits_for_family",
+              "A bootstrap sends application frames only after same-family confirmation",
+              [E6, family], local_role="initiator")
+    t.up(0, via="bootstrap")
+    local_tp_first(t)
     t.api("open_bidi", bind="a", expect={"ok": True})
-    t.api("write", stream="a", data=data, fin=False, expect={"accepted": 5000})
-    full = LOCAL_FIRST_PRE + data
-    t.frames(0, TP_ANY, FENCE, SDATA(0, full[:4096]), match="contains")
-    t.send(0, [TP(tp_list(FLOOR_PEER))])
-    t.event("established", features=ACK_FEATURES, role="initiator")
-    t.frames(0, SDATA(0, full[4096:], off=4096))
-    t.is_open()
-    out.append(t)
-
-    t = Trace("core.handshake.early_data_floor_limits",
-              "Under the floor at most four bidirectional streams carry early data, 4096 bytes "
-              "each and 16384 in all; the rest waits for the peer's parameters",
-              [E6], local_role="initiator", overrides=EARLY)
-    t.up(0, "bidi", via="bootstrap")
-    data = bytes(i % 241 for i in range(5000))
-    pres = [LOCAL_FIRST_PRE] + [EMPTY_PRE] * 4
-    for k in range(5):
-        t.api("open_bidi", bind=f"s{k}", expect={"ok": True})
-        t.api("write", stream=f"s{k}", data=data, fin=True, expect={"accepted": 5000})
-    t.frames(0, TP_ANY, FENCE, *[SDATA(4 * k, (pres[k] + data)[:4096]) for k in range(4)],
-             {"type": "STREAM", "id": 16, "count": 0}, match="unordered")
-    t.send(0, [TP(tp_list(FLOOR_PEER))])
-    t.event("established", features=ACK_FEATURES, role="initiator")
-    t.frames(0, *[SDATA(4 * k, (pres[k] + data)[4096:], off=4096, fin=True) for k in range(4)],
-             SDATA(16, EMPTY_PRE + data, fin=True), match="unordered")
-    out.append(t)
-
-    t = Trace("core.handshake.early_data_plain_peer_rejected",
-              "A peer declared zmux that turns out to be a plain QMux peer has rejected the "
-              "early data at the fence: the endpoint closes with NO_ERROR and reports early "
-              "data rejected", [E6, "SPEC.md#13.1"], local_role="initiator", overrides=EARLY)
-    t.up(0, "bidi", via="bootstrap")
-    t.api("open_bidi", bind="a", expect={"ok": True})
-    t.api("write", stream="a", data=b"hi", fin=True, expect={"accepted": 2})
-    t.frames(0, TP_ANY, FENCE, SDATA(0, LOCAL_FIRST_PRE + b"hi", fin=True), match="contains")
-    t.send(0, [TP(tp_list(peer_plain(), grease=None))])
-    t.frames(0, CLOSE(0))
-    t.closed("EARLY_DATA_REJECTED", space="local")
-    out.append(t)
-
-    t = Trace("core.handshake.early_data_no_streams_rejected",
-              "A zmux peer that accepts no bidirectional streams has rejected early data at "
-              "the first STREAM frame", [E6], local_role="initiator", overrides=EARLY)
-    t.up(0, "bidi", via="bootstrap")
-    t.api("open_bidi", bind="a", expect={"ok": True})
-    t.api("write", stream="a", data=b"hi", fin=True, expect={"accepted": 2})
-    t.frames(0, TP_ANY, FENCE, SDATA(0, LOCAL_FIRST_PRE + b"hi", fin=True), match="contains")
-    t.send(0, [TP(tp_list(dict(FLOOR_PEER, initial_max_streams_bidi=0)))])
-    t.frames(0, CLOSE(0))
-    t.closed("EARLY_DATA_REJECTED", space="local")
-    out.append(t)
-
-    t = Trace("core.handshake.early_data_peer_below_floor",
-              "After sending early data, a zmux peer whose parameters are below the floor is "
-              "a TRANSPORT_PARAMETER_ERROR", [E6], local_role="initiator", overrides=EARLY)
-    t.up(0, "bidi", via="bootstrap")
-    t.api("open_bidi", bind="a", expect={"ok": True})
-    t.api("write", stream="a", data=b"hi", fin=True, expect={"accepted": 2})
-    t.frames(0, TP_ANY, FENCE, SDATA(0, LOCAL_FIRST_PRE + b"hi", fin=True), match="contains")
+    t.api("write", stream="a", data=b"hello", fin=True, expect={"accepted": 5})
+    t.no_frames(0, ["STREAM", "PIPE_ACK", "DATAGRAM"])
     t.send(0, [TP(tp_list(peer_ack()))])
-    t.closed("TRANSPORT_PARAMETER_ERROR")
+    t.event("established", features=ACK_FEATURES, role="initiator")
+    t.frames(0, SDATA(0, LOCAL_FIRST_PRE + b"hello", fin=True))
     out.append(t)
 
-    t = Trace("core.handshake.early_data_not_with_role_auto",
-              "An endpoint whose role depends on the peer (role auto) sends no early data",
-              [E6, "EXTENSIONS.md#2.3"], profile="zmux-role-auto", overrides=EARLY)
-    t.up(0, "bidi", via="bootstrap")
+    for name, extra in [("missing_datagram_family", {}),
+                        ("retired_datagram_parameter", {"zmux_datagram_flows": None})]:
+        for role in ("initiator", "responder"):
+            extra_tp = peer_ack(**extra)
+            del extra_tp["zmux_datagram_family"]
+            t = Trace(f"core.handshake.{name}_{role}",
+                      "Incompatible bootstrap parameters stop coalesced stream data",
+                      [family, "EXTENSIONS.md#6.2", E6], local_role=role)
+            t.up(0, via="bootstrap")
+            local_tp_first(t)
+            t.send(0, [TP(tp_list(extra_tp)), PIPE_ACK((0, 0, 0)),
+                       STREAM(1 if role == "initiator" else 0, EMPTY_PRE + b"no", fin=True)],
+                   invalid=True, carrier_early=role == "responder")
+            t.closed("TRANSPORT_PARAMETER_ERROR")
+            t.no_event("established")
+            out.append(t)
+
+    t = Trace("core.handshake.family_carrier_early_application",
+              "Carrier early application data from a same-family peer is rejected",
+              [E6, family])
+    t.up(0, via="bootstrap")
+    local_tp_first(t)
+    t.send(0, [TP(tp_list(peer_ack())), STREAM(0, EMPTY_PRE + b"early", fin=True)],
+           carrier_early=True)
+    t.closed("PROTOCOL_VIOLATION")
+    out.append(t)
+
+    t = Trace("compat.qmux.remembered_early_data", "Remembered plain QMux 0-RTT stays opaque",
+              [E6, "SPEC.md#13.2"], local_role="initiator")
+    plain = peer_plain()
+    t.up(0, via="bootstrap", remembered_plain=plain)
     local_tp_first(t)
     t.api("open_bidi", bind="a", expect={"ok": True})
-    t.api("write", stream="a", data=b"x", fin=True, expect={"accepted": 1})
-    t.no_frames(0, ["STREAM", "PIPE_ACK"])
-    out.append(t)
-
-    t = Trace("core.handshake.early_data_received",
-              "Early data from a zmux peer, behind its fence in the record of its parameters, "
-              "is processed like any data; the fence's Position 0 is ignored", [E6],
-              )
-    t.up(0, "bidi", via="bootstrap")
-    local_tp_first(t)
-    t.send(0, [TP(tp_list(peer_ack())), FENCE, STREAM(0, EMPTY_PRE + b"hello", fin=True)])
-    t.event("established", features=ACK_FEATURES)
-    t.api("accept_bidi", bind="s", expect={"stream": 0})
-    t.api("read", stream="s", max=10, expect={"data": b"hello", "fin": True})
+    t.api("write", stream="a", data=b"plain", fin=True, expect={"accepted": 5})
+    t.frames(0, SDATA(0, b"plain", fin=True))
+    t.send(0, [TP(tp_list(plain))])
+    t.event("established", features=[])
     t.is_open()
     out.append(t)
 
-    t = Trace("core.handshake.early_fence_stops_peer_without_pipe_ack",
-              "Where PIPE_ACK is not in use the fence is an unknown frame: the session closes "
-              "before the early STREAM frame after it is processed", [E6, "SPEC.md#4.1"])
-    t.up(0, "bidi", via="bootstrap")
+    t = Trace("compat.qmux.receive_early_data", "A plain QMux client can send 0-RTT STREAM data",
+              [E6, "SPEC.md#13.2"], local_role="responder")
+    t.up(0, via="bootstrap")
     local_tp_first(t)
-    t.send(0, [TP(tp_list(peer_small())), FENCE, STREAM(0, EMPTY_PRE + b"hello", fin=True)])
-    t.closed("FRAME_ENCODING_ERROR")
+    t.send(0, [TP(tp_list(peer_plain())), STREAM(0, b"plain", fin=True)], carrier_early=True)
+    t.api("accept_bidi", bind="s", expect={"stream": 0})
+    t.api("read", stream="s", max=10, expect={"data": b"plain", "fin": True})
     out.append(t)
 
     t = Trace("core.handshake.timeout", "Establishment is abandoned after the handshake timeout",
@@ -1698,134 +1654,348 @@ def ext_priority():
 
 def ext_datagram():
     out = []
-    peer_dg = peer_small(max_datagram_frame_size=1200, zmux_datagram_flows=None)
+    dgram_tp = {"max_datagram_frame_size": 1200}
+    peer_dg = peer_small(**dgram_tp)
+    fmt = "EXTENSIONS.md#6.3"
+    dedup = "EXTENSIONS.md#6.9"
+    ack = "EXTENSIONS.md#6.10"
+    sched = "MULTIPATH.md#11"
+    copies = "MULTIPATH.md#7.5.2"
+    family = {"zmux_carrier_datagrams": None}
+    dg_mp = dict(dgram_tp, **family)
+    padding_tp = {"zmux_carrier_datagram_padding": None}
 
-    def F_(stream, ctx, payload):
-        return P_flow(stream, ctx) + payload
+    def case(name, title, refs, profile="zmux-small-dgram", test=None, tp=None, config=None,
+             local_role="responder", group="ext.datagram"):
+        overrides = {"tp": tp or {}, "test": {"datagram": test or {}}}
+        if config is not None:
+            overrides["config"] = config
+        t = Trace(f"{group}.{name}", title, refs, profile=profile, overrides=overrides,
+                  local_role=local_role)
+        out.append(t)
+        return t
 
-    def P_flow(stream, ctx):
-        from zmuxwire.preamble import encode_flow_prefix
-        return encode_flow_prefix(stream, ctx)
+    mp_config = {"enable_datagrams": True}
 
-    t = Trace("ext.datagram.opaque_without_flows", "Without flows, datagram data is opaque",
-              ["EXTENSIONS.md#6.1"], profile="zmux-small-dgram")
-    t.handshake(peer_small(max_datagram_frame_size=1200), features=BASE_FEATURES)
-    t.send(0, [DATAGRAM(b"hello")])
-    t.api("recv_datagram", expect={"data": b"hello"})
-    out.append(t)
+    def mp_case(name, title, refs, test=None):
+        t = case(name, title, refs, "zmux-mp", test, dg_mp, config=mp_config)
+        mp_handshake(t, peer_mp(**dg_mp), channel=True)
+        return t
 
-    t = Trace("ext.datagram.not_advertised", "A DATAGRAM without local support is fatal",
-              ["EXTENSIONS.md#6.1"])
+    def channel(t, pipe, sequence, data=b"", stream=None, *, padding=0):
+        d = ZDATAGRAM(sequence, data, stream=stream, has_len=False)
+        t._add(op="peer_datagram", pipe=pipe, hex=bytes(padding) + F.encode_frame(d))
+
+    for role in ("initiator", "responder"):
+        t = case(f"datagram_opaque_{role}", "Plain QMux Datagram Data is opaque in both directions",
+                 ["EXTENSIONS.md#6.2", "EXTENSIONS.md#6.8", "SPEC.md#13.2"],
+                 tp=dict(family, **padding_tp), local_role=role, group="compat.qmux")
+        t.handshake(peer_plain(**dgram_tp), features=[], channel=True)
+        channel(t, 0, 0, b"native", padding=1)
+        t.api("recv_datagram", expect={"pending": True})
+        t.send(0, [DATAGRAM(b"\xc0"), DATAGRAM(b"\xc0")])
+        for _ in range(2):
+            t.api("recv_datagram", expect={"data": b"\xc0"})
+        t.api("send_datagram", data=b"opaque", expect={"ok": True})
+        t.frames(0, {"type": "DATAGRAM", "data": b"opaque"})
+        t.adv(1000)
+        t.no_frames("*", ["DATAGRAM_ACK"])
+
+    t = case("not_advertised", "A DATAGRAM without local support closes the session",
+             ["EXTENSIONS.md#6.1"], profile="zmux-small")
     t.handshake(peer_small())
-    t.send(0, [DATAGRAM(b"x")])
+    t.send(0, [ZDATAGRAM(0, b"x")])
     t.closed("PROTOCOL_VIOLATION")
-    out.append(t)
 
-    t = Trace("ext.datagram.too_large", "A DATAGRAM larger than advertised is fatal",
-              ["EXTENSIONS.md#6.1"], profile="zmux-small-dgram")
-    t.handshake(peer_dg, features=BASE_FEATURES + ["datagram_flows"])
-    t.send(0, [DATAGRAM(b"\x00" + b"x" * 1200)])
+    t = case("too_large", "The DATAGRAM size check includes Sequence and Flow",
+             ["EXTENSIONS.md#6.1", "EXTENSIONS.md#6.6"])
+    t.handshake(peer_dg)
+    t.send(0, [ZDATAGRAM(64, b"x" * 1197, has_len=False)])
     t.closed("PROTOCOL_VIOLATION")
-    out.append(t)
 
-    t = Trace("ext.datagram.flow_associated", "A flow prefix associates a datagram with a stream",
-              ["EXTENSIONS.md#6.3"], profile="zmux-small-dgram")
-    t.handshake(peer_dg, features=BASE_FEATURES + ["datagram_flows"])
-    t.send(0, [STREAM(0, pre(open_info=b"8.8.8.8:53"))], [DATAGRAM(F_(0, 0, b"query"))],
-           [DATAGRAM(F_(0, 7, b"other-context"))], [DATAGRAM(F_(None, 0, b"session-wide"))])
-    t.api("accept_bidi", bind="s", expect={"stream": 0, "open_info": b"8.8.8.8:53"})
-    t.note("Stream datagrams go only to the stream's queue; the session queue gets Flow 0.")
-    t.api("recv_datagram", expect={"data": b"session-wide"})
+    t = case("flow_associated", "Datagrams enter their session or stream queue across varint boundaries",
+             [fmt, dedup])
+    t.handshake(peer_dg, features=BASE_FEATURES)
+    t.send(0, [STREAM(0, pre(open_info=b"target"))], [ZDATAGRAM(63, b"query", stream=0)],
+           [ZDATAGRAM(64, b"other-context", stream=0, context=7)],
+           [ZDATAGRAM(16383, b"short")], [ZDATAGRAM(16384, b"long")],
+           [ZDATAGRAM((1 << 30) - 1, b"wide")], [ZDATAGRAM(1 << 30, b"widest")])
+    t.api("accept_bidi", bind="s", expect={"stream": 0, "open_info": b"target"})
+    for data in (b"short", b"long", b"wide", b"widest"):
+        t.api("recv_datagram", expect={"data": data})
     t.api("recv_datagram", expect={"pending": True})
     t.api("recv_datagram", stream="s", expect={"data": b"query", "context": 0})
     t.api("recv_datagram", stream="s", expect={"data": b"other-context", "context": 7})
     t.api("recv_datagram", stream="s", expect={"pending": True})
-    out.append(t)
 
-    for name, title, payload in [
-        ("flow_unidirectional", "A flow naming a unidirectional stream is fatal", F_(2, 0, b"x")),
-        ("flow_unopened_local", "A flow naming an unopened local stream is fatal", F_(1, 0, b"x")),
-        ("flow_beyond_limit", "A flow naming a stream beyond the limit is fatal", F_(16, 0, b"x")),
-        ("flow_prefix_truncated", "A datagram without a complete flow prefix is fatal", b""),
+    for name, title, frame in [
+        ("flow_unidirectional", "A flow naming a unidirectional stream is fatal", ZDATAGRAM(0, stream=2)),
+        ("flow_unopened_local", "An unopened local stream is an invalid flow", ZDATAGRAM(0, stream=1)),
+        ("flow_beyond_limit", "A stream beyond the limit is an invalid flow", ZDATAGRAM(0, stream=16)),
+        ("sequence_truncated", "Sequence must be a complete varint", DATAGRAM(b"\x40")),
+        ("flow_prefix_truncated", "Flow must be a complete varint", DATAGRAM(b"\x00\x40")),
+        ("context_truncated", "A positive Flow requires a complete Context ID", DATAGRAM(b"\x00\x01")),
     ]:
-        t = Trace(f"ext.datagram.{name}", title, ["EXTENSIONS.md#6.3", "EXTENSIONS.md#6.4"],
-                  profile="zmux-small-dgram")
-        t.handshake(peer_dg, features=BASE_FEATURES + ["datagram_flows"])
-        t.send(0, [DATAGRAM(payload)])
+        t = case(name, title, [fmt, "EXTENSIONS.md#6.4"])
+        t.handshake(peer_dg)
+        t.send(0, [frame])
         t.closed("PROTOCOL_VIOLATION")
-        out.append(t)
 
-    t = Trace("ext.datagram.flow_closed_stream_dropped",
-              "Datagrams for a finished stream are dropped silently",
-              ["EXTENSIONS.md#6.4"], profile="zmux-small-dgram")
-    t.handshake(peer_dg, features=BASE_FEATURES + ["datagram_flows"])
+    t = case("flow_closed_stream_dropped", "A datagram for a finished stream is discarded",
+             ["EXTENSIONS.md#6.4"])
+    t.handshake(peer_dg)
     t.send(0, [STREAM(0, EMPTY_PRE + b"q", fin=True)])
     t.api("accept_bidi", bind="s", expect={"stream": 0})
     t.api("read", stream="s", max=10, expect={"data": b"q", "fin": True})
     t.api("finish", stream="s", expect={"ok": True})
-    t.frames(0, STREAM(0, b"", fin=True))
+    t.frames(0, STREAM(0, fin=True))
     t.api("release", stream="s", expect={"ok": True})
-    t.send(0, [DATAGRAM(F_(0, 0, b"late"))])
+    t.send(0, [ZDATAGRAM(0, b"late", stream=0)])
     t.api("recv_datagram", expect={"pending": True})
     t.is_open()
-    out.append(t)
 
-    t = Trace("ext.datagram.send_too_large", "A datagram that does not fit is refused locally",
-              ["EXTENSIONS.md#6.1"], profile="zmux-small-dgram")
-    t.handshake(peer_dg, features=BASE_FEATURES + ["datagram_flows"])
-    t.api("send_datagram", data=b"y" * 2000, expect=err("too_large"))
-    t.no_frames(0, ["DATAGRAM"])
-    out.append(t)
-
-    t = Trace("ext.datagram.send_with_flow", "Sent datagrams carry the flow prefix",
-              ["EXTENSIONS.md#6.3"], profile="zmux-small-dgram")
-    t.handshake(peer_dg, features=BASE_FEATURES + ["datagram_flows"])
+    t = case("send_with_flow", "The sender shares one sequence across session and stream datagrams",
+             [fmt, dedup])
+    t.handshake(peer_dg)
     t.send(0, [STREAM(0, EMPTY_PRE + b"x")])
     t.api("accept_bidi", bind="s", expect={"stream": 0})
     t.api("send_datagram", data=b"abc", stream="s", context=0, expect={"ok": True})
-    t.frames(0, {"type": "DATAGRAM", "data": F_(0, 0, b"abc")})
-    out.append(t)
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"abc", stream=0)["data"]})
+    t.api("send_datagram", data=b"session", expect={"ok": True})
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(1, b"session")["data"]})
 
-    t = Trace("ext.datagram.send_queue_drops_oldest",
-              "Datagrams wait in a 64-entry send queue while the pipe is not writable; the oldest "
-              "is dropped, and sending never blocks", ["EXTENSIONS.md#6.5"],
-              profile="zmux-small-dgram")
-    t.handshake(peer_small(max_datagram_frame_size=1200), features=BASE_FEATURES)
-    t.writable(0, False)
-    for i in range(65):
-        t.api("send_datagram", data=b"%02d" % i, expect={"ok": True})
-    t.writable(0, True)
-    t.frames(0, {"type": "DATAGRAM", "count": 64}, {"type": "DATAGRAM", "data": b"00", "count": 0},
-             {"type": "DATAGRAM", "data": b"01"}, {"type": "DATAGRAM", "data": b"64"},
-             match="unordered")
-    out.append(t)
+    t = case("sequence_exhaustion", "The maximum sequence can be dispatched once",
+             [dedup], test={"next_sequence": (1 << 62) - 1})
+    t.handshake(peer_dg)
+    t.api("send_datagram", data=b"last")
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM((1 << 62) - 1, b"last")["data"]})
+    t.api("send_datagram", data=b"exhausted")
+    t.no_frames("*", ["DATAGRAM"])
 
-    t = Trace("ext.datagram.receive_queue_overflow",
-              "A full 128-entry session receive queue drops its oldest datagram and counts it, "
-              "never an error", ["EXTENSIONS.md#6.5"], profile="zmux-small-dgram")
-    t.handshake(peer_small(max_datagram_frame_size=1200), features=BASE_FEATURES)
-    t.send(0, [DATAGRAM(b"%03d" % i) for i in range(129)])
-    t.event("datagram_dropped", count=1)
-    for i in range(1, 129):
-        t.api("recv_datagram", expect={"data": b"%03d" % i})
+    t = case("dedup_window", "In-window reordering is allowed and H minus W is outside the window",
+             [dedup], test={"window": 64})
+    t.handshake(peer_dg)
+    t.send(0, [ZDATAGRAM(64, b"high"), ZDATAGRAM(1, b"reordered"), ZDATAGRAM(0, b"stale")])
+    t.api("recv_datagram", expect={"data": b"high"})
+    t.api("recv_datagram", expect={"data": b"reordered"})
+    t.send(0, [ZDATAGRAM(1, b"reordered"), ZDATAGRAM(64, b"high")])
     t.api("recv_datagram", expect={"pending": True})
     t.is_open()
-    out.append(t)
 
-    t = Trace("ext.datagram.stream_queue_overflow",
-              "A stream's 32-entry datagram queue drops its oldest datagram; stream datagrams "
-              "never spill into the session queue", ["EXTENSIONS.md#6.5"],
-              profile="zmux-small-dgram")
-    t.handshake(peer_dg, features=BASE_FEATURES + ["datagram_flows"])
-    t.send(0, [STREAM(0, EMPTY_PRE + b"x")], [DATAGRAM(F_(0, 0, b"%02d" % i)) for i in range(33)])
+    t = mp_case("dedup_across_paths", "A native copy and a record copy share the delivery window",
+                [dedup, "EXTENSIONS.md#6.8"])
+    join_up(t, "c2", 2, channel=True)
+    channel(t, 2, 1, b"copy")
+    t.send(0, [ZDATAGRAM(1, b"copy"), ZDATAGRAM(0, b"earlier")])
+    t.api("recv_datagram", expect={"data": b"copy"})
+    t.api("recv_datagram", expect={"data": b"earlier"})
+    t.api("recv_datagram", expect={"pending": True})
+
+    for name, local_extra, peer_extra in [("both", padding_tp, padding_tp),
+                                          ("local_only", padding_tp, {}),
+                                          ("peer_only", {}, padding_tp)]:
+        t = case(f"channel_padding_{name}", "Channel padding requires both declarations",
+                 ["EXTENSIONS.md#6.8", dedup], "zmux-mp", tp=dict(dg_mp, **local_extra),
+                 config=mp_config)
+        mp_handshake(t, peer_mp(**dg_mp, **peer_extra), channel=True)
+        channel(t, 0, 0, b"bare\x00")
+        t.api("recv_datagram", expect={"data": b"bare\x00"})
+        channel(t, 0, 1, b"a\x00", padding=2)
+        if local_extra and peer_extra:
+            t.api("recv_datagram", expect={"data": b"a\x00"})
+            t.send(0, [ZDATAGRAM(1, b"a\x00")])
+            t.api("recv_datagram", expect={"pending": True})
+            t.is_open()
+        else:
+            t.closed("PROTOCOL_VIOLATION")
+
+    t = mp_case("dedup_two_records", "The same sequence on two pipes is delivered once", [dedup])
+    join_up(t, "c2", 2)
+    t.send(0, [ZDATAGRAM(0, b"copy")])
+    t.send(2, [ZDATAGRAM(0, b"copy")])
+    t.api("recv_datagram", expect={"data": b"copy"})
+    t.api("recv_datagram", expect={"pending": True})
+
+    t = mp_case("hold_failure", "A rejected hold advances H and leaves its sequence free",
+                [dedup, "EXTENSIONS.md#6.4"], test={"window": 64, "hold_packets": 0})
+    t.send(0, [ZDATAGRAM(64, b"early", stream=0), ZDATAGRAM(0, b"stale")])
+    t.api("recv_datagram", expect={"pending": True})
+    t.send(0, [STREAM(0, EMPTY_PRE)])
     t.api("accept_bidi", bind="s", expect={"stream": 0})
-    t.event("datagram_dropped", count=1)
-    for i in range(1, 33):
-        t.api("recv_datagram", stream="s", expect={"data": b"%02d" % i, "context": 0})
+    t.send(0, [ZDATAGRAM(64, b"early", stream=0)])
+    t.api("recv_datagram", stream="s", expect={"data": b"early", "context": 0})
+
+    t = mp_case("hold_expiry", "An expired hold releases its slot and duplicates do not extend it",
+                [dedup, "EXTENSIONS.md#6.4"], test={"hold_packets": 1, "hold_ms": 10})
+    join_up(t, "c2", 2, channel=True)
+    channel(t, 2, 0, b"early", stream=0)
+    t.adv(9)
+    channel(t, 2, 0, b"early", stream=0)
+    t.adv(1)
+    t.send(0, [STREAM(0, EMPTY_PRE)])
+    t.api("accept_bidi", bind="s", expect={"stream": 0})
     t.api("recv_datagram", stream="s", expect={"pending": True})
-    t.api("recv_datagram", expect={"pending": True})
+    t.send(0, [ZDATAGRAM(0, b"early", stream=0)])
+    t.api("recv_datagram", stream="s", expect={"data": b"early", "context": 0})
+    t.api("recv_datagram", stream="s", expect={"pending": True})
+
+    t = mp_case("hold_delivery", "A datagram held before its opener is delivered once",
+                [dedup, "EXTENSIONS.md#6.4"], test={"hold_packets": 1, "hold_ms": 10})
+    join_up(t, "c2", 2, channel=True)
+    channel(t, 2, 0, b"early", stream=0)
+    t.send(0, [ZDATAGRAM(0, b"early", stream=0)], [STREAM(0, EMPTY_PRE)])
+    t.api("accept_bidi", bind="s", expect={"stream": 0})
+    t.api("recv_datagram", stream="s", expect={"data": b"early", "context": 0})
+    t.api("recv_datagram", stream="s", expect={"pending": True})
+
+    t = mp_case("active_writable_only", "A datagram waits when no outbound path qualifies", [sched])
+    join_up(t, "c2", 2, "up")
+    t.writable(0, False)
+    t.api("send_datagram", data=b"wait", expect={"ok": True})
+    t.no_frames("*", ["DATAGRAM"])
+    t.writable(0, True)
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"wait")["data"]})
     t.is_open()
-    out.append(t)
+
+    t = mp_case("copies_wait_for_open_ack", "The first copy follows the opener before confirmation",
+                [sched, copies], test={"copies": 2})
+    join_up(t, "c2", 2, "bidi")
+    t.writable(2, False)
+    t.api("open_bidi", bind="s", expect={"ok": True})
+    t.api("write", stream="s", data=b"x", expect={"accepted": 1})
+    t.frames(0, SDATA(1, LOCAL_FIRST_PRE + b"x"))
+    t.writable(2, True)
+    t.api("send_datagram", stream="s", data=b"first")
+    t.no_frames(2, ["DATAGRAM"])
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"first", stream=1)["data"]})
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.api("send_datagram", stream="s", data=b"confirmed")
+    for pipe in (0, 2):
+        t.frames(pipe, {"type": "DATAGRAM", "data": ZDATAGRAM(1, b"confirmed", stream=1)["data"]},
+                 match="unordered")
+    t.no_frames("*", ["DATAGRAM"])
+
+    t = mp_case("copies_next_tier", "An extra copy can use the next tier without overflow",
+                [sched, copies], test={"copies": 2})
+    join_up(t, "c2", 2, "bidi", priority=1)
+    t.api("send_datagram", data=b"across-tiers")
+    for pipe in (0, 2):
+        t.frames(pipe, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"across-tiers")["data"], "count": 1},
+                 match="unordered")
+
+    t = mp_case("no_reinjection", "A failed pipe does not reinject its datagrams", ["EXTENSIONS.md#6.5"])
+    join_up(t, "c2", 2, "bidi")
+    t.writable(2, False)
+    t.api("send_datagram", data=b"lost")
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"lost")["data"]})
+    t.writable(2, True)
+    t.down(0)
+    t.no_frames(2, ["DATAGRAM"])
+    t.is_open()
+
+    t = case("expiry_is_local", "Expiry leaves no frame and does not consume a sequence",
+             [dedup, sched], test={"ttl_ms": 10})
+    t.handshake(peer_dg)
+    t.writable(0, False)
+    t.api("send_datagram", data=b"expired")
+    t.adv(10)
+    t.writable(0, True)
+    t.no_frames("*", ["DATAGRAM"])
+    t.api("send_datagram", data=b"fresh")
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"fresh")["data"]})
+
+    padded_tp = dict(dg_mp, **padding_tp)
+    t = case("state_survives_resume", "Resume preserves datagram sequences and channel padding",
+             [dedup, "EXTENSIONS.md#6.8", "RESUME.md#4.3"], profile="zmux-mp-resume",
+             tp=padded_tp, config=mp_config)
+    mp_handshake(t, peer_mp(zmux_resume=60000, **padded_tp), features=MP_FEATURES + ["resume"],
+                 channel=True)
+    t.api("send_datagram", data=b"before")
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"before")["data"]})
+    t.send(0, [ZDATAGRAM(0, b"inbound")])
+    t.api("recv_datagram", expect={"data": b"inbound"})
+    t.down(0)
+    t.state(session="SUSPENDED")
+    join_up(t, "c2", 2, "bidi", extra=[PIPE_ACK((0, SENT(0), 0)), PIPE_PING()], channel=True)
+    t.state(session="ACTIVE")
+    channel(t, 2, 0, b"inbound", padding=1)
+    channel(t, 2, 1, b"new", padding=2)
+    t.api("recv_datagram", expect={"data": b"new"})
+    t.api("recv_datagram", expect={"pending": True})
+    t.api("send_datagram", data=b"after")
+    t.frames(2, {"type": "DATAGRAM", "data": ZDATAGRAM(1, b"after")["data"]})
+
+    t = case("foreign_resume_locator", "A foreign locator cannot restore state or apply a first batch",
+             ["MULTIPATH.md#5.4", "RESUME.md#4.3"], profile="zmux-mp-resume",
+             tp=dgram_tp, config=mp_config)
+    mp_handshake(t, peer_mp(zmux_resume=60000, **dgram_tp), features=MP_FEATURES + ["resume"])
+    t.down(0)
+    t.state(session="SUSPENDED")
+    peer_hello(t, "foreign", 2, "up", locator=b"foreign-family",
+               batch=[STREAM(0, EMPTY_PRE + b"ignored")], outcome="reject")
+    t.state(session="SUSPENDED")
+    t.no_event("resumed")
+    t.api("accept_bidi", expect={"pending": True})
+
+    t = mp_case("ack_no_return_pipe", "Received datagrams cannot solicit a report without a return pipe",
+                [ack], test={"feedback": True})
+    join_up(t, "c2", 2, "up")
+    t.writable(0, False)
+    t.send(2, [ZDATAGRAM(0, b"incoming")])
+    t.adv(25)
+    t.no_frames("*", ["DATAGRAM_ACK"])
+    t.api("recv_datagram", expect={"data": b"incoming"})
+
+    t = mp_case("ack_cross_path", "Both copies are reported by their pipe and channel",
+                [ack, dedup], test={"feedback": True})
+    join_up(t, "c2", 2, "up", channel=True)
+    t.send(0, [ZDATAGRAM(0, b"copy")])
+    channel(t, 2, 0, b"copy")
+    t.adv(25)
+    t.frames(0, {"type": "DATAGRAM_ACK", "pipe": 0, "channel": 0, "largest": 0},
+             {"type": "DATAGRAM_ACK", "pipe": 2, "channel": 1, "largest": 0}, match="unordered")
+    t.api("recv_datagram", expect={"data": b"copy"})
+    t.api("recv_datagram", expect={"pending": True})
+    t.adv(1000)
+    t.no_frames("*", ["DATAGRAM_ACK"])
+
+    t = case("ack_limits", "Feedback obeys both spacing and the one-second count",
+             [ack], test={"feedback": True})
+    t.handshake(peer_dg)
+    t.send(0, [ZDATAGRAM(0, b"a")])
+    t.frames(0, {"type": "DATAGRAM_ACK", "largest": 0, "count": 1}, match="unordered")
+    t.send(0, [ZDATAGRAM(1, b"b")])
+    t.adv(1)
+    t.no_frames(0, ["DATAGRAM_ACK"])
+    t.adv(24)
+    t.frames(0, {"type": "DATAGRAM_ACK", "largest": 1, "count": 1}, match="unordered")
+    t.send(0, [ZDATAGRAM(2, b"c")])
+    t.adv(25)
+    t.no_frames("*", ["DATAGRAM_ACK"])
+
+    t = case("ack_direction_and_late", "Sending datagrams alone produces no feedback",
+             [ack], test={"feedback": True})
+    t.handshake(peer_dg)
+    t.api("send_datagram", data=b"out")
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"out")["data"]})
+    t.send(0, [DATAGRAM_ACK(0, 0, 0), DATAGRAM_ACK(0, 0, 0),
+               DATAGRAM_ACK(2, 0, 0), DATAGRAM_ACK(0, 1, 99)])
+    t.adv(25)
+    t.no_frames("*", ["DATAGRAM", "DATAGRAM_ACK"])
+    t.is_open()
+
+    t = case("ack_one_way_datagram_capability", "Feedback uses the report sender's datagram limit",
+             [ack], profile="zmux-small")
+    t.handshake(peer_dg)
+    t.api("send_datagram", data=b"out")
+    t.frames(0, {"type": "DATAGRAM", "data": ZDATAGRAM(0, b"out")["data"]})
+    t.send(0, [DATAGRAM_ACK(0, 0, 0)])
+    t.is_open()
+
+    t = case("ack_without_capability", "An ACK sender needs its own datagram capability", [ack])
+    t.handshake(peer_small())
+    t.send(0, [DATAGRAM_ACK(0, 0, 0)])
+    t.closed("FRAME_ENCODING_ERROR")
     return out
 
 
@@ -2497,10 +2667,16 @@ def two_pipes(t):
     t.writable(2, True)
 
 
-def tiered(t, rtt=None):
+def tiered(t, prove_bootstrap=False):
     """Pipe 0 is a less-preferred tier (send priority 5), pipe 2 a preferred one (2)."""
     mp_handshake(t)
     t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    if prove_bootstrap:
+        t.note("Let the bootstrap pipe's Settle hold elapse and acknowledge its idle "
+               "probe on the same pipe so it is a settled alternative before pipe 2 joins.")
+        t.adv(15000)
+        t.frames(0, PIPE_PING())
+        t.send(0, [PIPE_ACK((0, SENT(0), 0))])
     join_up(t, "c2", 2, "bidi")
     t.api("set_pipe_status", pipe=0, send_priority=5, expect={"ok": True})
     t.api("set_pipe_status", pipe=2, send_priority=2, expect={"ok": True})
@@ -3464,21 +3640,39 @@ def multipath():
     out.append(t)
 
     t = Trace("multipath.idle.received_records_only",
-              "In multipath sessions only received records restart the idle timer",
-              ["SPEC.md#6.4"], profile=P)
+              "In multipath sessions only received or newly acknowledged activity "
+              "frames restart the idle timer",
+              ["SPEC.md#6.4"], profile=P, overrides={"config": {"dead_timeout": 30000}})
     mp_handshake(t, peer=peer_mp(max_idle_timeout=10000))
-    t.writable(0, False)
-    t.send(0, [PIPE_ACK((0, SENT(0), 0)), STREAM(0, EMPTY_PRE + b"x")])
-    t.note("The acknowledgement for this record is written only at 4900 ms, before the "
-           "last pipe's T_dead (half the 10 s idle timeout by default) fails the "
-           "write-stalled pipe; in a session without acknowledgement that write would "
-           "restart the idle timer.")
-    t.adv(4900)
-    t.writable(0, True)
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.note("The 30 s path death timeout is outside the trace. Receiving STREAM at "
+           "1000 ms extends the original 10000 ms session deadline to 11000 ms.")
+    t.adv(1000)
+    t.send(0, [STREAM(0, EMPTY_PRE + b"x")])
+    t.adv(9000)
+    t.is_open()
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.api("open_bidi", bind="a", expect={"ok": True})
+    t.api("write", stream="a", data=b"a", fin=False, expect={"accepted": 1})
+    t.frames(0, SDATA(1, LOCAL_FIRST_PRE + b"a"))
+    t.note("The peer newly acknowledges STREAM at 10100 ms, extending the session "
+           "deadline to 20100 ms.")
+    t.adv(100)
+    t.send(0, [PIPE_ACK((0, SENT(0), 0))])
+    t.adv(900)
+    t.is_open()
+    t.note("Incoming PIPE_PING and PIPE_ACK, and the reply PIPE_ACK, carry only pipe "
+           "control. A later STREAM passed to the carrier is left unacknowledged.")
+    t.adv(4000)
+    t.send(0, [PIPE_ACK((0, SENT(0), 0)), PIPE_PING()])
+    t.adv(25)
     t.frames(0, {"type": "PIPE_ACK"})
+    t.adv(4975)
     t.send(0, [PIPE_ACK((0, SENT(0), 0))])
     t.state(pipe=0, dir="out", pstate="ACTIVE")
-    t.adv(5099)
+    t.api("write", stream="a", data=b"b", fin=False, expect={"accepted": 1})
+    t.frames(0, SDATA(1, b"b", off=len(LOCAL_FIRST_PRE) + 1))
+    t.adv(99)
     t.is_open()
     t.adv(1)
     t.closed("IDLE_TIMEOUT", space="local")
@@ -5056,11 +5250,15 @@ def local_join(t, pipe, phase, locator):
     t.state(pipe=pipe, dir="out", pstate="ACTIVE")
 
 
-def peer_epoch_exchange(t, epoch, pipe=2, locator=b""):
-    """The peer offers ``epoch``, the local endpoint answers, and the peer acknowledges the
-    record of the answer: the local endpoint uses ``epoch`` and keeps the one before it."""
+def peer_epoch_offer(t, epoch, pipe=2, locator=b""):
+    """Offer an epoch and read the answer at the peer."""
     t.peer_epoch(pipe, "offer", epoch, locator=locator)
     t.frames(pipe, EP("answer", epoch, share=G2_SHARE_R, locator=b"LOCAL-%d" % epoch))
+
+
+def peer_epoch_exchange(t, epoch, pipe=2, locator=b""):
+    """Offer an epoch and acknowledge the local endpoint's answer."""
+    peer_epoch_offer(t, epoch, pipe, locator)
     t.send(pipe, [PIPE_ACK((pipe, SENT(pipe), 0))])
 
 
@@ -5096,15 +5294,51 @@ def multipath_epochs():
     out.append(t)
 
     t = Trace("multipath.epoch.answerer_switches_on_peer_join",
-              "A verified join of the peer with epoch 1 switches the answering end to epoch 1 "
-              "before any acknowledgement of its answer",
+              "An authorized epoch 1 Join switches the answering end after key exchange "
+              "without an acknowledgement of the answer",
               refs + ["secure-carrier/SPEC.md#11.2"], profile=P)
     mp_handshake(t)
     bound_pipe(t)
-    t.peer_epoch(2, "offer", 1, locator=b"PEER-1")
-    t.frames(2, EP("answer", 1, share=G2_SHARE_R, locator=b"LOCAL-1"))
+    peer_epoch_offer(t, 1, locator=b"PEER-1")
     accepted_join(t, "c4", 4, 1, b"LOCAL-1")
     local_join(t, 1, 1, b"PEER-1")
+    out.append(t)
+
+    for name, title, invalidate in [
+        ("denied", "A denied epoch 1 Join leaves its Pipe ID available and preserves epoch 0", False),
+        ("invalidated", "An approved Join whose Pipe ID was taken while waiting has no effect", True),
+    ]:
+        t = Trace(f"multipath.epoch.authorization_{name}", title,
+                  refs + ["MULTIPATH.md#5.4"], profile=P)
+        mp_handshake(t)
+        bound_pipe(t)
+        peer_epoch_offer(t, 1, locator=b"PEER-1")
+        t.up(carrier="pending", dir="in", via="listener")
+        t.peer_join("pending", 4, "up", phase=1, locator=b"LOCAL-1",
+                    batch=[STREAM(0, EMPTY_PRE + b"batch")], hold="authorization", outcome="reject")
+        t.api("accept_bidi", expect={"pending": True})
+        local_join(t, 1, 0, D.PEER_LOCATOR)
+        if invalidate:
+            accepted_join(t, "competing", 4, 0, D.LOCAL_LOCATOR)
+        t.peer_join_finish("pending", outcome="reject", authorized=invalidate)
+        t.reject_carrier("pending")
+        t.api("accept_bidi", expect={"pending": True})
+        if not invalidate:
+            accepted_join(t, "retry", 4, 0, D.LOCAL_LOCATOR)
+        local_join(t, 3, 0, D.PEER_LOCATOR)
+        t.is_open()
+        out.append(t)
+
+    t = Trace("multipath.epoch.join_kex_failure",
+              "An authorized epoch 1 Join with a rejected key exchange preserves epoch 0",
+              refs + ["MULTIPATH.md#5.4"], profile=P)
+    mp_handshake(t)
+    bound_pipe(t)
+    peer_epoch_offer(t, 1, locator=b"PEER-1")
+    peer_hello(t, "c4", 4, phase=1, locator=b"LOCAL-1", key_share="low_order")
+    t.reject_carrier("c4")
+    local_join(t, 1, 0, D.PEER_LOCATOR)
+    t.is_open()
     out.append(t)
 
     t = Trace("multipath.epoch.previous_deleted_after_retention",
@@ -5306,6 +5540,38 @@ def all_traces():
     return traces
 
 
+def datagram_checkpoints(index):
+    ids = [entry["id"] for entry in index]
+    prefix = "ext.datagram."
+
+    def group(traces, wire=()):
+        return {"traces": list(traces), "wire": list(wire)}
+
+    e2 = [i for i in ids if i == prefix + "active_writable_only" or i.startswith(prefix + "channel_")]
+    e3 = [i for i in ids if i.startswith(prefix + "copies_")]
+    e4 = [prefix + i for i in ("expiry_is_local", "no_reinjection")]
+    e5 = [i for i in ids if i.startswith(prefix + "ack_")]
+    e1 = [i for i in ids if
+          i.startswith(("compat.qmux.datagram_", "core.handshake.missing_datagram_family_",
+                        "core.handshake.retired_datagram_parameter_"))
+          or (i.startswith(prefix) and i not in e2 + e3 + e4 + e5)
+          or i in ("core.handshake.application_waits_for_family",
+                   "core.handshake.family_carrier_early_application",
+                   "compat.qmux.remembered_early_data", "compat.qmux.receive_early_data")]
+    from build_wire import corpus
+    valid, invalid = corpus()
+    wire = [entry["id"] for entry in valid + invalid]
+    return {
+        "E1": group(e1, [i for i in wire if i.startswith(("datagram-sequence-", "tp-zmux-", "tp-datagram-flows-"))]),
+        "E2": group(e2, [i for i in wire if i.startswith(("channel-datagram-", "tp-carrier-datagram-",
+                                                         "record-padding-before-lengthless-"))
+                         or i in ("datagram-at-limit", "datagram-above-limit")]),
+        "E3": group(e3),
+        "E4": group(e4),
+        "E5": group(e5, [i for i in wire if i.startswith("datagram-ack-")]),
+    }
+
+
 def main():
     base = ROOT / "fixtures" / "traces"
     if base.exists():
@@ -5322,7 +5588,7 @@ def main():
         index.append({"id": t.id, "file": str(path.relative_to(ROOT)), "title": t.header["title"],
                       "refs": t.header["refs"], "findings": t.header["findings"],
                       "profile": t.profile, "steps": len(t.steps)})
-    (base / "index.json").write_text(json.dumps({"traces": index}, indent=2) + "\n")
+    (base / "index.json").write_text(json.dumps({"traces": index, "datagram_checkpoints": datagram_checkpoints(index)}, indent=2) + "\n")
     print(f"traces: {len(index)} in fixtures/traces")
 
 

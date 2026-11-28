@@ -34,7 +34,7 @@ the source agree, and that every zmux value obeys Section 2.
   (RFC 9000 Section 22); zmux only uses them as QUIC defines them.
 - zmux-allocated values lie in [2^14, 2^30): they encode in four bytes, are
   outside the QUIC Standards Action range, and avoid every IANA QUIC
-  registration as of 2026-10-10 (RFC 9000 Section 22.1.2 recommends values of
+  registration as of 2026-11-10 (RFC 9000 Section 22.1.2 recommends values of
   2^14 and above, chosen at random).
 - Values at and above 2^30 (eight-byte encodings) are left to QUIC and QMux,
   which use them for provisional registrations (for example QMux's
@@ -88,7 +88,8 @@ A new frame type or transport parameter MUST:
    unless SPEC.md amends the closed list;
 4. state the response state it creates and show that it is bounded (SPEC.md
    Section 9.2);
-5. not change the meaning of any existing codepoint.
+5. preserve the meaning of existing codepoints. A family may specify the contents of
+   an existing opaque field within that family (SPEC.md Section 13.5).
 6. if it may be the first frame on a carrier (SPEC.md Section 6.2,
    MULTIPATH.md Section 5.5), have a type whose encoding does not begin
    with `03`, so that a Size of 0x16 is never followed by 0x03 and a first
@@ -133,6 +134,7 @@ between endpoints under common control. They are never registered.
 | QX_PING | 0x348c67529ef8c7bd-0x348c67529ef8c7be | QMux-02 | - | yes | never | SPEC.md#4.5 |
 | GOAWAY | 0x1911f43e | zmux | zmux_goaway | yes | current-value | EXTENSIONS.md#3 |
 | PRIORITY_UPDATE | 0x073d08cf | zmux | zmux_priority | yes | latest-per-stream | EXTENSIONS.md#5 |
+| DATAGRAM_ACK | 0x28bbd99f | zmux | zmux_datagram_family and max_datagram_frame_size | no | never | EXTENSIONS.md#6.10 |
 | PIPE_ACK | 0x0b2b3eeb | zmux | zmux_multipath or zmux_pipe_ack | no | never | MULTIPATH.md#6 |
 | PIPE_LANE | 0x3a05a1c9 | zmux | zmux_max_lanes | yes | never | MULTIPATH.md#5.8 |
 | PIPE_PING | 0x269b43e6 | zmux | zmux_multipath | yes | never | MULTIPATH.md#6.4 |
@@ -145,12 +147,17 @@ between endpoints under common control. They are never registered.
 announced by the receiver (RESET_STREAM_AT, DATAGRAM, and PIPE_LANE, which
 needs a receiver's `zmux_max_lanes` above 1 with multipath or pipe
 acknowledgement in use: lanes available toward the receiver, MULTIPATH.md
-Section 3.6). "Retransmission" is the
-multipath reinjection rule of MULTIPATH.md Section 7.4.
+Section 3.6). For DATAGRAM_ACK, the family parameter identifies both peers
+and the reporting endpoint is the one that announced a positive
+`max_datagram_frame_size` (EXTENSIONS.md Section 6.10). "Retransmission" is the
+multipath reinjection rule of MULTIPATH.md Section 7.4. The Join-triggered
+transition for SESSION_EPOCH is defined in MULTIPATH.md Section 10.7.
 
 ---
 
 ## 4. Transport parameters
+
+Retired IDs remain reserved and MUST NOT be reassigned.
 
 <!-- BEGIN GENERATED: transport_parameters -->
 | Parameter | ID | Origin, format | Absent means | zmux endpoints send | Defined in |
@@ -179,8 +186,10 @@ multipath reinjection rule of MULTIPATH.md Section 7.4.
 | zmux_goaway | 0x04528a5f | zmux, empty | not supported | always | EXTENSIONS.md#3 |
 | zmux_preamble | 0x0439e07a | zmux, varint | not supported | 4096 (less when the stream windows are smaller) | EXTENSIONS.md#4 |
 | zmux_priority | 0x31e7139d | zmux, empty | not supported | always | EXTENSIONS.md#5 |
-| zmux_datagram_flows | 0x0af391ed | zmux, empty | not supported | when datagrams are enabled | EXTENSIONS.md#6 |
+| zmux_datagram_flows | 0x0af391ed | zmux, retired | - | never | EXTENSIONS.md#6.2 |
+| zmux_datagram_family | 0x27e7a042 | zmux, empty | plain QMux if there is no other zmux evidence | always | SPEC.md#5.5 |
 | zmux_carrier_datagrams | 0x3d274c5f | zmux, empty | not supported | when datagrams are enabled and a pipe carrier can have a datagram channel | EXTENSIONS.md#6.8 |
+| zmux_carrier_datagram_padding | 0x2071d4ee | zmux, empty | not supported | with zmux_carrier_datagrams when channel padding is supported | EXTENSIONS.md#6.8 |
 | zmux_multipath | 0x30dc2978 | zmux, multipath | not supported | when max_pipes > 1 or resume is enabled | MULTIPATH.md#3 |
 | zmux_session_crypto | 0x026f24b5 | zmux, session_crypto | not allowed with zmux_multipath | with zmux_multipath | MULTIPATH.md#3.7 |
 | zmux_pipe_ack | 0x34b47621 | zmux, empty | not supported | always | MULTIPATH.md#3.5 |
@@ -366,6 +375,7 @@ what a new one must define. They are not allocated with the method of Section 2.
 | lane_key_bytes | 16 |
 | default_max_record_size | 16382 |
 | zmux_max_record_size | 65535 |
+| max_padded_channel_datagram_size | 65535 |
 | max_preamble_tp_overhead | 32 |
 | pairing_token_bytes | 16 |
 | max_unpaired_carriers | 64 |
@@ -377,8 +387,6 @@ what a new one must define. They are not allocated with the method of Section 2.
 | fail_floor_ms | 2000 |
 | first_record_timeout_ms | 2000 |
 | unauthenticated_carriers_per_source | 8 |
-| stream_datagram_queue | 32 |
-| datagram_receive_bytes | 1048576 |
 | suspect_floor_min_ms | 50 |
 | probe_interval_ms | 15000 |
 | max_join_deadline_ms | 60000 |
@@ -393,10 +401,6 @@ what a new one must define. They are not allocated with the method of Section 2.
 | dead_timeout_min_ms | 1000 |
 | write_call_min_bytes | 4096 |
 | write_call_rate_ms | 50 |
-| early_data_max_data | 16384 |
-| early_data_max_streams_bidi | 4 |
-| early_data_max_stream_data | 4096 |
-| early_data_max_preamble | 1024 |
 | protocol_name | zmux |
 | alpn_default | `qmux-02` |
 | alpn_also_accepted | `qmux-01` |

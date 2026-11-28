@@ -11,10 +11,24 @@ zmux-allocated values were chosen deterministically:
          big-endian integer) mod (2**30 - 2**14)
 
 with the smallest i >= 0 for which v collides with neither an IANA QUIC
-registration (snapshot 2026-10-10), another zmux value, a transport-parameter
+registration (snapshot 2026-11-10), another zmux value, a transport-parameter
 GREASE value (31*N + 27) nor a TLV/error GREASE value (0x1f*N + 0x21).
 ``ALLOCATION_SUFFIX`` records i when it is not 0.
 """
+
+import hashlib
+
+
+def allocation(kind, name, suffix=0):
+    label = f"zmux {kind} {name}" + (f"#{suffix}" if suffix else "")
+    digest = hashlib.sha256(label.encode()).digest()
+    return (1 << 14) + int.from_bytes(digest[:8], "big") % ((1 << 30) - (1 << 14))
+
+
+DATAGRAM_ACK_TYPE = allocation("frame", "DATAGRAM_ACK")
+DATAGRAM_FAMILY_ID = allocation("transport_parameter", "zmux_datagram_family")
+DATAGRAM_ACK_MAX_SIZE = 8192
+DATAGRAM_ACK_MAX_RANGE_COUNT = 4090
 
 PROTOCOL_NAME = "zmux"
 ALPN_DEFAULT = "qmux-02"
@@ -111,6 +125,9 @@ FRAME_TYPES = [
     dict(name="PRIORITY_UPDATE", first=0x073D08CF, last=0x073D08CF, kind="zmux",
          gate="zmux_priority", spec="EXTENSIONS.md#5", ack_eliciting=True,
          retransmit="latest-per-stream"),
+    dict(name="DATAGRAM_ACK", first=DATAGRAM_ACK_TYPE, last=DATAGRAM_ACK_TYPE, kind="zmux",
+         gate=("zmux_datagram_family", "max_datagram_frame_size"), gate_all=True,
+         spec="EXTENSIONS.md#6.10", ack_eliciting=False, retransmit="never"),
     dict(name="PIPE_ACK", first=0x0B2B3EEB, last=0x0B2B3EEB, kind="zmux",
          gate=("zmux_multipath", "zmux_pipe_ack"), spec="MULTIPATH.md#6", ack_eliciting=False,
          retransmit="never"),
@@ -128,7 +145,8 @@ FRAME_TYPES = [
          retransmit="latest-per-pipe"),
     dict(name="SESSION_EPOCH", first=0x024E93EB, last=0x024E93EB, kind="zmux",
          gate="zmux_multipath", spec="MULTIPATH.md#10.7", ack_eliciting=True,
-         retransmit="offer-until-answered-answer-until-acked"),
+         retransmit="offer-until-answered-answer-until-acked",
+         join_switch_requires=["authorization", "revalidation", "key_exchange"]),
 ]
 
 # --- Transport parameters ---------------------------------------------------
@@ -179,12 +197,19 @@ TRANSPORT_PARAMETERS = [
          zmux_sends="4096 (less when the stream windows are smaller)", spec="EXTENSIONS.md#4"),
     dict(name="zmux_priority", id=0x31E7139D, scope="zmux", format="empty",
          absent_default="not supported", zmux_sends="always", spec="EXTENSIONS.md#5"),
-    dict(name="zmux_datagram_flows", id=0x0AF391ED, scope="zmux", format="empty",
-         absent_default="not supported", zmux_sends="when datagrams are enabled",
-         spec="EXTENSIONS.md#6"),
+    dict(name="zmux_datagram_flows", id=0x0AF391ED, scope="zmux-retired",
+         zmux_sends="never", spec="EXTENSIONS.md#6.2"),
+    dict(name="zmux_datagram_family", id=DATAGRAM_FAMILY_ID, scope="zmux", format="empty",
+         absent_default="plain QMux if there is no other zmux evidence", zmux_sends="always",
+         spec="SPEC.md#5.5"),
     dict(name="zmux_carrier_datagrams", id=0x3D274C5F, scope="zmux", format="empty",
          absent_default="not supported",
          zmux_sends="when datagrams are enabled and a pipe carrier can have a datagram channel",
+         spec="EXTENSIONS.md#6.8"),
+    dict(name="zmux_carrier_datagram_padding",
+         id=allocation("transport_parameter", "zmux_carrier_datagram_padding"),
+         scope="zmux", format="empty", absent_default="not supported",
+         zmux_sends="with zmux_carrier_datagrams when channel padding is supported",
          spec="EXTENSIONS.md#6.8"),
     dict(name="zmux_multipath", id=0x30DC2978, scope="zmux", format="multipath",
          absent_default="not supported", zmux_sends="when max_pipes > 1 or resume is enabled",
@@ -340,6 +365,7 @@ LIMITS = {
     "lane_key_bytes": 16,
     "default_max_record_size": 16382,
     "zmux_max_record_size": 65535,
+    "max_padded_channel_datagram_size": 65535,
     "max_preamble_tp_overhead": 32,
     "pairing_token_bytes": 16,
     "max_unpaired_carriers": 64,
@@ -351,8 +377,6 @@ LIMITS = {
     "fail_floor_ms": 2000,
     "first_record_timeout_ms": 2000,
     "unauthenticated_carriers_per_source": 8,
-    "stream_datagram_queue": 32,
-    "datagram_receive_bytes": 1048576,
     "suspect_floor_min_ms": 50,
     "probe_interval_ms": 15000,
     "max_join_deadline_ms": 60000,
@@ -367,10 +391,6 @@ LIMITS = {
     "dead_timeout_min_ms": 1000,
     "write_call_min_bytes": 4096,
     "write_call_rate_ms": 50,
-    "early_data_max_data": 16384,
-    "early_data_max_streams_bidi": 4,
-    "early_data_max_stream_data": 4096,
-    "early_data_max_preamble": 1024,
 }
 
 

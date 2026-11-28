@@ -11,13 +11,13 @@ sys.path.insert(0, str(ROOT / "tools"))
 from zmuxwire import frames as F, crypto as C, registry as R  # noqa: E402
 from zmuxwire import annotate as A  # noqa: E402
 from zmuxwire import tracedsl as D  # noqa: E402
+from zmuxwire.preamble import decode_datagram_data  # noqa: E402
 from zmuxwire.tracedsl import (STREAM, RESET, RESET_AT, STOP, MAX_DATA, MAX_STREAM_DATA,  # noqa
                                MAX_STREAMS, DATA_BLOCKED, STREAM_DATA_BLOCKED, STREAMS_BLOCKED,
-                               CLOSE, PING, PONG, PADDING, DATAGRAM, GOAWAY, PRIO, PIPE_ACK,
+                               CLOSE, PING, PONG, PADDING, DATAGRAM, ZDATAGRAM, DATAGRAM_ACK, GOAWAY, PRIO, PIPE_ACK,
                                PIPE_PING, PIPE_ABANDON, PIPE_STATUS, PIPE_LANE,
                                SESSION_EPOCH, TP, RAW, pre)
 from zmuxwire.varint import encode_varint as V  # noqa: E402
-from zmuxwire.preamble import encode_flow_prefix  # noqa: E402
 
 TE, AE = R.transport_error, R.app_error
 ALL_GATES = {g for f in R.FRAME_TYPES if f.get("gate")
@@ -46,6 +46,7 @@ def examples():
         {"id": "initial_max_streams_bidi", "value": 256},
         {"id": "initial_max_streams_uni", "value": 256},
         {"id": "reset_stream_at", "value": None},
+        {"id": "zmux_datagram_family", "value": None},
         {"id": "zmux_goaway", "value": None},
         {"id": "zmux_preamble", "value": 4096},
         {"id": "zmux_priority", "value": None},
@@ -73,7 +74,8 @@ def examples():
         "16-byte nonce and the 5-byte locator \"LOCAL\"; Join Suites 1 and 2 and Groups 1 "
         "and 2; companions; "
         "zmux_resume 30 s.",
-        [TP([{"id": "zmux_role", "value": {"role": "auto", "nonce": 0x0123456789ABCDEF}},
+        [TP([{"id": "zmux_datagram_family", "value": None},
+             {"id": "zmux_role", "value": {"role": "auto", "nonce": 0x0123456789ABCDEF}},
              {"id": "zmux_multipath", "value": {"flags": 0x04, "nonce": D.LOCAL_NONCE,
                                                 "locator": D.LOCAL_LOCATOR}},
              {"id": "zmux_session_crypto", "value": {"suites": [1, 2], "groups": [1, 2]}},
@@ -86,15 +88,12 @@ def examples():
         "Offset 0 is implicit (no OFF bit).",
         [STREAM(0, pre(open_info=b"example.com:443", priority=(1, False), grease=True)
                 + b"hello", fin=True)])
-    add("2", "early-data", "First record with early data",
-        "A client whose application declares the peer to be a zmux endpoint opens stream 0 "
-        "before the peer's parameters arrive, as early data: after its "
-        "QX_TRANSPORT_PARAMETERS (abbreviated here to initial_max_data) comes the PIPE_ACK "
-        "fence, one entry for pipe 0, lane 0, Position 0, ACK Delay 0, then the STREAM frame "
-        "with the preamble (GREASE TLV) and 3 bytes of data, within the floor of 4096 bytes. "
-        "A plain QMux peer closes at the PIPE_ACK and processes nothing after it.",
-        [TP([{"id": "initial_max_data", "value": 1048576}]), PIPE_ACK((0, 0, 0)),
-         STREAM(0, pre(grease=True) + b"GET", fin=True)])
+    add("2", "early-data", "First record of plain QMux 0-RTT",
+        "A client with remembered plain QMux parameters sends STREAM data in carrier 0-RTT. "
+        "Its parameter block is abbreviated here. The STREAM payload starts with application bytes.",
+        [TP([{"id": "initial_max_data", "value": 1048576},
+             {"id": "zmux_datagram_family", "value": None}]),
+         STREAM(0, b"GET", fin=True)])
     add("2", "stream-continue", "Continuing a stream",
         "Stream 4 data at offset 1200, followed by a second frame for stream 0 that omits its "
         "Length and therefore runs to the end of the record.",
@@ -132,12 +131,18 @@ def examples():
         [GOAWAY(6, 0, 0)])
     add("3", "priority-update", "PRIORITY_UPDATE", "Stream 4, sequence 2, urgency 0, incremental.",
         [PRIO(4, 2, 0, True)])
-    add("3", "datagram-flow", "DATAGRAM with a flow prefix",
-        "Associated with stream 4 (Flow 5), context 0, payload \"udp-payload\".",
-        [DATAGRAM(encode_flow_prefix(4, 0) + b"udp-payload")])
+    add("3", "datagram-flow", "Stream DATAGRAM",
+        "Sequence 63, stream 4 (Flow 5), context 0, payload \"udp-payload\".",
+        [ZDATAGRAM(63, b"udp-payload", stream=4)])
     add("3", "datagram-session", "Session-wide DATAGRAM",
-        "Flow 0 and no length field: the payload runs to the end of the record.",
-        [DATAGRAM(encode_flow_prefix(None) + b"ping", has_len=False)])
+        "Sequence 64 uses two bytes. Flow 0 is followed by the payload without a Context ID. "
+        "The two PADDING frames precede type 0x30, which runs to the end of the record. "
+        "The final zero byte belongs to the payload.",
+        [PADDING(2), ZDATAGRAM(64, b"ping\x00", has_len=False)])
+    add("3", "datagram-ack", "DATAGRAM_ACK",
+        "Sequences 65 to 67 and 61 arrived on the native channel of pipe 2. "
+        "The report is sent 250 microseconds after sequence 67 arrived.",
+        [DATAGRAM_ACK(2, 1, 67, 250, first_range=2, ranges=[(2, 0)])])
     add("4", "pipe-ack", "PIPE_ACK",
         "Positions of inbound pipes 0 and 2 with their acknowledgement delays in microseconds; "
         "pipe 2 has a second lane, acknowledged in an entry of its own"
@@ -284,12 +289,14 @@ def _wrap(h, width=64):
 def corpus():
     valid, invalid = [], []
 
-    def ok(cid, frame, gates=None, note="", limits=None):
+    def ok(cid, frame, gates=None, note="", limits=None, datagram_data=None):
         b = F.encode_frame(frame)
         e = {"id": cid, "kind": "frame", "gates": sorted(gates or ALL_GATES),
              "hex": b.hex(), "frame": F.to_json(frame), "note": note}
         if limits:
             e["limits"] = limits
+        if datagram_data is not None:
+            e["datagram_data"] = F.to_json(datagram_data)
         valid.append(e)
 
     def ok_non_minimal(cid, hexbytes, frame, note=""):
@@ -324,6 +331,29 @@ def corpus():
             e["max_record_size"] = max_record_size
         invalid.append(e)
 
+    def channel(cid, frame, *, padding=0, pipe_stream_id=None, negotiated=True,
+                limit=1200, compact=False, error=None, note=""):
+        gates = ["max_datagram_frame_size", "zmux_carrier_datagrams", "zmux_datagram_family"]
+        if negotiated:
+            gates.insert(1, "zmux_carrier_datagram_padding")
+        prefix = V(pipe_stream_id) if pipe_stream_id is not None else b""
+        frame_bytes = frame if error else F.encode_frame(frame)
+        raw = prefix + (b"" if compact else bytes(padding)) + frame_bytes
+        e = {"id": cid, "kind": "channel_datagram", "gates": gates, "hex": raw.hex(),
+             "limits": {"max_datagram_frame_size": limit}, "note": note}
+        if pipe_stream_id is not None:
+            e["pipe_stream_id"] = pipe_stream_id
+        if compact:
+            e["zero_fill"] = {"offset": len(prefix), "count": padding}
+        if error:
+            e["error"] = error
+            invalid.append(e)
+        else:
+            e["padding"] = padding
+            e["frame"] = F.to_json(frame)
+            e["datagram_data"] = F.to_json(decode_datagram_data(frame["data"]))
+            valid.append(e)
+
     # --- valid frames
     ok("padding-1", PADDING(1))
     ok("stream-min", STREAM(0, b"", fin=True), note="empty FIN at offset 0")
@@ -345,27 +375,71 @@ def corpus():
     ok("streams-blocked-uni", STREAMS_BLOCKED(256, bidi=False))
     ok("close-transport", CLOSE(TE("PROTOCOL_VIOLATION"), frame_type=0x08, reason=b"x"))
     ok("close-app-empty", CLOSE(0, app=True))
-    ok("datagram-len", DATAGRAM(b"abc"))
-    ok("datagram-nolen", DATAGRAM(b"abc", has_len=False))
-    ok("datagram-empty", DATAGRAM(b""))
-    ok("datagram-at-limit", DATAGRAM(b"d" * 10), limits={"max_datagram_frame_size": 12},
+    ok("datagram-len", DATAGRAM(b"abc"), gates={"max_datagram_frame_size"})
+    ok("datagram-nolen", DATAGRAM(b"abc", has_len=False), gates={"max_datagram_frame_size"})
+    ok("datagram-empty", DATAGRAM(b""),
+       gates={"max_datagram_frame_size"}, note="empty opaque plain QMux datagram")
+    okrec("record-padding-before-lengthless-stream",
+          [PADDING(2), STREAM(0, b"a\x00", has_len=False)],
+          note="only the zeros before the STREAM type are PADDING")
+    okrec("record-padding-before-lengthless-datagram",
+          [PADDING(2), ZDATAGRAM(0, b"a\x00", has_len=False)],
+          note="the DATAGRAM consumes the remainder of the record")
+    channel("channel-datagram-unpadded", ZDATAGRAM(0, has_len=False), negotiated=False,
+            note="the frame starts immediately and its application payload is empty")
+    channel("channel-datagram-padded-quic", ZDATAGRAM(0, b"a\x00", has_len=False),
+            padding=2, pipe_stream_id=0, limit=5,
+            note="Pipe Stream ID 0 and two PADDING bytes precede the five-byte frame")
+    channel("channel-datagram-padded-h3",
+            ZDATAGRAM(64, b"\x00\x30\x00", stream=64, context=64, has_len=False), padding=1,
+            note="the HTTP Datagram's Quarter Stream ID is outside these bytes")
+    channel("channel-datagram-padded-at-limit", ZDATAGRAM(0, has_len=False),
+            padding=R.LIMITS["max_padded_channel_datagram_size"] - 3, pipe_stream_id=256,
+            limit=3, compact=True,
+            note="the 65535-byte frame region follows a two-byte Pipe Stream ID ending in zero")
+    for sequence, width in [(0, 1), (63, 1), (64, 2), (16383, 2), (16384, 4),
+                            ((1 << 30) - 1, 4), (1 << 30, 8), ((1 << 62) - 1, 8)]:
+        payload = b"x" * (12 - 1 - 3 - width)
+        frame = ZDATAGRAM(sequence, payload, stream=4, context=64, has_len=False)
+        assert len(F.encode_frame(frame)) == 12
+        ok(f"datagram-sequence-{sequence}", frame,
+           limits={"max_datagram_frame_size": 12},
+           datagram_data={"sequence": sequence, "data": payload, "stream": 4, "context": 64},
+           note=f"12 bytes, including {width}-byte Sequence, Flow and 2-byte Context ID")
+    ok("datagram-ack-ranges", DATAGRAM_ACK(2, 1, 67, 250, 2, [(2, 0)]))
+    ok("datagram-ack-wide-range", DATAGRAM_ACK(0, 0, (1 << 62) - 1, first_range=(1 << 62) - 1),
+       note="a single range covers the sequence space without expanding per-sequence entries")
+    ack_ranges = [(0, 0)] * R.DATAGRAM_ACK_MAX_RANGE_COUNT
+    ack_ceiling = DATAGRAM_ACK(0, 0, 2 * len(ack_ranges), ranges=ack_ranges)
+    assert len(F.encode_frame(ack_ceiling)) == R.DATAGRAM_ACK_MAX_SIZE
+    ok("datagram-ack-at-limit", ack_ceiling, note="exactly 8192 bytes")
+
+    ok("datagram-at-limit", DATAGRAM(b"d" * 10), gates={"max_datagram_frame_size"}, limits={"max_datagram_frame_size": 12},
        note="12 bytes with type and Length, exactly the advertised max_datagram_frame_size")
     ok("qx-ping-0", PING(0))
     ok("qx-pong-max", PONG((1 << 62) - 1))
     ok("tp-empty", TP([]))
+    channel_params = [{"id": "zmux_datagram_family", "value": None},
+                      {"id": "max_datagram_frame_size", "value": 1200},
+                      {"id": "zmux_carrier_datagrams", "value": None}]
+    padding_param = {"id": "zmux_carrier_datagram_padding", "value": None}
+    ok("tp-carrier-datagram-padding", TP(channel_params + [padding_param]))
     ok("tp-grease-only", TP([{"id": 27, "raw": b""}]))
     ok("tp-deleted-max-pipe-id-ignored", TP([{"id": 0x2A60F18A, "raw": V(15)}]),
        note="0x2a60f18a was zmux_initial_max_pipe_id, deleted before release: now an unknown "
             "parameter, ignored like any other")
-    ok("tp-max-lanes", TP([{"id": "zmux_pipe_ack", "value": None},
+    ok("tp-max-lanes", TP([{"id": "zmux_datagram_family", "value": None},
+               {"id": "zmux_pipe_ack", "value": None},
                            {"id": "zmux_max_lanes", "value": D.lanes(258, EXAMPLE_LANE_KEY)}]),
        note="the default of 258 lanes and a Lane Key, with pipe acknowledgement")
     ok("tp-multipath-locator-255",
-       TP([{"id": "zmux_multipath", "value": {"flags": 4, "nonce": bytes(16), "locator": b"L" * 255}},
+       TP([{"id": "zmux_datagram_family", "value": None},
+               {"id": "zmux_multipath", "value": {"flags": 4, "nonce": bytes(16), "locator": b"L" * 255}},
            {"id": "zmux_session_crypto", "value": {"suites": [1], "groups": [2]}}]),
        note="the longest Session Locator")
     ok("tp-multipath-reserved-secret-flag",
-       TP([{"id": "zmux_multipath", "value": {"flags": 0x06, "nonce": bytes(16), "locator": b"L"}},
+       TP([{"id": "zmux_datagram_family", "value": None},
+               {"id": "zmux_multipath", "value": {"flags": 0x06, "nonce": bytes(16), "locator": b"L"}},
            {"id": "zmux_session_crypto", "value": {"suites": [1], "groups": [2]}}]),
        note="Secret Flags 0x02 is reserved: sent as 0, ignored on receipt")
     ok("session-epoch-answer-large-epoch", SESSION_EPOCH("answer", (1 << 62) - 1, b"S", b"L"))
@@ -475,6 +549,19 @@ def corpus():
         limits={"max_datagram_frame_size": 12},
         note="the Length runs past the end and the frame is also above the advertised size: "
              "the decode error takes precedence")
+    dack = DATAGRAM_ACK(0, 0, 0)
+    bad("datagram-ack-channel", F.encode_frame(DATAGRAM_ACK(0, 2, 0)), FE)
+    bad("datagram-ack-first-range-underflow", F.encode_frame(DATAGRAM_ACK(0, 0, 1, first_range=2)), FE)
+    bad("datagram-ack-gap-underflow", F.encode_frame(DATAGRAM_ACK(0, 0, 1, ranges=[(0, 0)])), FE)
+    bad("datagram-ack-range-underflow", F.encode_frame(DATAGRAM_ACK(0, 0, 2, ranges=[(0, 1)])), FE)
+    bad("datagram-ack-range-truncated", F.encode_frame(DATAGRAM_ACK(0, 0, 2, ranges=[(0, 0)]))[:-1], FE)
+    bad("datagram-ack-range-count", F.encode_frame(DATAGRAM_ACK(0, 0, 8190,
+        ranges=ack_ranges + [(0, 0)])), FE)
+    bad("datagram-ack-size", F.encode_frame(dict(ack_ceiling, delay=64)), FE)
+    bad("datagram-ack-no-family", F.encode_frame(dack), FE,
+        gates=ALL_GATES - {"zmux_datagram_family"})
+    bad("datagram-ack-no-capability", F.encode_frame(dack), FE,
+        gates=ALL_GATES - {"max_datagram_frame_size"})
     # negotiation gates
     bad("goaway-not-in-use", F.encode_frame(GOAWAY(0, 0, 0)), FE,
         gates=ALL_GATES - {"zmux_goaway"})
@@ -487,11 +574,34 @@ def corpus():
         gates=ALL_GATES - {"reset_stream_at"})
     bad("datagram-not-advertised", F.encode_frame(DATAGRAM(b"x")), PV,
         gates=ALL_GATES - {"max_datagram_frame_size"})
+    channel("channel-datagram-padding-without-negotiation", b"\x30\x00\x00", padding=1,
+            negotiated=False, error=PV)
+    channel("channel-datagram-padding-only", b"", padding=1, error=PV)
+    channel("channel-datagram-wrong-type", b"\x31\x02\x00\x00", padding=1, error=PV)
+    channel("channel-datagram-non-minimal-type", V(0x30, 2) + b"\x00\x00", padding=1, error=PV)
+    for name, fields in [("sequence", b"\x40"), ("flow", b"\x00\x40"),
+                         ("context", b"\x00\x01")]:
+        channel(f"channel-datagram-truncated-{name}", b"\x30" + fields, padding=1, error=PV)
+    channel("channel-datagram-above-frame-limit", b"\x30\x00\x00x", padding=1, limit=3, error=PV)
+    channel("channel-datagram-padded-over-limit", b"\x30\x00\x00",
+            padding=R.LIMITS["max_padded_channel_datagram_size"] - 2, limit=3,
+            compact=True, error=PV, note="65536 bytes in the frame region")
     # transport parameters
     TPE = "TRANSPORT_PARAMETER_ERROR"
 
     def badtp(cid, params, note=""):
         bad(cid, F.encode_frame(TP(params)), TPE, note=note)
+    badtp("tp-zmux-without-family", [{"id": "zmux_pipe_ack", "value": None}])
+    badtp("tp-zmux-family-malformed", [{"id": "zmux_datagram_family", "raw": b"x"}])
+    badtp("tp-datagram-flows-retired-empty", [{"id": "zmux_datagram_flows", "raw": b""}])
+    badtp("tp-datagram-flows-retired-nonempty", [{"id": "zmux_datagram_flows", "raw": b"x"}])
+    badtp("tp-carrier-datagram-padding-nonempty", channel_params + [dict(padding_param, raw=b"x")])
+    badtp("tp-carrier-datagram-padding-without-channel", channel_params[:2] + [padding_param])
+    badtp("tp-carrier-datagram-padding-without-datagrams", [channel_params[0], channel_params[2],
+          padding_param])
+    badtp("tp-carrier-datagram-padding-with-zero-size",
+          [channel_params[0], dict(channel_params[1], value=0), channel_params[2], padding_param])
+
 
     badtp("tp-duplicate", [{"id": "initial_max_data", "value": 1}, {"id": "initial_max_data", "value": 2}])
     for nm, i in [("original-dcid", 0x00), ("stateless-reset-token", 0x02),
@@ -585,10 +695,12 @@ def corpus():
           note="first record on the initiator's first bidirectional stream after a "
           "successful extended CONNECT response; a 1.5 ms idle timeout encodes as 2")
     okrec("tp-resume-duration-rounded",
-          [TP([mp, su, {"id": "zmux_resume", "value": 2}])],
+          [TP([{"id": "zmux_datagram_family", "value": None},
+               mp, su, {"id": "zmux_resume", "value": 2}])],
           note="a 1.5 ms Resume Grace encodes as 2")
     okrec("tp-duration-varint-ceiling",
-          [TP([mp, su, {"id": "max_idle_timeout", "value": (1 << 62) - 1},
+          [TP([{"id": "zmux_datagram_family", "value": None},
+               mp, su, {"id": "max_idle_timeout", "value": (1 << 62) - 1},
                {"id": "zmux_resume", "value": (1 << 62) - 1}])],
           note="idle timeout and Resume Grace each saturate at the varint ceiling")
     refused = CLOSE(TE("CONNECTION_REFUSED"), reason=b"listener unavailable")

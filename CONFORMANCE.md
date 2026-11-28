@@ -48,7 +48,7 @@ TRACES.md. Groups:
 
 | Group | Covers |
 |---|---|
-| `core.handshake` | first frame, parameter rules, GREASE, identification of foreign peers, handshake timeout, early data (sending within the floor behind the PIPE_ACK fence, receiving, rejection by a peer that cannot take it) |
+| `core.handshake` | first frame, parameter rules, GREASE, identification of foreign peers, handshake timeout, family identification, deferring application data before family confirmation |
 | `core.records` | record framing, frame-type rules, prohibited and unknown frames, incremental parsing |
 | `core.streams` | opening, ordering, stream states, STOP_SENDING, resets, identifier allocation, release semantics |
 | `core.flow` | stream and session credit, zero-window liveness, session accounting, stream-count credit after release, Rapid Reset |
@@ -57,7 +57,7 @@ TRACES.md. Groups:
 | `core.reset_stream_at` | RESET_STREAM_AT rules |
 | `core.pipe_ack` | pipe acknowledgement without multipath (MULTIPATH.md Section 3.5), and the idle timeout of a session with acknowledgement (SPEC.md Section 6.4) |
 | `core.lanes` | lanes (MULTIPATH.md Sections 2.5, 3.6 and 5.8) in a session without multipath: PIPE_LANE, positions and PIPE_ACK entries per lane, head-of-line blocking on one lane, opening only after lane 0 is acknowledged, invalid lanes and entries, a lane's failure |
-| `ext.*` | role negotiation, GOAWAY, preamble, PRIORITY_UPDATE, datagrams and flows |
+| `ext.*` | role negotiation, GOAWAY, preamble, PRIORITY_UPDATE, sequenced datagrams and arrival feedback |
 | `compat.qmux` | behaviour towards a plain QMux peer |
 | `multipath.*` | negotiation, joins (first batch, direction, replay, refusal backoff, key shares and Groups), session epochs (the four phases, copies and late frames, collisions, key phases and Locators), spread reordering, acknowledgement, failover and reinjection, pipe removal, pipe status, close, idle, budget, lanes (acknowledgement per lane, graceful end of every lane, a lane's end failing its pipe) |
 | `resume.*` | suspension, positions after a rejoin, fail-closed conditions, grace expiry, the attachment cap while suspended |
@@ -65,13 +65,33 @@ TRACES.md. Groups:
 
 The current counts are in `assets/manifest.json`.
 
+### 3.1 Datagram checkpoints
+
+The `datagram_checkpoints` object in `fixtures/traces/index.json` lists
+trace and wire-corpus IDs for each checkpoint. All checkpoints form one
+wire contract.
+
+| Checkpoint | Coverage |
+|---|---|
+| E1 | Family and retired-parameter rejection, opaque plain QMux in both roles, sequence widths and exhaustion, Flow and Context, reordering, cross-pipe and cross-channel deduplication, hold admission and expiry, sequence continuity across Resume |
+| E2 | Directional pipe eligibility, record or carrier channel fit, channel padding negotiation and frame boundaries |
+| E3 | Same sequence on distinct ACTIVE pipes, tier eligibility, and one copy before opening-frame confirmation |
+| E4 | Local expiry introduces no wire field, consumes no sequence before dispatch, and does not cause retransmission |
+| E5 | DATAGRAM_ACK gate, range and size bounds, independent record and channel feedback, reports over a different return pipe, rate limits, and ignorable late feedback |
+
+For secure Establish, exercise the carrier-first-bytes item with compatible,
+missing and malformed family parameters, including a first record with
+coalesced application frames. For Join and Resume, exercise detached state
+without compatible family provenance and verify no first batch, epoch
+transition or application delivery from that state. Plain QMux 0-RTT
+uses the carrier verdict and the remembered plain parameters.
+
 ---
 
 ## 4. Invalid input
 
-Every condition below MUST be detected and MUST produce the listed result. The
-corpus entries in `fixtures/wire/invalid.ndjson` and the traces cover each
-row.
+The following cases exercise the errors defined by the protocol. The corpus
+entries in `fixtures/wire/invalid.ndjson` and the traces cover each row.
 
 Each corpus line is a JSON object with `id`, `kind`, `gates` (the features
 and announcements in use, by transport-parameter name), `note`, and for
@@ -82,12 +102,18 @@ to the same bytes, except those marked `"non_minimal": true`, which must be
 accepted and re-encode, under the semantic equality defined below, to the
 minimal encoding of their `frame`:
 
-- `frame`: `hex` is one frame;
+- `frame`: `hex` is one frame. `datagram_data`, when present, gives the decoded same-family Datagram Data fields;
 - `record`: `hex` is a byte stream of records that are not the first record
   of a bootstrap pipe;
 - `messages`: `messages` is a list of messages of a message-framed carrier
   (SPEC.md Section 3.4), each one record's Frames field; valid entries also
-  give `positions`, the bytes each message counts for in pipe positions.
+  give `positions`, the bytes each message counts for in pipe positions;
+- `channel_datagram`: `hex` is one carrier datagram as in EXTENSIONS.md Section
+  6.8, with a routing varint when `pipe_stream_id` is given. The carrier and
+  pipe association are available. If `zero_fill` is present, insert its
+  `count` zero bytes at the zero-based byte `offset` in the decoded `hex`.
+  Valid entries give the decoded PADDING byte count (`padding`), DATAGRAM
+  `frame` and `datagram_data`.
 
 The receiver's own `max_record_size` is 65535 unless an entry gives
 `max_record_size`. A carrier that ends inside a record is a pipe failure,
@@ -124,6 +150,7 @@ decoded value with the implementation's own encoder:
 | a zmux frame whose feature is not in use; RESET_STREAM_AT without having advertised it | FRAME_ENCODING_ERROR |
 | DATAGRAM without having advertised `max_datagram_frame_size`, or a well-formed DATAGRAM larger than advertised (corpus `datagram-above-limit`) | PROTOCOL_VIOLATION |
 | DATAGRAM whose Length runs past the record, even when it also exceeds `max_datagram_frame_size` (corpus `datagram-overrun-above-limit`: decode errors take precedence, SPEC.md Section 10.3) | FRAME_ENCODING_ERROR |
+| invalid format or unnegotiated PADDING on a carrier datagram channel in use (EXTENSIONS.md Section 6.8) | PROTOCOL_VIOLATION |
 | variable-length integer fields (not frame types) encoded in more bytes than necessary | accepted (corpus `max-stream-data-non-minimal`) |
 | STREAM offset plus length above 2^62 - 1 | FRAME_ENCODING_ERROR |
 | MAX_STREAMS, STREAMS_BLOCKED, GOAWAY value above 2^60 (stream counts: a stream ID has 62 bits, two of them for the type) | FRAME_ENCODING_ERROR |
@@ -140,7 +167,9 @@ decoded value with the implementation's own encoder:
 | QX_TRANSPORT_PARAMETERS anywhere but first, or on a joined pipe | PROTOCOL_VIOLATION; TRANSPORT_PARAMETER_ERROR when its parameter block is also not valid, whether malformed or containing a duplicate, prohibited or out-of-range parameter (corpus `record-misplaced-tp-malformed`, `record-misplaced-tp-duplicate`; decode errors first, SPEC.md Section 10.3) |
 | duplicate parameter; prohibited QUIC parameter; malformed value | TRANSPORT_PARAMETER_ERROR |
 | `max_record_size` below 16382; `initial_max_streams_*` above 2^60 | TRANSPORT_PARAMETER_ERROR |
-| `reset_stream_at`, `zmux_goaway`, `zmux_priority`, `zmux_datagram_flows` with a non-empty value | TRANSPORT_PARAMETER_ERROR |
+| Empty-value parameters with non-empty values, including `zmux_datagram_family` | TRANSPORT_PARAMETER_ERROR |
+| `zmux_carrier_datagram_padding` without its required companions (EXTENSIONS.md Section 6.8) | TRANSPORT_PARAMETER_ERROR |
+| `zmux_datagram_flows` with any value, or zmux evidence without the family parameter | TRANSPORT_PARAMETER_ERROR |
 | `zmux_role` with an invalid role, a missing or extra nonce | TRANSPORT_PARAMETER_ERROR |
 | `zmux_preamble` without `reset_stream_at`, below 1, above `max_record_size` - 32 or above the sender's stream windows | TRANSPORT_PARAMETER_ERROR |
 | `zmux_multipath` malformed, or with a value whose length disagrees with Locator Length | TRANSPORT_PARAMETER_ERROR |
@@ -168,7 +197,8 @@ decoded value with the implementation's own encoder:
 | preamble split across frames, above the limit, malformed TLV, repeated OPEN_INFO or PRIORITY, bad PRIORITY TLV | PROTOCOL_VIOLATION |
 | opener's stream with final size 0, plain RESET_STREAM, or Reliable Size below the preamble, without a local STOP_SENDING | PROTOCOL_VIOLATION |
 | PRIORITY_UPDATE for an unopened local stream or for the sender's own unidirectional stream | STREAM_STATE_ERROR |
-| datagram flow naming a unidirectional stream, an unopened local stream or a stream beyond the limit; truncated flow prefix | PROTOCOL_VIOLATION |
+| DATAGRAM with a truncated Sequence, Flow or required Context ID, or a Flow naming an invalid stream (EXTENSIONS.md Sections 6.3 and 6.4) | PROTOCOL_VIOLATION |
+| DATAGRAM_ACK outside its family or directional capability gate, invalid Channel, truncated field, range underflow, or exceeding the count or size bound | FRAME_ENCODING_ERROR |
 | GOAWAY that raises a watermark; PRIORITY_UPDATE with an old sequence number | ignored (chargeable outside multipath sessions) |
 
 ### 4.5 Multipath and resume
@@ -178,6 +208,7 @@ decoded value with the implementation's own encoder:
 | unauthenticated join: malformed Hello, unknown Locator, Suite outside the set, failed AEAD, a key share missing, of a Group not usable or of the wrong length, pending-join and per-source limits, no Hello within the first-record timeout | carrier closed or stalled by the reject policy, without any response; session unaffected; a failed AEAD is reported as `JoinAuthFailed` |
 | new carrier while the listener's bound on carriers before a session is full (MULTIPATH.md Section 5.6) | the oldest stalled carrier closed to make room; with none stalled, the new carrier closed without any response; sessions unaffected |
 | carrier to be stalled while stalled carriers hold half of that bound | closed at once instead, without any response |
+| authenticated Join denied by authorization, or invalidated while authorization was pending (MULTIPATH.md Section 5.4 step 7) | carrier closed without a Reply, first batch discarded, no state committed for the Join, including the epoch transition of MULTIPATH.md Section 10.7 |
 | authenticated join whose key share is refused (`kex`, secure-carrier/SPEC.md Section 11.6) | carrier closed, counted, the pipe ID's bit stays set; session unaffected |
 | anything other than a verified Reply on a JOINING attachment, a CONNECTION_CLOSE or an oversized record included | the attachment fails; the session is unaffected and nothing read reaches it |
 | authenticated join whose pipe ID has attachment state, has its replay bit set or is stale (MULTIPATH.md Section 4.3) | carrier closed, counted in `join_replays`; session unaffected |
@@ -201,6 +232,7 @@ decoded value with the implementation's own encoder:
 | the writer's own lane closed or reset before it is confirmed | refused: no failure, nothing reinjected, no further lane on that pipe |
 | QX_TRANSPORT_PARAMETERS leading the joiner's inbound direction of a new attachment | discarded, not counted in the position |
 | outdated PIPE_ACK, entries with Position 0, duplicate STREAM data, outdated limits, PIPE_STATUS with an old sequence number or for a pipe ID of the peer's parity without attachment state, PIPE_ABANDON for such an ID outside the replay window or with its bit set | ignored, never chargeable |
+
 
 ---
 
@@ -253,19 +285,15 @@ behaviour"):
    messages from the target accepted as no-ops (SPEC.md Section 3.4);
 10. the `qmux` crate's `application_protocols` parameter, with zmux's
     optional hook enabled and disabled;
-11. zmux as client with `early_data` wrongly set toward the target (SPEC.md
-    Section 6.1.2): the target closes at the PIPE_ACK fence with
-    FRAME_ENCODING_ERROR, its application sees no stream, and the zmux side
-    reports `EarlyDataRejected`. This is the only test in which the target
-    receives a zmux frame.
+11. plain QMux 0-RTT with remembered parameters on a carrier that provides
+    it, with zmux in both roles (SPEC.md Section 6.1.2).
 
-Pass criteria: no protocol error on either side and every byte delivered (test 11
-aside, whose pass condition is its own), the
-zmux side's no-effect budget (SPEC.md Section 9.4) never drops below
+Pass criteria: no protocol error on either side, every byte delivered, and
+the zmux side's no-effect budget (SPEC.md Section 9.4) never drops below
 4000 tokens under the target's traffic (the target sends no chargeable frames
 beyond its pings and empty messages), and a packet capture of the zmux side shows no zmux frame
 type, no PIPE_ACK and no out-of-order STREAM data (SPEC.md Section 13.2),
-except the fence of test 11.
+including in 0-RTT.
 
 ---
 

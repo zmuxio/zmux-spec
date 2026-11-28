@@ -98,6 +98,12 @@ def frame_fields(f):
         out += [_vf("Stream ID", f["id"]), _vf("Sequence Number", f["seq"]),
                 ("Priority", bytes([b]),
                  f"urgency {f['urgency']}, incremental {int(bool(f.get('incremental')))}")]
+    elif t == "DATAGRAM_ACK":
+        out += [_vf("Pipe ID", f["pipe"]), _bf("Channel", bytes([f["channel"]])),
+                _vf("Largest Sequence", f["largest"]), _vf("ACK Delay (us)", f["delay"]),
+                _vf("Range Count", len(f["ranges"])), _vf("First Range", f["first_range"])]
+        for r in f["ranges"]:
+            out += [_vf("  Gap", r["gap"]), _vf("  Range Length", r["length"])]
     elif t == "PIPE_ACK":
         out.append(_vf("Entry Count", len(f["entries"])))
         for e in f["entries"]:

@@ -106,8 +106,9 @@ An endpoint may be suspended in one direction only (Section 2):
 
 ### 4.3 Rejoining
 
-Either endpoint may join new pipes while suspended, using MULTIPATH.md
-Section 5 unchanged; a session that is join pending (MULTIPATH.md Section 3.3) has
+A rejoin uses the family validation and admission of MULTIPATH.md Section
+5.4. An endpoint MUST NOT reuse suspended state, locators or join keys
+across protocol families. A session that is join pending (MULTIPATH.md Section 3.3) has
 no join keys, so one that suspends before that ends cannot rejoin and ends at the
 grace expiry (Section 8).
 
@@ -190,6 +191,8 @@ every inbound pipe that ended (MULTIPATH.md Section 6.3 rule 4).
 ---
 
 ## 6. Retransmission from the acknowledged positions
+
+Datagram sequence and deduplication state follow EXTENSIONS.md Section 6.9.
 
 Every failed pipe's information beyond its acknowledged position (that of
 the lane that carried it, for a pipe with lanes) was queued

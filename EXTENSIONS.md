@@ -1,14 +1,9 @@
 # zmux Negotiated Features
 
-Status: normative. Each feature in this document is announced with a zmux
-transport parameter and is **in use** only when both endpoints sent that
-parameter (SPEC.md Section 5.5). zmux endpoints send `zmux_goaway`,
-`zmux_preamble`, `zmux_priority` and `reset_stream_at` in every session;
-`zmux_role` and `zmux_datagram_flows` depend on configuration. When a feature
-is not in use, its frames are unknown frames and its rules do not apply. With
-a plain QMux peer none of these features is in use (SPEC.md Section 13).
-Sections 7, 10 and 11 are conventions built on these features and on the
-core protocol, not features of their own.
+Status: normative. Bilateral features are in use as defined in SPEC.md
+Section 5.5. Section 6 defines datagrams, including the QMux form and the
+rules for sessions between zmux endpoints. Sections 7, 10 and 11 define
+conventions built on the core protocol and its extensions.
 
 ---
 
@@ -394,122 +389,105 @@ CVE-2019-9513).
 
 ### 6.1 Base
 
-zmux uses the DATAGRAM frames of RFC 9221 as QMux-02 Section 9.1 permits:
+The frame encoding and unilateral `max_datagram_frame_size` parameter follow
+RFC 9221 Sections 3 and 4 as permitted by QMux-02 Section 9.1. An endpoint
+MUST NOT send a DATAGRAM without a positive value from the receiver, and
+MUST close the session with PROTOCOL_VIOLATION if a well-formed DATAGRAM is
+received without having advertised support or exceeds the advertised size
+(SPEC.md Section 10.3). DATAGRAM is exempt from flow control
+(RFC 9221 Section 5.3).
 
-- support for receiving is announced with `max_datagram_frame_size` (0x20);
-  zmux implementations send their own `max_record_size` (65535) when the
-  application enables datagrams, the QMux equivalent of RFC 9221's
-  recommended 65535 (QMux-02 Section 9.1);
-- a DATAGRAM received without having announced support, or larger than
-  announced, is a PROTOCOL_VIOLATION (RFC 9221 Section 3);
-- the largest DATAGRAM frame is bounded by the peer's `max_datagram_frame_size`
-  and by the peer's `max_record_size` (QMux-02 Section 9.1);
-- DATAGRAM frames are not flow controlled (RFC 9221 Section 5.3).
+### 6.2 Wire format selection
 
-**No fragmentation.** zmux never splits a datagram across frames or records
-and never reassembles one. A datagram that does not fit is refused locally
-with a "too large" error; the application then uses a stream.
+With a plain QMux peer (SPEC.md Section 13), an endpoint MUST treat the
+Datagram Data as opaque application bytes. Sections 6.3 to 6.5 and 6.8 to 6.10
+apply only between zmux endpoints.
 
-### 6.2 Datagram flows parameter
+The `zmux_datagram_flows` parameter (0x0af391ed) is retired. Endpoints
+MUST NOT send it. A receiver MUST close the session with
+TRANSPORT_PARAMETER_ERROR if the parameter is present, regardless of its
+value (SPEC.md Section 5.5).
 
-`zmux_datagram_flows`, ID 0x0af391ed, empty value. When it is in use, every
-DATAGRAM's data has the format of Section 6.3. When it is not in use, the
-data is opaque to zmux (RFC 9221 Section 5.1).
+### 6.3 Datagram Data
 
-### 6.3 Flow prefix
+A DATAGRAM between zmux endpoints MUST use the following Datagram Data format.
 
 ```text
 Datagram Data {
+  Sequence (i),
   Flow (i),
   [Context ID (i)],
   Payload (..),
 }
 ```
 
-- **Flow**: 0 for a datagram that belongs to the session as a whole; n > 0
-  for a datagram associated with the bidirectional stream with identifier
-  n - 1.
-- **Context ID**: present if and only if Flow > 0. An application-defined
-  value that distinguishes kinds of datagrams within one association, in the
-  style of RFC 9298 Section 4: 0 is the default context (for example UDP
-  payloads to the stream's target); other values are allocated by convention
-  of the application, even values by the stream's opener and odd values by
-  the other endpoint.
-- A truncated Flow or Context ID is a PROTOCOL_VIOLATION.
-
-The stream carries the association's life cycle: its preamble names the
-target, its end ends the association, and stream-count credit bounds the
-number of associations (the MASQUE model of RFC 9297 and RFC 9298). No
-separate association identifiers, dissociate messages or garbage collection
-exist.
+- **Sequence** identifies the logical datagram in its sending direction
+  (Section 6.9).
+- **Flow** is 0 for a session datagram. A positive value identifies
+  the bidirectional stream with ID Flow - 1.
+- **Context ID** MUST be present exactly when Flow is positive. Context 0 is
+  the default context. Other contexts have application-defined meanings,
+  with even values allocated by the stream opener and odd values by its
+  peer.
+- A receiver MUST treat a truncated required field as PROTOCOL_VIOLATION,
+  subject to the early discard in Section 6.9.
 
 ### 6.4 Association rules
 
-- Flow - 1 MUST be a bidirectional stream ID; a unidirectional one is a
-  PROTOCOL_VIOLATION.
-- A locally initiated stream that has not been opened: PROTOCOL_VIOLATION.
-- A peer-initiated stream with an index at or above the limit the receiver
-  advertised: PROTOCOL_VIOLATION.
-- A peer-initiated stream within the limit that has not been opened yet
-  (possible in multipath sessions): the receiver drops the datagram or holds
-  it for at most one smoothed RTT until the stream opens (RFC 9297 Section
-  2.1); held datagrams count against the byte limit of Section 6.5. A
-  multipath sender SHOULD avoid this: while the opening frame of a stream is
-  unacknowledged, it sends that stream's datagrams after it on a pipe that
-  carries the frame or a reinjected copy of it, and while no such pipe may
-  carry DATAGRAM frames (MULTIPATH.md Section 11 rule S1) it keeps them in
-  its send queue, so they cannot overtake the opening frame.
-- A stream whose parts are both terminal, that the application has
-  released, or whose state is discarded: the datagram is dropped and
-  counted. This is not an error and not chargeable.
-- DATAGRAM frames never open streams.
+For Flow > 0:
 
-### 6.5 Queues and loss
+- The receiver MUST treat a unidirectional stream ID, an unopened locally
+  initiated stream or a peer-initiated stream at or beyond its advertised
+  limit as PROTOCOL_VIOLATION.
+- For a peer-initiated stream within the limit that has yet to open, the
+  receiver MAY hold the datagram pending the opening frame for at most one
+  smoothed RTT. It MUST discard the datagram if it cannot hold it or its
+  holding period expires. Holding and release follow Sections 6.5 and 6.9.
+- The receiver MUST discard a datagram for a stream whose two parts are
+  terminal, that the application has released or whose state was discarded.
+- A DATAGRAM MUST NOT open a stream.
 
-- A sender and a receiver keep bounded datagram queues. When a queue is
-  full, its oldest datagram is dropped; datagrams may also be dropped for
-  age. Datagrams with Flow > 0 are delivered with their stream, never with
-  the session-wide datagrams of Flow 0.
-- Dropping a datagram is never an error and never charged to the no-effect
-  budget (SPEC.md Section 9.4). Queue lengths and byte limits are local and
-  bound the memory a peer can make the receiver hold with datagrams that are
-  not read.
-- In a session that is not a multipath session, a datagram that has been
-  written to the carrier is delivered (QMux-02 Section 1.1). In a multipath
-  session, datagrams are sent on one pipe, are never reinjected, and are lost
-  with a failed pipe: they are truly unreliable.
-- An endpoint never sends a datagram twice; an application that needs
-  redundancy sends it twice itself.
+For multipath placement before the opening frame is acknowledged, see
+MULTIPATH.md Section 11 rule S7.
+
+### 6.5 Delivery and loss
+
+A receiver MUST deliver Flow 0 datagrams to the session and Flow > 0
+datagrams only to the associated stream. It MUST bound the total bytes of
+unread and held datagrams and MAY discard datagrams when there is insufficient
+space. Datagram delivery has no ordering guarantee. Datagram discards are
+neutral under the no-effect accounting (SPEC.md Section 9.4).
+
+A sender MUST NOT retransmit or reinject a datagram. It MAY dispatch extra
+copies under MULTIPATH.md Section 7.5.2.
 
 ### 6.6 Datagram sizes
 
-A DATAGRAM frame costs its type (1 byte), a Length field when it is not
-the last frame of its record (2 bytes for frames of 64 bytes to 16383
-bytes, 4 above), and, with datagram flows in use, the Flow field (1 byte for
-Flow 0; 1 to 8 bytes for a stream's Flow) and, for Flow > 0 only, the
-Context ID (1 byte for values below 64). The largest payload is therefore the smaller of the
-peer's `max_datagram_frame_size` and its `max_record_size`, minus that
-overhead:
+A sender MUST fit a datagram in one frame and use a pipe on which the
+entire frame fits in a record or in the carrier datagram channel (Section 6.8).
+The frame fits within the peer's advertised `max_datagram_frame_size` and,
+for records, within the applicable record size limit (SPEC.md Section 3.2).
+`max_datagram_frame_size` counts only the DATAGRAM frame, including its Type
+and Datagram Data. On a channel, the complete channel datagram MUST fit the
+carrier's channel size limit and follow the format in Section 6.8.
 
-| Peer | Largest frame | Largest session datagram payload |
+The frame overhead is one byte for the type (0x30 or 0x31), plus the encoded
+Length for type 0x31. For a zmux peer the sender also subtracts the encoded
+sizes of Sequence, Flow and, for Flow > 0, Context ID. A shortest-form
+Sequence occupies 1, 2, 4 or 8 bytes at the boundaries 64, 2^14 and
+2^30. A shortest-form Flow 0 occupies one byte.
+
+| Peer | Largest record DATAGRAM frame | Largest Flow 0 or plain QMux payload, type 0x30 |
 |---|---|---|
-| zmux endpoint (both parameters 65535) | 65535 | 65533 with datagram flows (type and Flow 0), 65534 without |
-| plain QMux peer with the default record size and a `max_datagram_frame_size` of at least 16382 | 16382 | 16381 (datagram flows are never in use with it) |
-
-A stream's datagrams cost the length of the stream's Flow and Context ID
-more. The size limits are those of the peer, not of a pipe. A pipe whose carrier
-takes smaller records (SPEC.md Section 3.2, at least 8192 bytes) carries only the
-datagrams that fit in its records; a datagram that fits on no usable pipe is dropped,
-as a datagram may be.
+| zmux peer with both limits 65535 and a pipe that can carry that size | 65535 | 65532, 65531, 65529 or 65525 bytes for a Sequence of 1, 2, 4 or 8 bytes, respectively |
+| plain QMux peer with the default record size and a `max_datagram_frame_size` of at least 16382 | 16382 | 16381 bytes |
 
 ### 6.7 Datagrams across relays and nested sessions
 
-Datagram semantics are per session and per hop. A relay that forwards
-datagrams from one session to another applies each hop's queues and drops,
-never queues beyond the destination session's send queue and never waits for
-credit. Datagrams of a nested session (Section 10) travel in the records of
-its pipes and are dropped only by the nested session's own queues or with a
-failed pipe.
+Datagram semantics apply per session. A relay forwarding a datagram between
+sessions sends it as a new datagram in the destination session. A nested
+session (Section 10) uses its own sequence space regardless of the sequences
+of the outer session.
 
 ### 6.8 Datagrams on a carrier's datagram channel
 
@@ -518,8 +496,7 @@ reliable stream that is the pipe: QUIC DATAGRAM frames (RFC 9221) on the
 connection a QUIC stream pipe belongs to, HTTP Datagrams (RFC 9297) of the
 HTTP/3 request stream that is the pipe, and the datagrams of the
 WebTransport session a WebTransport stream pipe belongs to. A DATAGRAM frame
-sent there instead of in a record is not held behind stream data or
-retransmitted by the carrier: a lost one is lost, as on IP.
+can be sent in a carrier datagram.
 
 `zmux_carrier_datagrams`, ID 0x3d274c5f, empty value: the sender accepts
 DATAGRAM frames on the datagram channels of its pipes. An endpoint sends it
@@ -529,49 +506,162 @@ the parameter and the pipe's carrier has the channel (negotiated by the
 carrier itself: QUIC `max_datagram_frame_size`, HTTP/3
 `SETTINGS_H3_DATAGRAM`, WebTransport datagram support).
 
-**Format.** A channel datagram carries exactly one DATAGRAM frame, encoded
-as the last frame of a record (type 0x30, no Length field):
+`zmux_carrier_datagram_padding`, ID 0x2071d4ee, empty value, declares support
+for the PADDING field below. It requires `zmux_carrier_datagrams` and a
+positive `max_datagram_frame_size` in the same transport parameter block
+(SPEC.md Section 5.5). Channel padding is **in use** on a pipe when both
+endpoints sent `zmux_carrier_datagram_padding` and the pipe's channel is in
+use. The exchanged parameters also apply after resuming the same session
+(SPEC.md Section 5.2).
+
+**Format.** A channel datagram MUST use this format:
 
 ```text
 Channel Datagram {
-  Pipe Stream ID (i),
-  DATAGRAM Frame (..),
+  [Pipe Stream ID (i)],
+  [PADDING (..)],
+  Type (i) = 0x30,
+  Datagram Data (..),
 }
 ```
 
 - **Pipe Stream ID** is the carrier stream ID of the pipe, as the carrier
   numbers it (the QUIC stream ID, or the WebTransport stream's ID within its
   QUIC connection), present on QUIC and WebTransport channels. On an HTTP/3
-  channel the HTTP Datagram's Quarter Stream ID already names the request
-  stream, and the payload is the DATAGRAM frame alone.
-- The frame's data has the format of Sections 6.2 and 6.3 as negotiated for
-  the session, and all of Sections 6.1 to 6.6 apply as if the frame had
-  arrived in a record on that pipe.
+  channel, the HTTP Datagram's Quarter Stream ID names the request stream
+  and the channel datagram starts at the next field.
+- **PADDING** is zero or more one-byte PADDING frames (`0x00`, SPEC.md
+  Section 4.3), permitted only when channel padding is in use. When present,
+  PADDING and the DATAGRAM frame together occupy at most 65535 bytes. This
+  limit excludes the Pipe Stream ID and is independent of `max_record_size`.
+- **Type** starts the single DATAGRAM frame. Type `0x30` has no Length field.
+  **Datagram Data** (Section 6.3) consumes the remainder of the carrier
+  datagram, including any trailing zero bytes.
 
-**Sending.** A sender MAY send a DATAGRAM frame on the channel of the pipe
-that the frame would otherwise go to (Section 6.5; MULTIPATH.md Section 11
-rule S7) when the channel is in use and the frame fits the channel's current
-maximum datagram size; otherwise, or when the sender chooses, the frame
-goes in a record as before. The choice is per frame: datagrams carry no ordering promise, and
-their sizes and queues (Sections 6.5 and 6.6) are unchanged.
+**Sending.** A sender MAY use a pipe's channel only after the session is
+established (SPEC.md Section 6.1) and the pipe attachment is available for
+sending with its channel in use, subject to Section 6.6 and, in multipath
+sessions, MULTIPATH.md Section 11 rule S7.
 
-**Receiving.** A channel datagram whose Pipe Stream ID names no pipe of a
-session at the receiver (unknown, not yet attached, or closed) is dropped
-and counted; one received for a pipe of a session that did not negotiate the
-channel is dropped and counted. Otherwise a payload that is not exactly one
-DATAGRAM frame of type 0x30 (a truncated or longer payload, or another
-frame type) is a PROTOCOL_VIOLATION of that session. A channel datagram may
-arrive before the opening frame of the stream its Flow names, on a single
-pipe as well: for a peer-initiated stream within the limit that has not been
-opened yet, a receiver SHOULD hold it as Section 6.4 allows (at most one
-smoothed RTT, within the byte limit of Section 6.5) rather than drop it.
-Channel datagrams are not records: they do not advance PIPE_ACK positions, are not charged to the
-no-effect budget, and never restart idle timers.
+**Receiving.** The receiver MUST resolve the pipe from its carrier stream
+association before examining the frame region. It MUST discard a datagram
+that cannot be routed to an attached pipe or whose pipe's channel is out of
+use. For a datagram routed to a channel in use, the receiver MUST close the
+session with PROTOCOL_VIOLATION if the frame region violates the format
+above. Sections 6.1, 6.3 to 6.5, 6.9 and 6.10 apply to the DATAGRAM frame.
+Channel datagrams do not advance PIPE_ACK positions or restart idle timers.
 
-**Relation to other mechanisms.** Plain QMux peers never send or see the
-parameter, and so never the channel. A pipe that is a stream of a nested
+**Relation to other mechanisms.** The plain QMux rules are in Section 6.2
+and SPEC.md Section 13. A pipe that is a stream of a nested
 session, or a relayed carrier, has no channel; hop-by-hop relaying (Section
 6.7) uses each hop's channel where that hop has one.
+
+### 6.9 Sequence and deduplication
+
+A sender MUST use one counter per session direction across all Flows,
+pipes and channels. It MUST assign the next Sequence exactly once, starting
+at 0 and incrementing by one, immediately before dispatching the first copy
+of a logical datagram. The sender MUST stop sending new logical datagrams
+after assigning 2^62 - 1. Every copy MUST carry identical Datagram Data
+(Sequence, Flow, Context ID if present and Payload).
+
+A receiver MUST maintain one deduplication window per session direction
+across Flows, pipes and channels. Its width W is local and MUST be between
+64 and 16384 inclusive. The first datagram with a valid header and
+association establishes the highest seen value H. When a valid Sequence q exceeds H,
+the receiver MUST advance H to q and forget occupied positions outside the
+new window, even if admission fails. A Flow eligible for holding, or one
+whose stream has since closed, is a valid association for this purpose.
+
+Once H is established, the receiver MUST discard q if q <= H - W or if
+its position in the window is already occupied. This check follows
+validation of the outer frame and parsing of Sequence, and precedes parsing
+Flow, association checks and queue or holding-space allocation. Section 6.10 accounts for arrivals
+independently of the deduplication outcome.
+
+- The receiver MUST occupy an eligible position only on successful
+  admission to a delivery queue or to holding space pending a stream's
+  opening frame. Admission and occupation MUST take effect together.
+- A duplicate MUST NOT refresh the holding deadline. When a held datagram
+  expires before it can be admitted to a delivery queue, the receiver MUST
+  clear its position if still in the window. It MUST also clear the
+  position if transfer from holding space to the delivery queue fails.
+- A position committed to a delivery queue MUST remain occupied until it
+  leaves the window, including after application delivery.
+
+The sender and receiver MUST preserve the counter and deduplication window
+when the session resumes (RESUME.md Section 6). A separate session has
+independent sequence and deduplication state.
+
+### 6.10 DATAGRAM_ACK
+
+An endpoint MAY send DATAGRAM_ACK in a reliable record after receiving
+datagrams under Section 6.3. It MAY return the report on any reverse pipe
+that can carry the frame (MULTIPATH.md Section 11 rule S1). Without a
+qualifying return pipe it MAY wait within its reporting-state bounds or
+discard the report. The frame is available only between endpoints of the
+same zmux family (SPEC.md Section 5.5), from the endpoint that advertised
+a positive `max_datagram_frame_size` for the reported direction. SPEC.md Section 4.1 defines
+the handling of frames outside their availability conditions.
+
+```text
+DATAGRAM_ACK Frame {
+  Type (i) = 0x28bbd99f,
+  Pipe ID (i),
+  Channel (8),
+  Largest Sequence (i),
+  Ack Delay (i),
+  Range Count (i),
+  First Range (i),
+  Ack Range (..) ...,
+}
+```
+
+- **Pipe ID** identifies the inbound zmux pipe on which the reported
+  datagrams arrived (MULTIPATH.md Section 4). It can differ from the
+  pipe carrying the report.
+- **Channel** is 0 for a record on any lane of that pipe and 1 for its
+  carrier datagram channel. Other values are invalid.
+- **Largest Sequence**, **Range Count**, **First Range** and **Ack Range**
+  encode inclusive descending ranges as in RFC 9000 Sections 19.3 and
+  19.3.1, with Sequence in place of packet number. Range Count is the
+  number of additional Gap and Ack Range Length pairs after First Range.
+  First Range is subtracted from Largest Sequence to obtain the smallest
+  value in the first range. Each next range ends at the preceding
+  range's smallest value minus Gap minus 2. Its start is that end minus
+  Ack Range Length.
+- **Ack Delay** is the elapsed time from receipt of the reported Largest
+  Sequence on that pipe and channel to dispatch of this report, in
+  microseconds without an exponent.
+
+A receiver MUST reject an invalid Channel, truncated field or range
+arithmetic below zero, a Range Count above 4090, or an encoded frame
+above 8192 bytes with FRAME_ENCODING_ERROR. Count and byte bounds apply
+before acting on a range. A receiver MUST match ranges against bounded
+dispatch state without enumerating sequence values in a range.
+
+The reporting endpoint MUST report only arrivals on the named pipe and
+channel that pass the outer frame, Sequence and any applicable Flow checks.
+Reporting MUST be independent of whether the copy was admitted, including
+for duplicates and sequences outside the window. An endpoint MUST NOT send a report for a tuple with
+no new arrival since its last report. Reports for a tuple MUST be spaced
+by at least max(25 ms, srtt / 4), using the locally measured smoothed RTT
+of the reporting pipe pair if available and 25 ms otherwise. In the half-open
+window (now - 1 second, now] ending at a report, the endpoint MUST send at most
+twice as many DATAGRAM_ACK frames as it has live inbound pipes at that
+report's dispatch.
+
+Both endpoints MUST bound their reporting state in size and age. The sender
+of a datagram MUST match reports only against copies actually dispatched on
+the reported pipe and channel and still tracked. It MUST ignore unmatched
+entries and MUST NOT account for a tracked copy twice. A report signals
+arrival at the endpoint. It MUST NOT be used to infer application delivery
+or advance the acknowledgement of any reliable pipe position. An absent
+report is insufficient evidence of forward loss. The endpoint MUST NOT use
+DATAGRAM_ACK for congestion control or trigger retransmission from it.
+
+DATAGRAM_ACK is non-ack-eliciting and neutral under SPEC.md Section 9.4.
+The reporting endpoint MUST NOT retransmit or reinject it.
 
 ---
 

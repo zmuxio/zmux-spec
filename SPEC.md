@@ -39,12 +39,9 @@ with QMux [QMUX-02]:
 Compatibility is a hard invariant in one direction: **a zmux endpoint talking
 to a plain QMux endpoint behaves as a correct QMux-02 endpoint** (Section 13).
 Between two zmux endpoints, zmux rules take precedence over QMux rules where
-they differ; every such difference is gated on a transport parameter that a
-plain QMux endpoint never sends. The one difference that precedes the peer's
-parameters, early data under the zmux floor (Section 6.1.2), is gated on
-the application's declaration that the peer is a zmux endpoint, and is
-fenced so that a plain QMux peer processes none of it; early data under
-remembered parameters is QMux-02's own 0-RTT. zmux defines no second, "native" codec.
+they differ. The protocol family is identified by transport parameters
+(Section 5.5). Early application data uses QMux-02's 0-RTT rules with a
+plain QMux peer (Section 6.1.2).
 
 ### 1.3 Conventions
 
@@ -107,8 +104,8 @@ exists it is 333 ms (RFC 9002 Section 6.2.2).
   use (Section 5.5). In any other session there is exactly one pipe in each
   direction.
 - **Plain QMux peer**: a peer that sends none of the zmux transport parameters.
-- **Ack-eliciting frame**: any frame other than PADDING, PIPE_ACK and
-  CONNECTION_CLOSE.
+- **Ack-eliciting frame**: any frame other than PADDING, PIPE_ACK, DATAGRAM_ACK
+  and CONNECTION_CLOSE.
 - **Release (of a stream)**: the moment the local application gives up its
   handle to a stream, after which the endpoint will never deliver data or
   events for that stream to the application (Section 7.6).
@@ -122,7 +119,7 @@ exists it is 333 ms (RFC 9002 Section 6.2.2).
 | SPEC.md (this document) | records, frames, transport parameters, session, streams, flow control, robustness rules, errors, QMux compatibility | normative, core |
 | MULTIPATH.md | pipes, joining, acknowledgement, failure detection, reinjection, pipe removal, scheduling rules, join security | normative, core |
 | RESUME.md | suspension and resumption after all pipes in a direction are lost | normative, core |
-| EXTENSIONS.md | role negotiation, GOAWAY, stream preamble, PRIORITY_UPDATE, datagram flows, application error-code conventions, nested sessions and relays, duplicate sessions | normative, negotiated features and conventions |
+| EXTENSIONS.md | role negotiation, GOAWAY, stream preamble, PRIORITY_UPDATE, datagrams, application error-code conventions, nested sessions and relays, duplicate sessions | normative, negotiated features and conventions |
 | STATE_MACHINE.md | stream, pipe and session state machines | normative summary |
 | REGISTRY.md, assets/registry.json | every codepoint and registration policy | normative |
 | CONFORMANCE.md, TRACES.md, fixtures/ | conformance requirements, invalid inputs, executable traces | normative for conformance claims |
@@ -239,8 +236,10 @@ Record {
 - **Size**: the length in bytes of the Frames field. It does not include the
   Size field itself.
 - **Frames**: one or more complete frames (Section 4). A frame MUST NOT span
-  records. A frame that omits its own length field (STREAM without the LEN
-  bit, DATAGRAM type 0x30) extends to the end of the record.
+  records. PADDING frames preceding a frame are part of Frames and count
+  towards Size. A frame that omits its own length field (STREAM without the
+  LEN bit, DATAGRAM type 0x30) consumes the rest of the record, including any
+  trailing zero bytes.
 
 The first record of a pipe (of a lane) begins at the first byte the carrier
 delivers on it. For a joined pipe it begins after the Join handshake (MULTIPATH.md
@@ -284,15 +283,12 @@ negotiated, but such a limit is never below 8192. A carrier that cannot carry
 8192-byte records is not a zmux carrier.
 
 Every frame except STREAM, DATAGRAM and PIPE_ACK encodes in at most 8192 bytes, so it
-fits in one record on any carrier: the largest is SESSION_EPOCH (MULTIPATH.md Section
-10.7), at most 1487 bytes with the Groups of secure-carrier/SPEC.md Section 11.6 and a
-255-byte Locator, followed by CONNECTION_CLOSE (at most 1043 bytes, Section 4.3) and a
-zmux endpoint's QX_TRANSPORT_PARAMETERS (Section 5). STREAM data is split across
+fits in one record on any carrier. DATAGRAM_ACK uses this bound
+(EXTENSIONS.md Section 6.10). STREAM data is split across
 frames at any byte, except that the frame at offset 0 carries the whole preamble
 (EXTENSIONS.md Section 4.2), which, as a Maximum Preamble Size is at most 8160 (EXTENSIONS.md Section 4.1), also fits the
 floor, and PIPE_ACK across frames at any entry (MULTIPATH.md Section 6.2);
-a DATAGRAM frame is never split and is sent only on a pipe whose records can hold it
-(EXTENSIONS.md Section 6.6). A definition that adds a frame, a transport parameter or
+DATAGRAM placement and size follow EXTENSIONS.md Section 6.6. A definition that adds a frame, a transport parameter or
 a Group MUST keep these frames within 8192 bytes.
 
 ### 3.3 Record boundaries
@@ -390,6 +386,7 @@ With message framing:
 | QX_PING | 0x348c67529ef8c7bd-0x348c67529ef8c7be | QMux-02 4.3 | always |
 | GOAWAY | 0x1911f43e | EXTENSIONS.md 3 | `zmux_goaway` in use |
 | PRIORITY_UPDATE | 0x073d08cf | EXTENSIONS.md 5 | `zmux_priority` in use |
+| DATAGRAM_ACK | 0x28bbd99f | EXTENSIONS.md 6.10 | same zmux family and the reporting endpoint advertised a positive `max_datagram_frame_size` |
 | PIPE_ACK | 0x0b2b3eeb | MULTIPATH.md 6 | `zmux_multipath` or `zmux_pipe_ack` in use |
 | PIPE_LANE | 0x3a05a1c9 | MULTIPATH.md 5.8 | lanes available toward the receiver (MULTIPATH.md 3.6); first frame of a lane only, its first record holding nothing else but PADDING |
 | PIPE_PING | 0x269b43e6 | MULTIPATH.md 6.4 | `zmux_multipath` in use |
@@ -582,13 +579,7 @@ Rules:
    attachment without processing it (MULTIPATH.md Section 5.7 step 3).
 3. Until it has processed the peer's transport parameters, an endpoint MUST
    NOT send any frame other than QX_TRANSPORT_PARAMETERS, PADDING, QX_PING
-   and CONNECTION_CLOSE, except the early data of Section 6.1.2: STREAM
-   frames, preceded by a PIPE_ACK fence toward a zmux peer, sent under
-   remembered parameters in carrier early data as QMux-02 Sections 4.2 and
-   8.2 allow, or under the zmux floor toward a peer that its application
-   declares to be a zmux endpoint, after the carrier's handshake or in
-   carrier early data. It sends no other stream data before it
-   knows the peer's flow-control limits.
+   and CONNECTION_CLOSE, except plain QMux early data under Section 6.1.2.
 
 ### 5.2 Processing rules
 
@@ -628,8 +619,7 @@ Rules:
 | max_record_size | 0x0571c59429cd0845 | 16382 | 65535 | Section 3.2 |
 
 The "zmux endpoints send" column gives the RECOMMENDED values of a
-general-purpose implementation; applications may configure others, at or
-above the early-data floor of Section 6.1.2. A zmux endpoint MUST send the
+general-purpose implementation. A zmux endpoint MUST send the
 initial flow-control and stream-limit parameters explicitly, because their
 absent value is 0.
 
@@ -648,8 +638,10 @@ ignore them (QMux-02 Section 5.1).
 | zmux_goaway | 0x04528a5f | EXTENSIONS.md 3 |
 | zmux_preamble | 0x0439e07a | EXTENSIONS.md 4 |
 | zmux_priority | 0x31e7139d | EXTENSIONS.md 5 |
-| zmux_datagram_flows | 0x0af391ed | EXTENSIONS.md 6 |
+| zmux_datagram_flows | 0x0af391ed | retired (EXTENSIONS.md Section 6.2) |
+| zmux_datagram_family | 0x27e7a042 | Section 5.5 |
 | zmux_carrier_datagrams | 0x3d274c5f | EXTENSIONS.md 6.8 |
+| zmux_carrier_datagram_padding | 0x2071d4ee | EXTENSIONS.md 6.8 |
 | zmux_multipath | 0x30dc2978 | MULTIPATH.md 3 |
 | zmux_ack_threshold | 0x2762c7e5 | MULTIPATH.md 3 |
 | zmux_pipe_ack | 0x34b47621 | MULTIPATH.md 3.5 |
@@ -658,7 +650,25 @@ ignore them (QMux-02 Section 5.1).
 | zmux_session_crypto | 0x026f24b5 | MULTIPATH.md 3.7 |
 | zmux_resume | 0x0d5778ce | RESUME.md 3 |
 
-### 5.5 Features in use
+### 5.5 Protocol family and features in use
+
+An endpoint implementing this specification MUST send the empty transport
+parameter `zmux_datagram_family` (0x27e7a042) in every bootstrap, on every
+carrier, independently of its datagram capability. For family identification,
+the names in Section 5.4 are zmux evidence. The receiver MUST validate the
+complete peer parameter block under Section 5.2 and Section 6.2 of
+EXTENSIONS.md before applying any application frame, including one in the
+same record.
+
+- A validated block containing `zmux_datagram_family` identifies the peer as
+  belonging to the same zmux family.
+- A validated block containing no zmux evidence identifies a plain QMux peer
+  (Section 13).
+- A block with any zmux evidence and no `zmux_datagram_family` identifies an
+  incompatible peer. The receiver MUST close with TRANSPORT_PARAMETER_ERROR.
+
+Only same-family peers use the zmux features below. Family identification
+is fixed for the lifetime of the session.
 
 A zmux feature is **in use** in a session when both endpoints sent the
 parameter that announces it, and any additional condition in the feature's
@@ -672,7 +682,7 @@ frames and neither applies its rules; its frames are unknown frames (Section
 | GOAWAY | both sent `zmux_goaway` |
 | stream preamble | both sent `zmux_preamble` (each also sends `reset_stream_at`) |
 | PRIORITY_UPDATE | both sent `zmux_priority` |
-| datagram flows | both sent `zmux_datagram_flows` |
+| native datagram channels and channel padding | EXTENSIONS.md Section 6.8 |
 | multipath | both sent `zmux_multipath` and their secret flags select a secret source (MULTIPATH.md 10.1) |
 | pipe acknowledgement | both sent `zmux_pipe_ack` and multipath is not in use (MULTIPATH.md 3.5) |
 | lanes, toward one endpoint | that endpoint sent `zmux_max_lanes` greater than 1, and multipath or pipe acknowledgement is in use (MULTIPATH.md 3.6; one-directional: the other endpoint may open lanes, the announcing one only as the other's value allows) |
@@ -680,9 +690,8 @@ frames and neither applies its rules; its frames are unknown frames (Section
 
 RESET_STREAM_AT and DATAGRAM keep their unilateral QUIC meaning (Section 4.2).
 zmux endpoints send `zmux_goaway`, `zmux_preamble`, `zmux_priority`,
-`zmux_pipe_ack`, `zmux_max_lanes` and `reset_stream_at` in every session
-(`zmux_preamble`, `zmux_pipe_ack` and `reset_stream_at` are required by
-Section 6.1.2); the other zmux parameters depend on configuration. Between
+`zmux_pipe_ack`, `zmux_max_lanes` and `reset_stream_at` in every session.
+Other feature parameters depend on configuration. Between
 two zmux endpoints, pipe acknowledgement or multipath is therefore always in
 use: every such session is a session with acknowledgement (Section 6.4).
 
@@ -796,201 +805,43 @@ join, but not the bootstrap pair itself.
 
 #### 6.1.2 Early data
 
-An endpoint may send stream data before it has processed the peer's
-transport parameters: its **early data**.  Early data is sent under an
-**assumed parameter set**, which stands for the peer's parameters until the
-real ones have been processed, as RFC 9000 Section 7.4.1 lets remembered
-parameters stand for them. There are two such sets, and an endpoint uses at
-most one of them in a session:
+A zmux endpoint MUST wait for the peer's current transport parameters
+before sending application frames in a zmux session (Section 5.1).
+A host declaration, prior session or cached parameter block cannot confirm
+the family of the current peer. A sender MUST NOT use a remembered parameter
+block containing zmux evidence to send carrier early application data.
+`zmux_datagram_family` is taken from the current bootstrap and is never a
+remembered capability for 0-RTT.
 
-1. **Remembered parameters** (QMux-02 Sections 4.2 and 8.2): on a carrier
-   that resumes a TLS 1.3 session with early data (TLS early data, or QUIC
-   0-RTT for a pipe on a QUIC stream), a client MAY send its first records
-   as carrier early data, under the server's parameters remembered from the
-   session that issued the ticket, exactly as RFC 9000 Section 7.4.1
-   describes. **Carrier early data** is data a carrier delivers before its
-   own handshake has confirmed the peer and on which the carrier reports a
-   verdict to the sender, accepted or rejected: TLS 1.3 early data, QUIC
-   0-RTT, or the first message of a carrier layer whose own handshake
-   carries the client's first records. A client whose TLS library cannot store data with a ticket
-   MAY instead remember the parameters of the most recent session with the
-   same server identity (the name it verified) and use them with any
-   ticket of that identity, in place of RFC 9000 Section 7.4.1's values of
-   the ticket's session; this relies on the server keeping its parameters
-   stable (Replay, below). Without a verified server name there is no such
-   identity and no such memory. Toward a plain QMux peer this is QMux-02's own 0-RTT and
-   nothing more. Remembered values are never used outside carrier early
-   data: a carrier without early data of its own (plain TCP, WebSocket, a
-   full TLS handshake) cannot reject data sent on values that have changed
-   since. A carrier with early data of its own but no remembered
-   parameters (a carrier layer whose first message has no ticket of an
-   earlier session) uses the floor.
-2. **The zmux floor**: when the endpoint uses no remembered parameters and
-   its application declares the peer to be a zmux endpoint, it MAY send
-   early data under the floor below, which every zmux endpoint advertises
-   at least. This is first contact over plain TCP, WebSocket or a full TLS
-   handshake. Nothing on the wire tells an endpoint beforehand that the
-   peer is a zmux endpoint: ALPN identifiers do not distinguish zmux
-   (Section 6.2), and the decision of Section 13.1 is still made from the
-   peer's parameters. The declaration is the application's: the deployment runs zmux at both ends, the negotiated
-   ALPN identifier is one the application uses only between zmux endpoints,
-   or, with the application's consent, an earlier session with the same
-   peer identity showed zmux parameters. The last is a guess that can be
-   wrong (for example behind a load balancer whose fleet mixes zmux and
-   plain QMux servers); it then fails as a wrong declaration does, and an
-   implementation forgets the guess for that peer identity on "early data
-   rejected". Early data under the floor normally follows the carrier's
-   handshake. On a carrier with carrier early data, a client whose
-   application allows its early streams to be replayed (Replay, below) MAY
-   send it as carrier early data instead; the carrier's verdict then
-   applies to it exactly as under remembered parameters (below), and a
-   client whose application does not allow replay sends no early data
-   under the floor on such a carrier before the carrier's handshake has
-   completed.
+The only application frames permitted before receipt of the peer's current
+parameters are STREAM frames in QMux-02 carrier 0-RTT (QMux-02 Sections 4.2
+and 8.2), under remembered parameters of a plain QMux peer. The sender
+MUST bind those remembered parameters and the carrier's authorization for
+0-RTT to a plain QMux resumption context. A context that has been shared
+with a zmux endpoint or whose family is uncertain MUST NOT authorize
+application early data. The sender MUST use the QMux-02 stream encoding
+and the remembered limits while that early data is in flight. A receiver
+MUST accept early application frames only for a plain QMux resumption context,
+after validating the peer's parameter block and obtaining the carrier's
+acceptance of the early data. A receiver MUST close with PROTOCOL_VIOLATION
+on carrier early application frames from a same-family peer. The carrier's replay precautions apply to plain QMux
+early data (RFC 8446 Section 8).
 
-**The floor.** Every zmux endpoint, that is every endpoint that sends a
-parameter of Section 5.4, MUST send `zmux_preamble`, `zmux_pipe_ack` and
-`reset_stream_at`, and MUST advertise at least:
+The sender MUST treat application data refused by the carrier's 0-RTT verdict
+as unsent and repeat the bootstrap after the carrier handshake. It sends
+stream data again only after processing the peer's current parameters.
+If plain QMux early data was sent and the current peer identifies itself as
+zmux, the sender MUST close with TRANSPORT_PARAMETER_ERROR. QMux-02 and
+RFC 9000 Section 7.4.1 govern the remembered limits when both the assumed
+and actual peer are plain QMux.
 
-| Parameter | Floor |
-|---|---|
-| `initial_max_data` | 16384 |
-| `initial_max_streams_bidi` | 4, or 0 for an endpoint that accepts no bidirectional streams |
-| `initial_max_stream_data_bidi_remote` | 4096, unless `initial_max_streams_bidi` is 0 |
-| `zmux_preamble` (Maximum Preamble Size) | 1024 |
-
-Under the floor an endpoint
-sends data on at most the first four bidirectional streams it opens, at
-most 4096 bytes of each, preamble included, and at most 16384 in total;
-`max_record_size` is 16382 (Section 3.2). Accepting it never obliges an endpoint to
-keep a session: under memory pressure or a per-source limit a listener
-closes the session (CONNECTION_REFUSED, or ZMUX_EXCESSIVE_LOAD for abuse),
-and it never discards early data while keeping the session open, so a
-sender sees either its data accepted or the session closed, never a silent
-loss. Receivers do not check the
-floor, except an endpoint that sent early data (Outcome, below).
-
-**Remembered zmux parameters.** RFC 9000 Section 7.4.1 requires every
-transport parameter to say whether it is stored for 0-RTT. For the zmux
-parameters and the QMux and extension parameters zmux uses:
-
-| Parameter | Stored for 0-RTT | A server that accepts carrier early data |
-|---|---|---|
-| `max_record_size`, `zmux_preamble` | mandatory | sends a value at least the remembered one |
-| `zmux_pipe_ack`, `reset_stream_at` | mandatory | sends it when it was remembered |
-| `max_datagram_frame_size`, `zmux_datagram_flows`, `zmux_goaway`, `zmux_priority`, `max_idle_timeout` | optional; early data does not use them | no constraint |
-| `zmux_role`, `zmux_multipath`, `zmux_session_crypto`, `zmux_ack_threshold`, `zmux_max_ack_delay`, `zmux_max_lanes`, `zmux_resume` | prohibited: their values belong to one session (nonces, keys, locators) or, like QUIC's `max_ack_delay` (RFC 9000 Section 7.4.1), are taken fresh from the handshake | no constraint |
-
-**Sending.** Early data, under either set, obeys all of the following:
-
-1. The endpoint's role does not depend on the peer: it has a transport role
-   (Section 5.6) and sends no `zmux_role`, or sends its transport role in it
-   (EXTENSIONS.md Section 2.3). An endpoint that sends `zmux_role` with Role
-   auto sends no early data.
-2. It consists of STREAM frames that open and carry the sending parts of
-   bidirectional or, under remembered parameters, unidirectional streams of
-   the endpoint, within the assumed set's stream counts, windows and record
-   size; the FIN bit is allowed. When the assumed set contains
-   `zmux_preamble`, every stream starts with its preamble (EXTENSIONS.md
-   Section 4.2), no larger than the set's Maximum Preamble Size. No other
-   frame is added except those of Section 5.1 rule 3 and the PIPE_ACK of
-   rule 3.
-3. When the assumed set contains zmux parameters (always under the floor), a
-   PIPE_ACK frame with one entry, Pipe ID 0, Lane 0, Position 0, ACK Delay 0
-   (`8b 2b 3e eb 01 00 00 00 00`, 9 bytes), precedes the first early STREAM
-   frame on the pipe, normally directly after QX_TRANSPORT_PARAMETERS in the
-   same record. Under a remembered set without zmux parameters (a plain
-   QMux peer) there is no PIPE_ACK and no preamble.
-4. It is sent on the bootstrap pipe (lane 0) only. A Join's first batch is a separate
-   mechanism (MULTIPATH.md Section 5.2), and a Hello in Bound mode is never carrier
-   early data (secure-carrier/SPEC.md Section 7.2).
-
-The PIPE_ACK is a **fence**. A peer for which PIPE_ACK is in use (pipe
-acknowledgement or multipath, MULTIPATH.md Section 3.5; every zmux peer,
-Section 5.5) ignores an entry with Position 0 (MULTIPATH.md Section 6.2). Any other peer, every plain QMux peer included, closes the session with FRAME_ENCODING_ERROR at it (RFC 9000 Section 12.4; Section 4.1 rule 3) and processes none of the early data.
-
-**Receiving.** A receiver applies no rule of its own to early data that
-arrives after the carrier handshake: the sender's parameters lead its first
-record and are processed first, and its data is checked against the limits
-the receiver advertised, which cover the floor. A receiver cannot tell such
-early data from data sent later and does not try. A zmux endpoint that
-advertises `initial_max_streams_bidi` 0 closes the session with
-STREAM_LIMIT_ERROR at the first early STREAM frame sent under the floor
-(which opens a bidirectional stream), before it delivers anything. Under
-remembered parameters such a reduction is a violation of RFC 9000 Section
-7.4.1 by the server (Outcome rule 2).
-
-**Outcome.** When it processes the peer's parameters, an endpoint that sent
-early data:
-
-1. if the assumed set contained zmux parameters and PIPE_ACK is not in use
-   toward the peer (neither pipe acknowledgement nor multipath, for example
-   with a plain QMux peer), or if the early data was sent under the floor
-   and the peer's `initial_max_streams_bidi` is 0, knows that the peer
-   processed none of its early data and closed, or will close, the session
-   at the fence or at the first early STREAM frame. It closes the session
-   with NO_ERROR and reports "early data rejected" to the application. Every stream it opened fails with that error; the
-   application may open them again on a new session without early data,
-   knowing that the peer processed none of them;
-2. otherwise, if the peer's parameters are below the assumed set (below the
-   floor, or below remembered values that the table above or RFC 9000
-   Section 7.4.1 says the server must not reduce), closes the session with
-   TRANSPORT_PARAMETER_ERROR; the peer may have processed part of the early
-   data, as with any session error;
-3. otherwise continues: the early data counts against the peer's limits like
-   data sent after them. Those limits are at least the assumed ones, so
-   nothing it sent exceeds them, and no credit is ever taken back. From
-   then on the peer's parameters apply (RFC 9000 Section 7.4.1), except
-   that bytes still sent as carrier early data stay within the remembered
-   values; the peer's values apply from the first byte after the carrier's
-   early data ends.
-
-Until it knows that its early data stands (the peer's parameters are
-processed, and carrier early data was accepted), an endpoint keeps the
-early frames' content. If the carrier rejects its early data, under
-either assumed set, none of it reached the peer: the
-endpoint treats everything it sent as early data, stream data, FIN bits
-and stream resets alike, as never sent, writes
-QX_TRANSPORT_PARAMETERS again as the first record once the handshake is
-complete, and sends the early streams' data again from offset 0 only after
-it has processed the peer's parameters (not under the floor again); the
-streams do not fail. A verdict "rejected" that arrives after the peer's
-parameters contradicts the carrier and closes the session with
-INTERNAL_ERROR. The same holds for everything sent
-between the rejection and that point: nothing is final until it has been
-sent again after the peer's parameters.
-An endpoint that sent `zmux_multipath` keeps its early frames as
-unacknowledged information until the peer's parameters are processed, and
-discards them then unless multipath is in use (Section 9.6). Establishment
-that fails for any other reason (a handshake timeout, a role conflict,
-invalid parameters) fails the early streams with the session error, with no
-guarantee about what the peer processed.
-
-**Replay.** Carrier early data can be replayed by an attacker (RFC 8446
-Section 8): a replayed open, for example a proxied connection with
-OPEN_INFO, would be repeated. Early data under the floor that travels
-after the carrier handshake is never replayed; sent as carrier early data,
-it can be, as under remembered parameters. Therefore:
-
-- a client sends carrier early data, under either assumed set, only when
-  its application allows its early streams to be replayed;
-- a server accepts carrier early data only when its application allows it,
-  and then reports every stream whose opening frame arrived as carrier
-  early data as replayable for the life of the stream, since completing the
-  handshake does not undo a repetition that already happened; it applies the anti-replay measures of RFC 8446 Section 8
-  that its TLS library offers. A server that does not allow it  rejects carrier early data;
-- a server that accepts carrier early data sends transport parameters that
-  satisfy the remembered values (RFC 9000 Section 7.4.1 and the table
-  above), as QMux-02 Section 8.2 requires. Since a client may have
-  remembered the parameters of any earlier session with the same server
-  identity rather than those of the ticket's session, the servers behind
-  an identity keep the values the table marks mandatory stable across the
-  tickets they issue for it, or bind acceptance to them (for example a configuration
-  version stored in the ticket); a server that lowers any of them, or
-  cannot tell whether a ticket predates a change, rejects carrier early
-  data for those tickets (without a bound version: every older ticket) and
-  never accepts early data under limits it no longer meets. A value at or
-  above every value it has issued tickets under needs nothing.
+The same rules apply when a secure carrier Establish carries the start
+of the zmux byte stream (secure-carrier/SPEC.md Sections 6.2 and 6.3).
+The permitted carrier-first-bytes items and any following records form a
+single byte stream. An authenticated carrier-first-bytes item in Establish
+message 2 or 3 belongs to the post-authentication byte stream. The first
+parameter block determines the family before any application frame is applied. Join batches follow
+MULTIPATH.md Section 5 and belong to an established session.
 
 ### 6.2 Identification and version
 
@@ -1247,8 +1098,7 @@ carrier failure end the session as before, with no read drain.
 the first of the following that happened:
 
 1. a CONNECTION_CLOSE frame that was received and processed;
-2. a local close (including the close after rejected early data, Section
-   6.1.2) or a locally detected protocol error;
+2. a local close or a locally detected protocol error;
 3. an idle timeout (local, or the peer's graceful shutdown in a session
    without acknowledgement, Section 6.4), handshake timeout or resume
    timeout;
@@ -1749,11 +1599,8 @@ A compliant peer follows these rules:
    QX_PING response per request.
 3. It sends no STREAM frame without data or FIN except to open a stream
    without a preamble.
-4. In a multipath session it repeats information only as reinjection
-   (MULTIPATH.md Section 7.4) or as the copies of MULTIPATH.md Section 7.5:
-   the second copies of PIPE_ACK and credit frames (MULTIPATH.md Section 6.5),
-   opportunistic reinjection (MULTIPATH.md Section 7.5.1) and redundant
-   urgent data with the copy of the first chunk after an idle period. None of these is chargeable.
+4. In a multipath session repeated information follows MULTIPATH.md Sections
+   7.4 and 7.5.
 5. It cuts new stream data into frames of whatever size its writes and
    its scheduler produce and, in a multipath session, sends them on any
    pipes, in any order across pipes (Section 7.3). Nothing bounds how
@@ -1772,16 +1619,11 @@ frames and no session-level decoding state (CONTINUATION flood, HPACK bomb).
 
 ### 9.6 No retention without multipath
 
-In a session where multipath is not in use, an endpoint MUST NOT retain the
-content of frames after their records have been passed to the carrier, and
-MUST NOT send PIPE_ACK or any other acknowledgement frame unless pipe
-acknowledgement is in use (MULTIPATH.md Section 3.5), except the fence of
-early data, which it sends before it knows (Section 6.1.2). Before the
-peer's parameters are processed, whether multipath will be in use is not
-known: an endpoint that sent early data and `zmux_multipath` keeps its
-early frames until then (Section 6.1.2). Pipe acknowledgement
-serves the sender's queue control only and retains no data. Retransmission state
-exists only in multipath sessions.
+In a session where multipath is not in use, an endpoint MUST NOT retain
+the content of frames after their records have been passed to the carrier,
+except provisional plain QMux 0-RTT data awaiting the carrier's verdict
+(Section 6.1.2). PIPE_ACK follows MULTIPATH.md Section 3.5. DATAGRAM_ACK
+follows EXTENSIONS.md Section 6.10 and uses only bounded metadata.
 
 ### 9.7 GREASE
 
@@ -1865,10 +1707,11 @@ PIPE_ABANDON as ZMUX_PIPE_FAILED.
 | unknown, prohibited or not-in-use frame type; malformed frame | FRAME_ENCODING_ERROR |
 | DATAGRAM when not advertised, or larger than advertised (a frame that is otherwise well formed) | PROTOCOL_VIOLATION (RFC 9221 Section 3) |
 | DATAGRAM whose Length runs past the end of the record, whatever the advertised size | FRAME_ENCODING_ERROR |
+| invalid format on a carrier datagram channel in use (EXTENSIONS.md Section 6.8) | PROTOCOL_VIOLATION |
 | frame type not minimally encoded | PROTOCOL_VIOLATION |
 | QX_TRANSPORT_PARAMETERS anywhere but first on a bootstrap pipe, with a valid parameter block | PROTOCOL_VIOLATION |
 | QX_TRANSPORT_PARAMETERS anywhere but first on a bootstrap pipe, with a parameter block that is not valid (any condition of the next row) | TRANSPORT_PARAMETER_ERROR |
-| transport parameter duplicate, prohibited, malformed, out of range or alone without its required companion | TRANSPORT_PARAMETER_ERROR |
+| transport parameter duplicate, prohibited, retired, malformed, out of range, missing its required companion or incompatible family (Section 5.5) | TRANSPORT_PARAMETER_ERROR |
 | stream opened beyond the limit | STREAM_LIMIT_ERROR |
 | frame for an unopened local stream or wrong direction | STREAM_STATE_ERROR |
 | RESET_STREAM_AT changes error code | STREAM_STATE_ERROR |
@@ -1947,38 +1790,19 @@ zmux. No extension may weaken it.
 
 ### 13.1 Detection
 
-A peer is a plain QMux peer when its QX_TRANSPORT_PARAMETERS contains none of
-the zmux parameters of Section 5.4. No other signal (ALPN, carrier, address)
-changes how a zmux endpoint treats the peer. Once a zmux endpoint has
-processed the peer's parameters, the decision is final for the session.
-Early data (Section 6.1.2) is sent before that decision. Under remembered
-parameters it is QMux-02's 0-RTT and follows the peer's remembered
-parameters. Under the zmux floor it is sent on the application's declaration
-alone; a plain QMux peer that is wrongly declared to be a zmux endpoint
-closes the session at the PIPE_ACK fence without processing any of it, and
-the zmux endpoint reports "early data rejected". Without remembered
-parameters or the declaration nothing is sent before the decision.
+Section 5.5 defines the plain QMux classification. The carrier and its
+ALPN do not participate in it. Section 6.1.2 defines plain QMux 0-RTT.
 
 ### 13.2 Behaviour towards a plain QMux peer
 
 A zmux endpoint whose peer is a plain QMux peer is a QMux-02 endpoint:
 
 1. The session uses exactly one bidirectional pipe pair, without lanes.
-   Multipath, resume, lanes,
-   role negotiation, GOAWAY, the stream preamble, PRIORITY_UPDATE and datagram
-   flows are not in use. Roles come from the carrier (Section 5.6).
-2. The endpoint sends no zmux frame (Section 4.2 rows from GOAWAY onwards), no
-   PIPE_ACK and no out-of-order or repeated STREAM data. Every stream's data
-   is sent in offset order (QMux-02 Section 4.1). The one exception is the
-   fence of early data, which reaches a plain QMux peer only when the
-   application wrongly declares it a zmux endpoint (a guess from an earlier
-   session included, Section 6.1.2), or when the peer's remembered
-   parameters were those of a zmux endpoint, and which ends the
-   session before the peer processes any early data (Section 13.1). Early
-   data under a plain QMux peer's remembered parameters is QMux-02 Section
-   8.2 0-RTT, without fence or preamble.
-3. It sends RESET_STREAM_AT only if the peer advertised `reset_stream_at`, and
-   DATAGRAM only if the peer advertised `max_datagram_frame_size`.
+   Roles come from the carrier (Section 5.6).
+2. The endpoint sends no zmux frame (Section 4.2) and no out-of-order or
+   repeated STREAM data (QMux-02 Section 4.1).
+3. RESET_STREAM_AT requires the peer's `reset_stream_at` announcement.
+   DATAGRAM follows EXTENSIONS.md Sections 6.1 and 6.2.
 4. It still sends its zmux transport parameters, which the peer ignores
    (QMux-02 Section 5.1 allows parameters that are specified to be usable with
    QMux; this document is that specification), and GREASE parameters, which
@@ -2041,34 +1865,16 @@ carrier must agree on the application out of band (QMux-02 Section 3.1).
 
 ### 13.4 What zmux needs and QMux does not provide
 
-Where zmux needs behaviour that QMux-02 does not define (multipath, resume,
-role negotiation, GOAWAY, preambles, priorities, datagram flows), zmux defines
-it, gates it behind a zmux transport parameter, and never uses it with a peer
-that did not send that parameter. This is how zmux needs win over QMux
-alignment without breaking Section 13.2.
+The protocol family and feature gates of Section 5.5 delimit the zmux
+semantics. Section 13.2 governs operation with plain QMux peers.
 
 ### 13.5 Extensions and versioning
 
-An extension is anything that adds a frame type, a transport parameter, a
-preamble TLV type or an error code, or changes the behaviour of an existing
-element. Extensions follow these rules:
-
-- Existing codepoints never change meaning; codepoints are allocated as
-  REGISTRY.md Section 2 describes.
-- An extension is gated on a transport parameter: its frames are sent only
-  when the feature is in use (Section 5.5), which preserves Section 13.2 and
-  the rule that an unknown frame is fatal. A feature is in use only when both
-  endpoints announced it, except where the feature defines a unilateral
-  capability (as DATAGRAM and RESET_STREAM_AT do).
-- Transport parameters are never renegotiated within a session.
-- Reserved bits that must be zero stay zero; new semantics use new
-  parameters, not reserved bits.
-- GREASE (Section 9.7) keeps the extension points open.
-
-zmux is identified by its first bytes (QX_TRANSPORT_PARAMETERS) and by the
-ALPN identifiers of Section 6.2. There is no version field and no version
-negotiation: additive changes are extensions, and a change to existing
-encodings would be a different protocol with its own ALPN identifiers.
+Extensions allocate codepoints and define gates as REGISTRY.md Section 2
+describes. Existing frame types keep their encoding. A family may specify
+the contents of an otherwise opaque field between endpoints of that family.
+Transport parameters are fixed at bootstrap. The family parameter identifies
+the protocol family and does not select between encodings within it.
 
 zmux follows draft-ietf-quic-qmux-02 and
 draft-ietf-quic-reliable-stream-reset-11, whose wire format is identical to

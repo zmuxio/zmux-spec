@@ -39,9 +39,9 @@ fully scripted.
 | `fixtures/capsules.json` | packet stream capsule vectors (EXTENSIONS.md Section 12), format in its `format` field |
 
 The traces test what a peer observes or relies on. Local sending policy
-within the bounds the documents state (which pipe carries a chunk, when a
-returning pipe is used again, standby probing, redundant copies) is not
-tested here.
+within the bounds the documents state is independent of the public traces.
+Datagram traces can fix a policy through test hooks to exercise a wire
+constraint.
 
 Every trace file is NDJSON: one JSON object per line. The first line is the
 header (Section 4); every following line is a step (Section 5). Byte strings
@@ -69,11 +69,10 @@ are lowercase hex.
   `zmux_multipath` and `zmux_max_lanes` (`{"max_lanes": n, "lane_key": hex}`). Some values are below what the API lets an application
   configure (for example `zmux_preamble`, `zmux_ack_threshold` and
   `max_datagram_frame_size`, and the windows, stream limit and preamble limit
-  below the early-data floor of SPEC.md Section 6.1.2), so that traces stay
-  small; the runner sets them through the test hooks of Section 3.3. The
+  used to keep traces small), so the runner sets them through the test hooks of Section 3.3. The
   scripted peers of many traces advertise less than the floor as well, or
   omit parameters every zmux endpoint sends (`zmux_pipe_ack`), which a
-  receiver does not check unless it sent early data.
+  receiver can handle in the scripted peer.
 - **config**: local settings that are not transport parameters, with the
   following names (`handshake_timeout`, `keep_alive_period`, `max_pipes`,
   `scheduler`, `resume_timeout`, `enable_datagrams`,
@@ -86,7 +85,7 @@ are lowercase hex.
   pipe), the liveness settings `standby_probe` in milliseconds (MULTIPATH.md
   Section 7.1) and `probe_jitter`, plus
   `role` (`initiator`,
-  `responder` or `auto`: the role argument of session creation), `early_data` (object with `zmux_peer` and `replayable`, booleans; absent means both false; the in-memory carriers have no early data of their own, so traces exercise only the zmux floor) and
+  `responder` or `auto`: the role argument of session creation) and
   `pipe_auth` as an object with `psk` (hex), and, beside it in `config`,
   `declared_end_to_end` (true: the local end has called `DeclareEndToEnd`, so that traces
   need no secure carrier) and `record_modes` (the modes its `AllowRecordMode` accepts).
@@ -133,6 +132,8 @@ be reachable from production configuration:
 | `epoch_locator_prefix` | the local endpoint announces the Session Locator `prefix ‖ e` (e in decimal ASCII) in its offer or answer of epoch e (MULTIPATH.md 10.7) instead of a random one |
 | `pipe_cap` | the number of unretired attachments of the peer that the local endpoint keeps (instead of max_pipes + H, MULTIPATH.md 5.4 step 9); an authenticated join beyond it is refused in the Reply (MULTIPATH.md 5.4 step 7), which makes the resource-exhaustion path deterministic |
 | `unconfirmed_cap` | the per-session bound on Unconfirmed carriers (MULTIPATH.md 5.6) instead of the implementation's own, which makes the eviction of MULTIPATH.md 5.4 step 7 deterministic |
+| `datagram` | Object of optional settings. `window` fixes the deduplication width. `hold_packets` fixes the hold-space capacity and forces an otherwise admissible datagram to be held when space is available. `hold_ms` fixes the holding period within the smoothed RTT. `next_sequence` initializes the local sending counter. `ttl_ms` sets local pre-dispatch expiry against the trace clock. `copies` requests this many total copies on eligible writable pipes and provides sufficient copy budget for the trace. `feedback: true` schedules pending arrivals for reporting in the next flush at an eligible time under the rate limits. When absent, the runner disables proactive datagram copies and feedback. For send-only expectations on records, the runner gives the carrier channel no outbound write opportunity. |
+
 
 Three SHOULD/MAY choices are fixed in test mode, without a hook:
 
@@ -185,9 +186,17 @@ the local endpoint's point of view: `in` (the local endpoint reads), `out`
 
 | op | Fields | Meaning |
 |---|---|---|
-| `pipe_up` | `pipe` or `carrier`, `dir`, optional `via` (`bootstrap`, `listener`, `lane`), optional `conn` (Section 5.1.1), optional `carrier_binding` (hex), optional `pairing` (hex), optional `framing` (`bytes`, the default, or `records` for a message-framed carrier, SPEC.md 3.4), optional `source` (an opaque name of the remote address, for the listener's per-source limits, MULTIPATH.md 5.6) | attach an in-memory carrier. `listener` delivers it through the local endpoint's listener (classification, MULTIPATH.md 5.4); such a carrier is named by `carrier` until the local endpoint accepts its join, after which steps may also use the pipe ID from the join. `dir` is the direction of the resulting pipe; a join carrier also has the reverse direction during the handshake (MULTIPATH.md 5.3). `carrier_binding` is the Binding its exporter would give; `pairing` is the pairing token (SPEC.md 6.1.1) delivered with it, after which the paired carriers form pipe 0 |
+| `pipe_up` | `pipe` or `carrier`, `dir`, optional `via` (`bootstrap`, `listener`, `lane`), optional `conn` (Section 5.1.1), optional `carrier_binding` (hex), optional `pairing` (hex), optional `framing` (`bytes`, the default, or `records` for a message-framed carrier, SPEC.md 3.4), optional `channel`, optional `remembered_plain`, optional `source` (an opaque name of the remote address, for the listener's per-source limits, MULTIPATH.md 5.6) | attach an in-memory carrier. `listener` delivers it through the local endpoint's listener (classification, MULTIPATH.md 5.4); such a carrier is named by `carrier` until the local endpoint accepts its join, after which steps may also use the pipe ID from the join. `dir` is the direction of the resulting pipe; a join carrier also has the reverse direction during the handshake (MULTIPATH.md 5.3). `carrier_binding` is the Binding its exporter would give; `pairing` is the pairing token (SPEC.md 6.1.1) delivered with it, after which the paired carriers form pipe 0 |
 | `pipe_down` | `pipe` (with optional `lane`, Section 5.1.1) or `carrier`, `dir`, `how` (`eof` or `error`) | the carrier reports an end of stream or an error on that direction (with `pipe`, on that lane, by default lane 0); on an outbound lane, the peer closed or reset the stream |
 | `set_writable` | `pipe`, `writable` (bool) | stop or resume taking bytes from the local endpoint's outbound pipe (every lane of it), as a full or drained kernel buffer would |
+
+A carrier with `channel: true` offers a carrier datagram channel. At the
+adapter boundary, the runner routes the native payload to the named pipe
+after carrier stream identification (EXTENSIONS.md Section 6.8).
+On an initiator bootstrap, `remembered_plain` supplies a plain QMux
+parameter set and provides a carrier that accepts its 0-RTT. An inbound
+`peer_send` with `carrier_early: true` delivers those bytes as accepted
+carrier early data.
 
 #### 5.1.1 Lanes
 
@@ -212,7 +221,9 @@ named as follows:
 
 | op | Fields | Meaning |
 |---|---|---|
-| `peer_send` | `pipe` or `carrier`, `records` (list of frame lists) and/or `hex`, or on a `records`-framed carrier `messages` (list of frame lists) and/or `messages_hex` (list of hex, one message each), optional `chunks` (list of byte counts) | deliver bytes on the local endpoint's inbound pipe. When both `records` and `hex` are present, `hex` is the encoding of `records` (the validator checks this) and the runner sends `hex`. `chunks` splits delivery into reads of the given sizes. When `records` contain a placeholder (Section 6.1), `hex` is absent and the runner encodes the records itself after substitution. `invalid: true` marks bytes that are deliberately invalid beyond frame syntax (for example a malformed transport-parameter block); the validator then skips its decoding check. On a `records`-framed carrier each message is delivered whole, and the local endpoint's output is decoded one message per record |
+| `peer_send` | `pipe` or `carrier`, `records` (list of frame lists) and/or `hex`, or on a `records`-framed carrier `messages` (list of frame lists) and/or `messages_hex` (list of hex, one message each), optional `chunks` (list of byte counts), optional `carrier_early` | deliver bytes on the local endpoint's inbound pipe. When both `records` and `hex` are present, `hex` is the encoding of `records` (the validator checks this) and the runner sends `hex`. `chunks` splits delivery into reads of the given sizes. When `records` contain a placeholder (Section 6.1), `hex` is absent and the runner encodes the records itself after substitution. `invalid: true` marks bytes that are deliberately invalid beyond frame syntax (for example a malformed transport-parameter block); the validator then skips its decoding check. On a `records`-framed carrier each message is delivered whole, and the local endpoint's output is decoded one message per record |
+| `peer_datagram` | `pipe`, `hex` | deliver the frame region of a carrier datagram after routing it to the named pipe (EXTENSIONS.md Section 6.8). The bytes start with any PADDING prefix, then type 0x30. They bypass the record parser and pipe positions |
+
 
 Frames are JSON objects with a `type` and the fields of Section 6.
 
@@ -227,10 +238,17 @@ trace states fields, not bytes, since R is random. The handshake's bytes count i
 | op | Fields | Meaning |
 |---|---|---|
 | `peer_join` | `carrier`, `pipe`, `direction`, `fate_group`, `priority`, `standby`, `locator`, `mode`, `outcome`, optional `batch` (frames), `bad_key` (bool), `binding` (hex, Mode Bound), `hold` (bool), `confirm` (bool, default true), `group` (default 2), `key_share` (`missing`: no key share item; `bad_length`: a share one byte short; `low_order`: an X25519 share of a small-order point), `phase` (the key phase bit, default 0; the runner joins with the latest epoch of that parity it has derived, Section 5.2.2) | the peer writes a Hello on the listener's carrier, and then reads what its `outcome` says: `accept`, a Reply with decision 0, followed by the confirmation of the mode unless `confirm` is false; `refuse`, a Reply with decision 1 and the carrier closed; `reject`, nothing, and the carrier closed or stalled by policy; `fatal`, the session closes. With `hold` the Reply is not yet expected |
-| `peer_join_finish` | `carrier`, `outcome` | a held `peer_join` goes on: the Reply is written now |
+| `peer_join_finish` | `carrier`, `outcome`, optional `authorized` (bool) | finish a held Join and check its final outcome as for `peer_join`. For an authorization hold, resolve the pending decision with `authorized` before checking the outcome |
 | `peer_confirm` | `carrier` | the peer writes the confirmation it held back |
 | `expect_join_hello` | `pipe`, `direction`, `fate_group`, `priority`, `standby`, `locator`, `mode`, optional `batch` (patterns, Section 5.6), `group`, `phase` | after flushing, the local endpoint has written a Hello with these fields on the carrier of that pipe, that verifies with the local role's key, and nothing else |
 | `peer_join_reply` | `pipe`, `decision`, optional `leading_parameters` (bool) | the peer writes a Reply to the Hello last read, preceded by one QX_TRANSPORT_PARAMETERS record if asked. With decision 0 the runner then reads and checks the local endpoint's confirmation |
+
+With `peer_join.hold: "authorization"`, the runner uses a test-only
+authorization gate that signals when the authenticated Hello reaches
+MULTIPATH.md Section 5.4 step 7 and waits for `peer_join_finish` to
+resolve the decision. The step ends at that signal so subsequent steps can
+change the session while the decision is pending. With `hold: true` the
+runner defers checking the outcome while the Join waits on establishment.
 
 #### 5.2.2 Epoch steps
 
@@ -367,7 +385,7 @@ frame. In `expect_state`, a pipe `state` may likewise be `{"oneof": [names]}`.
 
 | Event | Fields |
 |---|---|
-| `established` | `role`, `features` (the set of features in use, from `role`, `goaway`, `preamble`, `priority`, `datagram_flows`, `multipath`, `pipe_ack`, `resume`; lanes, available per direction, are observed through PIPE_LANE and PIPE_ACK instead) |
+| `established` | `role`, `features` (the set of features in use, from `role`, `goaway`, `preamble`, `priority`, `multipath`, `pipe_ack`, `resume`; lanes, available per direction, are observed through PIPE_LANE and PIPE_ACK instead) |
 | `goaway_received` | `max_bidi`, `max_uni`, `code`; reported only when a watermark is lowered |
 | `pipe_state` | `pipe`, `dir`, `state` |
 | `join_auth_failed` | `count` (failures with this reason since the previous one was read; traces match `reason` only), `reason`: `auth`, or the class of a payload that does not parse (`missing_field`, `bad_field`, MULTIPATH.md 5.4 step 5), or `kex` for a key share refused after the Pipe ID's bit is set (step 7) |
@@ -393,7 +411,8 @@ frame. In `expect_state`, a pipe `state` may likewise be `{"oneof": [names]}`.
 | STREAM_DATA_BLOCKED | `id`, `limit` |
 | STREAMS_BLOCKED | `bidi`, `limit` |
 | CONNECTION_CLOSE | `app`, `code`, `frame_type` (transport only), `reason` |
-| DATAGRAM | `data`, `has_len` |
+| DATAGRAM | `data` (entire Datagram Data), `has_len` |
+| DATAGRAM_ACK | `pipe`, `channel`, `largest`, `delay` (microseconds), `first_range`, `ranges` (list of `{gap, length}`, its size gives Range Count) |
 | QX_TRANSPORT_PARAMETERS | `params`: list of `{"id": name or number, "value": ...}` or `{"id": number, "raw": hex}` |
 | QX_PING | `response`, `seq` |
 | GOAWAY | `max_bidi`, `max_uni`, `code` |
@@ -415,9 +434,6 @@ REGISTRY.md Section 6, or one of these local reasons with `"space": "local"`:
   CONNECTION_CLOSE with ZMUX_IDLE_TIMEOUT, or, in a session without
   acknowledgement, by a graceful shutdown without CONNECTION_CLOSE (SPEC.md
   6.4);
-- `EARLY_DATA_REJECTED`: the local endpoint sent early data and the peer's
-  parameters show that the peer cannot take it (SPEC.md 6.1.2); the
-  endpoint closes with CONNECTION_CLOSE(NO_ERROR);
 - `PIPES_LOST`: the session ended because pipes were lost: a carrier failure
   outside multipath (with pipe acknowledgement, a graceful end of the peer's
   pipe without CONNECTION_CLOSE included), or the loss of every pipe in a direction without resume

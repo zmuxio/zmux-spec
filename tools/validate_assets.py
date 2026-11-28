@@ -15,7 +15,6 @@ Each --traces DIR adds a further trace directory in the format of
 fixtures/traces. Exit status 0 when everything passes.
 """
 
-import hashlib
 import json
 import re
 import sys
@@ -25,7 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 from zmuxwire import frames as F, registry as R, render, crypto as C  # noqa: E402
-from zmuxwire.varint import DecodeError  # noqa: E402
+from zmuxwire.preamble import decode_datagram_data  # noqa: E402
+from zmuxwire.varint import DecodeError, decode_varint  # noqa: E402
 
 ERRORS = []
 EXTRA_TRACES = []  # further trace directories (--traces DIR), same format as fixtures/traces
@@ -111,12 +111,6 @@ def check_docs():
 # =============================================================================
 # registry
 
-def alloc(kind, name, suffix):
-    s = f"zmux {kind} {name}" + (f"#{suffix}" if suffix else "")
-    h = int.from_bytes(hashlib.sha256(s.encode()).digest()[:8], "big")
-    return 0x4000 + h % (0x40000000 - 0x4000)
-
-
 def check_registry():
     data = json.loads(read("assets/registry.json"))
     if data != json.loads(json.dumps(render.registry_json())):
@@ -131,7 +125,7 @@ def check_registry():
         for it in items:
             if kind == "frame" and it["kind"] != "zmux":
                 continue
-            if kind == "transport_parameter" and it["scope"] not in ("zmux", "zmux-reserved"):
+            if kind == "transport_parameter" and it["scope"] not in ("zmux", "zmux-reserved", "zmux-retired"):
                 continue
             if kind == "transport_error" and it["source"] != "zmux":
                 continue
@@ -146,7 +140,7 @@ def check_registry():
         for name, v in vals:
             CHECKS["registry"] += 1
             suffix = R.ALLOCATION_SUFFIX.get((kind, name), 0)
-            if alloc(kind, name, suffix) != v:
+            if R.allocation(kind, name, suffix) != v:
                 fail(f"registry: {kind} {name} 0x{v:x} does not match the allocation method")
             if not (1 << 14) <= v < (1 << 30):
                 fail(f"registry: {kind} {name} 0x{v:x} outside [2^14, 2^30)")
@@ -188,7 +182,9 @@ def check_registry():
         if a2 <= b1:
             fail(f"registry: frame ranges {n1} and {n2} overlap")
     # gates
-    tp_names = {p["name"] for p in R.TRANSPORT_PARAMETERS}
+    if len({p["id"] for p in R.TRANSPORT_PARAMETERS}) != len(R.TRANSPORT_PARAMETERS):
+        fail("registry: overlapping transport parameter IDs")
+    tp_names = {p["name"] for p in R.TRANSPORT_PARAMETERS if p["scope"] != "zmux-retired"}
     for f in R.FRAME_TYPES:
         g = f.get("gate")
         for gn in ((g,) if isinstance(g, str) else (g or ())):
@@ -197,6 +193,8 @@ def check_registry():
         if f["kind"] != "prohibited" and not ref_ok(f["spec"]):
             fail(f"registry: frame {f['name']} references missing {f['spec']}")
     for p in R.TRANSPORT_PARAMETERS:
+        if p["scope"] == "zmux-retired" and p["zmux_sends"] != "never":
+            fail(f"registry: retired parameter {p['name']} can be sent")
         if p.get("spec") and not ref_ok(p["spec"]):
             fail(f"registry: parameter {p['name']} references missing {p['spec']}")
     for t in R.PREAMBLE_TLVS:
@@ -301,6 +299,21 @@ def check_examples():
 # =============================================================================
 # wire corpus
 
+def decode_corpus_channel(entry, wire, gates):
+    if "zero_fill" in entry:
+        fill = entry["zero_fill"]
+        offset = fill["offset"]
+        wire = wire[:offset] + bytes(fill["count"]) + wire[offset:]
+    if "pipe_stream_id" in entry:
+        pipe_stream_id, end, _ = decode_varint(wire, 0)
+        if pipe_stream_id != entry["pipe_stream_id"]:
+            fail(f"corpus: {entry['id']}: wrong Pipe Stream ID")
+        wire = wire[end:]
+    padding, frame = F.decode_channel_datagram(wire, gates, entry.get("limits"))
+    data = decode_datagram_data(frame["data"])
+    return wire, padding, frame, data
+
+
 def check_corpus():
     for line in (ROOT / "fixtures/wire/valid.ndjson").read_text().splitlines():
         e = json.loads(line)
@@ -312,6 +325,9 @@ def check_corpus():
                 f, end = F.decode_frame(b, 0, len(b), gates, limits)
                 if end != len(b):
                     raise DecodeError("X", "trailing bytes")
+                if "datagram_data" in e:
+                    if F.to_json(decode_datagram_data(f["data"])) != e["datagram_data"]:
+                        fail(f"corpus: {e['id']}: wrong Datagram Data fields")
                 if e.get("non_minimal"):
                     # semantic equality (CONFORMANCE.md Section 4)
                     b2 = F.encode_frame(f)
@@ -326,6 +342,12 @@ def check_corpus():
                         fail(f"corpus: {e['id']}: re-encode mismatch")
                     if F.encode_frame(F.from_json(e["frame"])) != b:
                         fail(f"corpus: {e['id']}: JSON does not encode to hex")
+            elif e["kind"] == "channel_datagram":
+                wire, padding, frame, data = decode_corpus_channel(e, b, gates)
+                if padding != e["padding"] or norm(frame) != e["frame"] or norm(data) != e["datagram_data"]:
+                    fail(f"corpus: {e['id']}: wrong channel datagram fields")
+                if bytes(padding) + F.encode_frame(frame) != wire:
+                    fail(f"corpus: {e['id']}: channel datagram round trip failed")
             elif e["kind"] == "messages":
                 for m, pos in zip(e["messages"], e["positions"]):
                     mb = bytes.fromhex(m)
@@ -348,6 +370,8 @@ def check_corpus():
         try:
             if e["kind"] == "frame":
                 F.decode_frame(b, 0, len(b), gates, e.get("limits"))
+            elif e["kind"] == "channel_datagram":
+                decode_corpus_channel(e, b, gates)
             elif e["kind"] == "messages":
                 for m in e["messages"]:
                     F.decode_message(bytes.fromhex(m), e.get("max_record_size", 65535), gates)
@@ -368,11 +392,11 @@ def check_corpus():
 
 OPS = {
     "pipe_up": ({"dir"}, {"pipe", "carrier", "via", "carrier_binding", "pairing",
-                          "framing", "source", "conn"}),
+                          "framing", "source", "conn", "channel", "remembered_plain"}),
     "peer_join": ({"carrier", "pipe", "direction", "fate_group", "priority", "standby", "locator",
                    "mode", "outcome"}, {"batch", "bad_key", "confirm", "hold", "binding", "group",
                                         "key_share", "phase"}),
-    "peer_join_finish": ({"carrier", "outcome"}, set()),
+    "peer_join_finish": ({"carrier", "outcome"}, {"authorized"}),
     "peer_epoch": ({"pipe", "phase", "epoch"}, {"locator", "share_len", "repeat"}),
     "peer_confirm": ({"carrier"}, set()),
     "expect_join_hello": ({"pipe", "direction", "fate_group", "priority", "standby", "locator",
@@ -381,7 +405,8 @@ OPS = {
     "pipe_down": ({"dir", "how"}, {"pipe", "carrier", "lane"}),
     "set_writable": ({"pipe", "writable"}, set()),
     "peer_send": (set(), {"pipe", "carrier", "records", "hex", "chunks", "invalid", "messages",
-                          "messages_hex"}),
+                          "messages_hex", "carrier_early"}),
+    "peer_datagram": ({"pipe", "hex"}, set()),
     "api": ({"call", "args"}, {"bind", "expect"}),
     "expect_frames": ({"pipe", "frames", "match"}, {"lane", "one_credit_per_record"}),
     "expect_no_frames": ({"pipe"}, {"lane", "types"}),
@@ -402,8 +427,8 @@ CALLS = {"open_bidi", "open_uni", "accept_bidi", "accept_uni", "write", "finish"
          "revalidate_pipes", "set_redundant", "advance_epoch"}
 EVENTS = {"established", "goaway_received", "pipe_state", "join_auth_failed", "suspended",
           "resumed", "datagram_dropped", "closed"}
-LOCAL_REASONS = {"HANDSHAKE_TIMEOUT", "IDLE_TIMEOUT", "PIPES_LOST", "EARLY_DATA_REJECTED"}
-FEATURES = {"role", "goaway", "preamble", "priority", "datagram_flows", "multipath", "pipe_ack", "resume"}
+LOCAL_REASONS = {"HANDSHAKE_TIMEOUT", "IDLE_TIMEOUT", "PIPES_LOST"}
+FEATURES = {"role", "goaway", "preamble", "priority", "multipath", "pipe_ack", "resume"}
 SESSION_STATES = {"ESTABLISHING", "ACTIVE", "DRAINING", "SUSPENDED", "CLOSING", "CLOSED"}
 PIPE_STATES = {"JOINING", "ACTIVE", "SUSPECT", "DRAINING", "FAILED", "CLOSED", "RETIRED", "OPEN",
                "ENDED"}
@@ -454,7 +479,20 @@ def check_traces():
 
 
 def check_trace_dir(base, profiles, minimum=1):
-    index = json.loads((ROOT / base / "index.json").read_text())["traces"]
+    listing = json.loads((ROOT / base / "index.json").read_text())
+    index = listing["traces"]
+    if base == "fixtures/traces":
+        trace_ids = {entry["id"] for entry in index}
+        wire_ids = {json.loads(line)["id"] for name in ("valid", "invalid")
+                    for line in (ROOT / f"fixtures/wire/{name}.ndjson").read_text().splitlines()}
+        checkpoints = listing.get("datagram_checkpoints", {})
+        if set(checkpoints) != {"E1", "E2", "E3", "E4", "E5"}:
+            fail("traces: missing datagram checkpoint")
+        for name, entries in checkpoints.items():
+            if not entries["traces"] or set(entries["traces"]) - trace_ids:
+                fail(f"traces: invalid trace IDs in datagram checkpoint {name}")
+            if set(entries["wire"]) - wire_ids:
+                fail(f"traces: invalid wire IDs in datagram checkpoint {name}")
     listed = {t["file"] for t in index}
     files = {str(p.relative_to(ROOT)) for p in (ROOT / base).rglob("*.ndjson")}
     for missing in files - listed:
@@ -487,6 +525,7 @@ def check_trace_dir(base, profiles, minimum=1):
             if f"`{fnd}`" not in conformance:
                 fail(f"trace {tid}: finding {fnd} is not in CONFORMANCE.md Section 6")
         binds = set()
+        held_joins = {}
         for i, line in enumerate(lines[1:], 1):
             s = json.loads(line)
             CHECKS["steps"] += 1
@@ -552,15 +591,39 @@ def check_trace_dir(base, profiles, minimum=1):
                     total = len(bytes.fromhex(s["hex"])) if "hex" in s else None
                     if total is not None and sum(s["chunks"]) != total:
                         fail(f"trace {tid} step {i}: chunks do not add up")
+            if op == "peer_datagram":
+                try:
+                    raw = bytes.fromhex(s["hex"])
+                    _, frame = F.decode_channel_datagram(raw)
+                    decode_datagram_data(frame["data"])
+                except (DecodeError, ValueError) as ex:
+                    fail(f"trace {tid} step {i}: invalid channel payload: {ex}")
             if op == "peer_join":
                 if s["direction"] not in ("up", "down", "bidi"):
                     fail(f"trace {tid} step {i}: bad join direction")
                 if s["mode"] not in ("sealed", "bound", "trusted"):
                     fail(f"trace {tid} step {i}: bad join mode")
-                if s["outcome"] not in ("accept", "refuse", "reject", "fatal"):
-                    fail(f"trace {tid} step {i}: bad join outcome")
                 if s.get("key_share") not in (None, "missing", "bad_length", "low_order"):
                     fail(f"trace {tid} step {i}: bad key_share")
+                if "hold" in s:
+                    hold = s["hold"]
+                    if hold is not True and hold != "authorization":
+                        fail(f"trace {tid} step {i}: bad join hold")
+                    if s["carrier"] in held_joins:
+                        fail(f"trace {tid} step {i}: carrier already has a held join")
+                    held_joins[s["carrier"]] = hold
+            if op in ("peer_join", "peer_join_finish"):
+                if s["outcome"] not in ("accept", "refuse", "reject", "fatal"):
+                    fail(f"trace {tid} step {i}: bad join outcome")
+            if op == "peer_join_finish":
+                hold = held_joins.pop(s["carrier"], None)
+                if hold is None:
+                    fail(f"trace {tid} step {i}: no held join on carrier")
+                elif hold == "authorization":
+                    if type(s.get("authorized")) is not bool:
+                        fail(f"trace {tid} step {i}: missing boolean authorization decision")
+                elif "authorized" in s:
+                    fail(f"trace {tid} step {i}: authorization decision without authorization hold")
             if op in ("peer_join", "expect_join_hello"):
                 if s.get("group", 1) not in {g["value"] for g in R.GROUPS}:
                     fail(f"trace {tid} step {i}: bad group")

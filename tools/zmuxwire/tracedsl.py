@@ -31,6 +31,7 @@ SMALL_TP = {
     "initial_max_streams_bidi": 4,
     "initial_max_streams_uni": 4,
     "reset_stream_at": None,
+    "zmux_datagram_family": None,
     "zmux_goaway": None,
     "zmux_preamble": 512,
     "zmux_priority": None,
@@ -63,6 +64,7 @@ PROFILES = {
                "initial_max_stream_data_bidi_remote": 262144,
                "initial_max_stream_data_uni": 262144, "initial_max_streams_bidi": 256,
                "initial_max_streams_uni": 16, "reset_stream_at": None, "zmux_goaway": None,
+               "zmux_datagram_family": None,
                "zmux_preamble": 4096, "zmux_priority": None, "zmux_pipe_ack": None,
                "zmux_max_lanes": lanes(258, LOCAL_LANE_KEY), "max_record_size": 65535},
         "config": {"keep_alive_period": 0, "handshake_timeout": 10000,
@@ -73,8 +75,7 @@ PROFILES = {
                    "config": {"keep_alive_period": 0, "handshake_timeout": 10000,
                               "max_incoming_uni_streams": 4, "probe_jitter": 0},
                    "test": dict(TEST_HOOKS)},
-    "zmux-small-dgram": {"tp": dict(LOCAL_SMALL_TP, max_datagram_frame_size=1200,
-                                    zmux_datagram_flows=None),
+    "zmux-small-dgram": {"tp": dict(LOCAL_SMALL_TP, max_datagram_frame_size=1200),
                          "config": {"keep_alive_period": 0, "handshake_timeout": 10000,
                                     "enable_datagrams": True, "max_incoming_uni_streams": 4, "probe_jitter": 0},
                          "test": dict(TEST_HOOKS)},
@@ -180,6 +181,16 @@ def DATAGRAM(data, has_len=True):
     return dict(type="DATAGRAM", data=data, has_len=has_len)
 
 
+def ZDATAGRAM(sequence, data=b"", stream=None, context=0, has_len=True):
+    return DATAGRAM(P.encode_datagram_data(sequence, data, stream, context), has_len)
+
+
+def DATAGRAM_ACK(pipe, channel, largest, delay=0, first_range=0, ranges=()):
+    return dict(type="DATAGRAM_ACK", pipe=pipe, channel=channel, largest=largest, delay=delay,
+                first_range=first_range, ranges=[dict(gap=gap, length=length)
+                                               for gap, length in ranges])
+
+
 def GOAWAY(b, u, code=0):
     return dict(type="GOAWAY", max_bidi=b, max_uni=u, code=code)
 
@@ -273,9 +284,7 @@ EMPTY_PRE = pre()
 
 def peer_small(**over):
     """A scripted peer with zmux parameters and the small values. It does not send
-    zmux_pipe_ack and advertises less than the early-data floor (SPEC.md 6.1.2), which
-    a conforming zmux endpoint would not do, so that traces of other features stay
-    small and see no PIPE_ACK; peer_ack() adds zmux_pipe_ack."""
+    zmux_pipe_ack so that traces of other features see no PIPE_ACK; peer_ack() adds zmux_pipe_ack."""
     d = dict(SMALL_TP)
     d.update(over)
     return d
@@ -408,7 +417,7 @@ class Trace:
         if not confirm:
             d["confirm"] = False
         if hold:
-            d["hold"] = True
+            d["hold"] = hold
         if binding is not None:
             d["binding"] = binding
         return self._add(**d)
@@ -422,8 +431,11 @@ class Trace:
             d["repeat"] = True
         return self._add(**d)
 
-    def peer_join_finish(self, carrier, outcome="accept"):
-        return self._add(op="peer_join_finish", carrier=carrier, outcome=outcome)
+    def peer_join_finish(self, carrier, outcome="accept", authorized=None):
+        step = dict(op="peer_join_finish", carrier=carrier, outcome=outcome)
+        if authorized is not None:
+            step["authorized"] = authorized
+        return self._add(**step)
 
     def peer_confirm(self, carrier):
         return self._add(op="peer_confirm", carrier=carrier)
@@ -460,7 +472,7 @@ class Trace:
         return self._add(op="set_writable", pipe=pipe, writable=w)
 
     # peer
-    def send(self, pipe, *records, chunks=None, invalid=False, carrier=None):
+    def send(self, pipe, *records, chunks=None, invalid=False, carrier=None, carrier_early=False):
         """Deliver records on inbound pipe ``pipe``, or on carrier ``carrier`` (pipe None)."""
         recs = [list(r) for r in records]
         key = pipe if carrier is None else carrier
@@ -468,6 +480,8 @@ class Trace:
                  records=recs)
         if invalid:
             d["invalid"] = True
+        if carrier_early:
+            d["carrier_early"] = True
         if not has_placeholder(recs):
             b = record_bytes(recs)
             d["hex"] = b
